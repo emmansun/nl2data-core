@@ -83,6 +83,22 @@ during drain/close are rejected with structured `LifecycleError`s, and the
 engine lifecycle is explicit: `created → initializing → ready → draining →
 closed`.
 
+## PostgreSQL conformance profile
+
+The P1 query-execution foundation ships an optional PostgreSQL conformance
+profile that reuses the SQLite fixture's logical schema, seed data, policy
+cases, and protected result assertions.
+
+- Install the optional driver: `pip install -e ".[postgres]"` (psycopg 3).
+- Point the profile at a developer-managed service with the
+  `NL2DATA_POSTGRES_DSN` environment variable (default:
+  `postgresql://localhost:5432/nl2data_test`).
+- The profile never requires the service: when the driver or service is
+  unavailable, conformance tests are skipped and evaluation outcomes are
+  reported as `skipped`/`unavailable` - never as a pass.
+- Relevant suites: `tests/integration/test_fixtures.py` and
+  `tests/conformance/test_postgres_conformance.py`.
+
 ## Development
 
 ```bash

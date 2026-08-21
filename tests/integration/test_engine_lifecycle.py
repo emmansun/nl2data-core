@@ -14,6 +14,7 @@ from nl2data import (
     OutcomeStatus,
     QueryOutcome,
     QueryRequest,
+    QueryResult,
 )
 from nl2data.engine import LifecycleError
 from nl2data_core.config.loader import load_config
@@ -137,7 +138,11 @@ class TestQueryBoundary:
 
             async def execute(self, request: QueryRequest) -> QueryOutcome:
                 invoked.append(request.request_id)
-                return QueryOutcome(status=OutcomeStatus.SUCCEEDED, request_id=request.request_id)
+                return QueryOutcome(
+                    status=OutcomeStatus.SUCCEEDED,
+                    request_id=request.request_id,
+                    result=QueryResult(result_id="res-1", rows=((1,),)),
+                )
 
         engine = make_engine(workflow_port=FakePort())
         await engine.initialize()

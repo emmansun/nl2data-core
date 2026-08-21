@@ -93,9 +93,7 @@ class ExtensionSection(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    values: Mapping[str, str | int | float | bool] = Field(
-        default_factory=dict, max_length=256
-    )
+    values: Mapping[str, str | int | float | bool] = Field(default_factory=dict, max_length=256)
 
     @field_validator("values", mode="after")
     @classmethod

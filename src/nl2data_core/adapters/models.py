@@ -7,8 +7,9 @@ type appears here.
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 _FINGERPRINT_PATTERN = r"^sha256:[0-9a-f]{64}$"
 _IDENTIFIER_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_\-\.]{0,127}$"
@@ -56,6 +57,8 @@ class ValidationContext(BaseModel):
     artifact_fingerprint: str | None = Field(default=None, pattern=_FINGERPRINT_PATTERN)
     snapshot_fingerprint: str | None = Field(default=None, pattern=_FINGERPRINT_PATTERN)
     limits: AdapterLimits | None = None
+    execution_timeout_seconds: float | None = Field(default=None, gt=0.0, le=3600.0)
+    max_result_bytes: int | None = Field(default=None, ge=1, le=1_073_741_824)
 
 
 class GeneratedArtifact(BaseModel):
@@ -101,7 +104,12 @@ class CostEstimate(BaseModel):
 
 
 class ExecutionResult(BaseModel):
-    """Generic execution result with only protected scalar data."""
+    """Generic execution result with only protected scalar data.
+
+    Rows carry scalar values only (``str``, ``int``, ``float``, ``bool``,
+    ``None``); native cursors, connections and driver-specific values are
+    rejected here so they can never cross the workflow boundary.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -109,5 +117,17 @@ class ExecutionResult(BaseModel):
     fingerprint: str = Field(pattern=_FINGERPRINT_PATTERN)
     row_count: int = Field(default=0, ge=0)
     columns: tuple[str, ...] = Field(default_factory=tuple, max_length=1_000)
+    rows: tuple[tuple[Any, ...], ...] = Field(default_factory=tuple, max_length=1_000_000)
     duration_ms: int = Field(default=0, ge=0)
     metadata: dict[str, str] = Field(default_factory=dict, max_length=64)
+
+    @field_validator("rows")
+    @classmethod
+    def _scalar_rows(cls, value: tuple[tuple[Any, ...], ...]) -> tuple[tuple[Any, ...], ...]:
+        for row in value:
+            for cell in row:
+                if not isinstance(cell, (str, int, float, bool, type(None))):
+                    raise ValueError(
+                        "result rows may only contain scalar values (str, int, float, bool, None)"
+                    )
+        return value

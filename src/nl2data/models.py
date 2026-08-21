@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .errors import ErrorRecord
 
@@ -124,8 +124,10 @@ class QueryResult(BaseModel):
 class QueryOutcome(BaseModel):
     """Public outcome of a query submission.
 
-    A not-configured outcome carries no raw result and no internal state
-    payload; failures carry a safe structured ``ErrorRecord``.
+    Outcome status is consistent with its payload: a successful outcome
+    contains a protected result and no error; failed, rejected, and
+    not-configured outcomes contain no result and carry a safe structured
+    ``ErrorRecord``.  No raw execution state ever crosses this boundary.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -137,6 +139,22 @@ class QueryOutcome(BaseModel):
     error: ErrorRecord | None = None
     attempts_used: int = Field(default=0, ge=0, le=_MAX_ATTEMPTS)
     occurred_at: datetime = Field(default_factory=_utc_now)
+
+    @model_validator(mode="after")
+    def _consistent_payload(self) -> QueryOutcome:
+        if self.status == OutcomeStatus.SUCCEEDED:
+            if self.result is None:
+                raise ValueError("a successful outcome must contain a protected result")
+            if self.error is not None:
+                raise ValueError("a successful outcome must not carry an error")
+        else:
+            if self.result is not None:
+                raise ValueError(
+                    "failed, rejected, and not-configured outcomes must not contain a result"
+                )
+            if self.error is None:
+                raise ValueError("a non-successful outcome must carry a safe structured error")
+        return self
 
 
 class EngineCapabilitySnapshot(BaseModel):

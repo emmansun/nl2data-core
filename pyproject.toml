@@ -26,12 +26,17 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# SQL parser + evaluation extras; SQLite itself is stdlib (no dependency).
+sql = ["sqlglot>=25.0,<30"]
+# Optional PostgreSQL conformance profile driver.
+postgres = ["psycopg[binary]>=3.1,<4"]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "mypy>=1.10",
     "ruff>=0.5",
     "types-PyYAML>=6.0",
+    "sqlglot>=25.0,<30",
 ]
 
 [tool.setuptools.packages.find]
