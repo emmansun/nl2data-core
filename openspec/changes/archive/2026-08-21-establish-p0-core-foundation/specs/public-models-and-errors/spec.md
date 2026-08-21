@@ -1,0 +1,33 @@
+## ADDED Requirements
+
+### Requirement: Stable public import boundary
+The public package SHALL expose the P0 engine, request, context, outcome, capability, and error contracts from `nl2data`, and application code SHALL NOT need to import `nl2data_core` internals.
+
+#### Scenario: Public imports are available
+- **WHEN** an application imports the documented P0 symbols from `nl2data`
+- **THEN** the imports succeed without importing a database driver or transport framework
+
+### Requirement: Immutable public models
+Public request, context, outcome, result, and capability models SHALL reject unknown fields and SHALL be immutable after construction.
+
+#### Scenario: Invalid public input is rejected
+- **WHEN** a public model receives an unknown field or an invalid bounded value
+- **THEN** model validation raises a structured validation error
+
+#### Scenario: Valid model cannot be mutated
+- **WHEN** application code attempts to change a field on a constructed public model
+- **THEN** the operation is rejected and the original model remains unchanged
+
+### Requirement: Structured public errors
+The public error contract SHALL provide a stable code, category, human-readable message, retryability indicator, and safe structured details without exposing secrets or native provider objects.
+
+#### Scenario: Error serializes safely
+- **WHEN** an internal failure is converted to a public error
+- **THEN** serialization contains stable safe fields and excludes credentials, raw query payloads, and provider exception objects
+
+### Requirement: Protected result boundary
+Public query outcomes SHALL expose only protected result contracts and SHALL not expose native cursors, connections, driver-specific values, or raw workflow state.
+
+#### Scenario: Unsupported execution returns no raw result
+- **WHEN** the P0 engine has no configured executable workflow
+- **THEN** it returns an explicit not-configured outcome without a raw result or internal state payload
