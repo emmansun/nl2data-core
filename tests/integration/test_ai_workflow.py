@@ -33,7 +33,10 @@ from nl2data_core.planning.models import (
     SemanticSelection,
 )
 from nl2data_core.planning.validation import AuthorizedView
+from nl2data_core.workflow.durable import IdempotencyStatus
 from nl2data_core.workflow.runner import QueryExecutionRunner, StaticPlanResolver
+from nl2data_core.workflow.runtime import DeterministicWorkflowRuntime
+from nl2data_core.workflow.sqlite_store import SQLiteStateStore
 
 FIELDS = frozenset({"order_id", "customer_id", "amount", "region", "status", "created_at"})
 
@@ -293,6 +296,53 @@ class TestFallbacks:
         await runner.close()
         await runner.close()
         assert provider.closed is True
+
+
+class TestFacadeDelegation:
+    async def test_facade_delegates_to_the_deterministic_runtime(
+        self, tmp_path: Path
+    ) -> None:
+        provider = FakeModelProvider(default_response=VALID_INTENT)
+        runner = make_ai_runner(tmp_path, provider=provider)
+        assert isinstance(runner.runtime, DeterministicWorkflowRuntime)
+        outcome = await runner.execute(request())
+        assert outcome.status == OutcomeStatus.SUCCEEDED
+        assert provider.call_count == 1
+
+    async def test_facade_forwards_durable_state_store(self, tmp_path: Path) -> None:
+        store = SQLiteStateStore(tmp_path / "facade-durable.db")
+        try:
+            provider = FakeModelProvider(default_response=VALID_INTENT)
+            runner = make_ai_runner(
+                tmp_path,
+                provider=provider,
+                state_store=store,
+            )
+            first = await runner.execute(request("r-dup"))
+            assert first.status == OutcomeStatus.SUCCEEDED
+            assert provider.call_count == 1
+
+            idem = store.get_idempotency("r-dup")
+            assert idem is not None
+            assert idem.status == IdempotencyStatus.COMPLETED
+
+            second = await runner.execute(request("r-dup"))
+            assert second.status == OutcomeStatus.REJECTED
+            assert second.error is not None
+            assert second.error.code == ErrorCode.DUPLICATE_REQUEST
+            assert provider.call_count == 1  # no re-execution
+        finally:
+            store.close()
+
+    async def test_facade_forwards_approval_required_hook(self, tmp_path: Path) -> None:
+        runner = make_ai_runner(
+            tmp_path,
+            approval_required=lambda plan: True,
+        )
+        outcome = await runner.execute(request())
+        assert outcome.status == OutcomeStatus.REJECTED
+        assert outcome.error is not None
+        assert outcome.error.code == ErrorCode.APPROVAL_REQUIRED
 
 
 class TestEngineIntegration:

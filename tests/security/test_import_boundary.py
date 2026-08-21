@@ -29,6 +29,7 @@ FORBIDDEN_IMPORTS = [
     "openai",
     "anthropic",
     "langchain",
+    "langgraph",
     "transformers",
     "httpx",
     "requests",

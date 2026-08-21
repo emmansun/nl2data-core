@@ -1,0 +1,1702 @@
+"""Deterministic governed workflow runtime over AI, Memory, and P1 components.
+
+The runtime owns the single ordered stage graph
+(``initialize -> memory -> intent -> plan -> validate -> govern -> authorize
+-> execute -> protect -> persist -> complete``) and enforces the mandatory
+gates from :mod:`nl2data_core.workflow.contract` before every stage entry.
+Each stage is one deterministic node; branches (clarification, rejection,
+timeout, cancellation, retry exhaustion, approval required) are terminal and
+carry the final public outcome - never raw provider or task material.
+
+The runtime never imports framework-specific packages (such as LangGraph);
+optional backends implement the same contract and cannot weaken gates.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from typing import Any
+from uuid import uuid4
+
+from nl2data.errors import (
+    ErrorCategory,
+    ErrorCode,
+    ErrorRecord,
+    NL2DataError,
+    as_error_record,
+)
+from nl2data.models import (
+    OutcomeStatus,
+    QueryClarification,
+    QueryClarificationOption,
+    QueryOutcome,
+    QueryRequest,
+)
+from nl2data_core.adapters.models import AdapterLimits, ValidationContext
+from nl2data_core.adapters.protocol import QueryAdapter
+from nl2data_core.adapters.sql.compile import compile_plan
+from nl2data_core.ai.config import ModelConfig
+from nl2data_core.ai.context import SemanticReference
+from nl2data_core.ai.models import ClarificationRequired, RejectedIntent, ResolvedIntent
+from nl2data_core.ai.plan_builder import build_plan_from_intent
+from nl2data_core.ai.protocol import ModelProvider
+from nl2data_core.ai.resolver import IntentResolver
+from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.engine.ports import NOT_CONFIGURED_MESSAGE
+from nl2data_core.governance.authorization import (
+    AuthorizationIssuer,
+    AuthorizationVerifier,
+)
+from nl2data_core.governance.decisions import PolicyEvaluator
+from nl2data_core.governance.models import (
+    EffectiveLimits,
+    GovernanceDecision,
+    GovernanceFacts,
+    PolicyScope,
+)
+from nl2data_core.memory.context import CurrentTurnContext, build_current_turn_context
+from nl2data_core.memory.models import MemoryRecallBudget
+from nl2data_core.memory.protocol import MemoryProvider
+from nl2data_core.memory.resolver import (
+    MultiTurnResolution,
+    MultiTurnResolutionKind,
+    MultiTurnResolver,
+    record_query_reference,
+)
+from nl2data_core.planning.models import (
+    PhysicalBinding,
+    SemanticQueryPlan,
+    validate_plan_structure,
+)
+from nl2data_core.planning.validation import (
+    AuthorizedView,
+    validate_plan_against_view,
+)
+from nl2data_core.tenancy.models import TenantScopeContext
+from nl2data_core.tenancy.validation import validate_tenant_scope
+from nl2data_core.workflow.contract import (
+    ApprovalRequiredError,
+    RuntimeCancelledError,
+    RuntimeGateError,
+    RuntimeOutcomeStatus,
+    RuntimeRecoverableError,
+    RuntimeRetryExhaustedError,
+    RuntimeTimeoutError,
+    StageResult,
+    StaleCheckpointError,
+    WorkflowCancellation,
+    WorkflowDeadline,
+    WorkflowExecutionContext,
+    authorization_evidence_fingerprint,
+    validate_stage_entry,
+)
+from nl2data_core.workflow.durable import (
+    IdempotencyConflictError,
+    IdempotencyStatus,
+    IdempotencyStore,
+    terminal_outcome_fingerprint,
+)
+from nl2data_core.workflow.models import (
+    TERMINAL_STATUSES,
+    WorkflowBudget,
+    WorkflowGate,
+    WorkflowStage,
+    WorkflowState,
+    WorkflowStateError,
+    WorkflowStatus,
+)
+from nl2data_core.workflow.protection import ResultProtectionError, protect_result
+from nl2data_core.workflow.runner import (
+    QueryExecutionComponents,
+    QueryExecutionRunner,
+    _outcome,
+)
+from nl2data_core.workflow.store import StateStore
+from nl2data_core.workflow.transitions import checkpoint, transition
+
+#: Stages after external adapter execution: resuming from them is ambiguous
+#: because the runtime cannot claim the external work never started.
+_AMBIGUOUS_STAGES = frozenset(
+    {
+        WorkflowStage.EXECUTE,
+        WorkflowStage.PROTECT,
+        WorkflowStage.PERSIST,
+        WorkflowStage.COMPLETE,
+    }
+)
+
+#: Resume validation failures that normalize to a public rejection.  A
+#: recoverable checkpoint stays a failure because external work may have
+#: started and requires operator reconciliation.
+_RESUME_REJECTED_ERRORS = (
+    RuntimeTimeoutError,
+    RuntimeCancelledError,
+    RuntimeRetryExhaustedError,
+    StaleCheckpointError,
+)
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+def _clarification_outcome(request: QueryRequest, outcome: ClarificationRequired) -> QueryOutcome:
+    """Public clarification outcome from a model clarification request."""
+    clarification = outcome.clarification
+    return _outcome(
+        request,
+        status=OutcomeStatus.CLARIFICATION,
+        clarification=QueryClarification(
+            clarification_id=clarification.clarification_id,
+            question=clarification.question,
+            options=tuple(
+                QueryClarificationOption(
+                    option_id=option.option_id,
+                    label=option.label,
+                    detail=option.detail,
+                )
+                for option in clarification.options
+            ),
+        ),
+    )
+
+
+def _rejected_model_outcome(request: QueryRequest, outcome: RejectedIntent) -> QueryOutcome:
+    """Public rejection outcome from a normalized model error record."""
+    record = outcome.error
+    return _outcome(
+        request,
+        status=OutcomeStatus.REJECTED,
+        error=ErrorRecord(
+            code=ErrorCode.MODEL_INVOCATION_FAILED,
+            category=ErrorCategory.MODEL,
+            message=record.message,
+            retryable=record.retryable,
+            details={**record.safe_dump().get("details", {}), "model_code": record.code.value},
+        ),
+    )
+
+
+def _memory_clarification_outcome(
+    request: QueryRequest, resolution: MultiTurnResolution
+) -> QueryOutcome:
+    """Structured public clarification for missing or stale prior context."""
+    if resolution.memory_unavailable:
+        question = (
+            "Earlier context is unavailable; please restate the request with full details."
+        )
+    else:
+        question = (
+            "Your request depends on earlier context that is missing or stale; "
+            "please restate the request with full details."
+        )
+    return _outcome(
+        request,
+        status=OutcomeStatus.CLARIFICATION,
+        clarification=QueryClarification(
+            clarification_id=f"memory-clarification-{request.request_id}",
+            question=question,
+            options=(
+                QueryClarificationOption(
+                    option_id="restate", label="Restate the request with full details"
+                ),
+            ),
+        ),
+    )
+
+
+def _not_configured(request: QueryRequest) -> QueryOutcome:
+    """The stable not-configured fallback shared by every runner path."""
+    return _outcome(
+        request,
+        status=OutcomeStatus.NOT_CONFIGURED,
+        error=ErrorRecord(
+            code=ErrorCode.NOT_CONFIGURED,
+            category=ErrorCategory.NOT_CONFIGURED,
+            message=NOT_CONFIGURED_MESSAGE,
+            retryable=False,
+        ),
+    )
+
+
+def _rejected(request: QueryRequest, error: ErrorRecord) -> QueryOutcome:
+    return _outcome(request, status=OutcomeStatus.REJECTED, error=error)
+
+
+def _failed(request: QueryRequest, error: NL2DataError) -> QueryOutcome:
+    return _outcome(request, status=OutcomeStatus.FAILED, error=as_error_record(error))
+
+
+@dataclass(frozen=True)
+class _GraphOptions:
+    """Immutable options of one graph run, shared by plain and durable paths."""
+
+    workflow_id: str
+    scope_fingerprint: str | None
+    deadline: WorkflowDeadline
+    compatibility: dict[str, str]
+    start_stage: WorkflowStage = WorkflowStage.INITIALIZE
+    cancellation_requested: bool = False
+    durable: _DurableBinding | None = None
+
+
+class _DurableBinding:
+    """Checkpoint/commit facade over one durable workflow execution.
+
+    Every persisted mutation is compare-and-set on the stored revision so a
+    concurrent executor can never silently overwrite a checkpoint.
+    """
+
+    def __init__(
+        self,
+        *,
+        store: StateStore,
+        workflow_id: str,
+        state: WorkflowState,
+        scope_fingerprint: str | None,
+    ) -> None:
+        self._store = store
+        self._workflow_id = workflow_id
+        self._state = state
+        self._scope_fingerprint = scope_fingerprint
+
+    @property
+    def state(self) -> WorkflowState:
+        """The latest persisted workflow state."""
+        return self._state
+
+    def checkpoint(
+        self,
+        *,
+        stage: WorkflowStage,
+        compatibility_fingerprints: dict[str, str],
+        gate_evidence_fingerprints: frozenset[str],
+    ) -> None:
+        """Persist a stage checkpoint without changing the workflow status."""
+        next_state = checkpoint(
+            self._state,
+            stage=stage,
+            event_id=f"ev-{uuid4().hex[:16]}",
+            compatibility_fingerprints=compatibility_fingerprints,
+            gate_evidence_fingerprints=gate_evidence_fingerprints,
+        )
+        self._persist(next_state)
+
+    def mark_cancelled(self) -> None:
+        """Persist a cooperative cancellation request so resume fails fast."""
+        next_state = checkpoint(
+            self._state,
+            stage=self._state.current_stage or WorkflowStage.INITIALIZE,
+            event_id=f"ev-{uuid4().hex[:16]}",
+            cancellation_requested=True,
+        )
+        self._persist(next_state)
+
+    def step(self, target: WorkflowStatus) -> None:
+        """Persist one validated terminal status transition."""
+        next_state = transition(
+            self._state, target, event_id=f"ev-{uuid4().hex[:16]}"
+        )
+        self._persist(next_state)
+
+    def _persist(self, next_state: WorkflowState) -> None:
+        revision = self._store.get_revision(
+            self._workflow_id, tenant_scope_fingerprint=self._scope_fingerprint
+        )
+        self._store.update(
+            self._workflow_id,
+            self._state.status,
+            next_state,
+            expected_version=revision,
+            tenant_scope_fingerprint=self._scope_fingerprint,
+        )
+        self._state = next_state
+
+
+class _NodeBase:
+    """Base class for deterministic graph nodes.
+
+    A node reads and writes the per-execution channel; it never mutates the
+    immutable execution context and never raises raw provider exceptions.
+    """
+
+    stage: WorkflowStage
+
+    def __init__(
+        self, runtime: DeterministicWorkflowRuntime, channel: dict[str, Any]
+    ) -> None:
+        self._runtime = runtime
+        self._channel = channel
+
+    async def run(self, context: WorkflowExecutionContext) -> StageResult:
+        raise NotImplementedError
+
+
+class _InitializeNode(_NodeBase):
+    """Tenant-scope validation and current-turn context preparation."""
+
+    stage = WorkflowStage.INITIALIZE
+
+    async def run(self, context: WorkflowExecutionContext) -> StageResult:
+        request = context.request
+        runtime = self._runtime
+        hint = request.context.tenant_hint if request.context is not None else None
+        if hint is None and runtime.tenant_context is None:
+            return StageResult(
+                stage=self.stage,
+                status=RuntimeOutcomeStatus.SUCCEEDED,
+                next_stage=WorkflowStage.MEMORY,
+            )
+        validation = validate_tenant_scope(runtime.tenant_context, client_tenant_hint=hint)
+        if validation.valid:
+            return StageResult(
+                stage=self.stage,
+                status=RuntimeOutcomeStatus.SUCCEEDED,
+                next_stage=WorkflowStage.MEMORY,
+            )
+        return StageResult(
+            stage=self.stage,
+            status=RuntimeOutcomeStatus.REJECTED,
+            outcome=_rejected(
+                request,
+                ErrorRecord(
+                    code=ErrorCode.TENANT_CONTEXT_REJECTED,
+                    category=ErrorCategory.GOVERNANCE,
+                    message="tenant-scoped execution was denied by trusted context validation",
+                    details={"reasons": "; ".join(validation.reasons)},
+                ),
+            ),
+        )
+
+
+class _MemoryNode(_NodeBase):
+    """Memory recall; clarification branches when prior context is required."""
+
+    stage = WorkflowStage.MEMORY
+
+    async def run(self, context: WorkflowExecutionContext) -> StageResult:
+        runtime = self._runtime
+        resolution = MultiTurnResolver(
+            provider=runtime.memory,
+            view=runtime.view,
+            semantic_references=runtime.references,
+            turn=self._channel["turn"],
+            recall_budget=runtime.memory_budget,
+            now=runtime._now(),
+        ).resolve(context.request)
+        if resolution.kind is MultiTurnResolutionKind.CLARIFICATION:
+            return StageResult(
+                stage=self.stage,
+                status=RuntimeOutcomeStatus.CLARIFICATION,
+                outcome=_memory_clarification_outcome(context.request, resolution),
+            )
+        context_extra = None
+        if (
+            resolution.kind is MultiTurnResolutionKind.PROJECTED
+            and resolution.projection is not None
+        ):
+            context_extra = resolution.projection.safe_payload()
+        self._channel["resolution"] = resolution
+        self._channel["context_extra"] = context_extra
+        return StageResult(
+            stage=self.stage,
+            status=RuntimeOutcomeStatus.SUCCEEDED,
+            next_stage=WorkflowStage.INTENT,
+        )
+
+
+class _IntentNode(_NodeBase):
+    """Intent resolution through the model provider with bounded retries."""
+
+    stage = WorkflowStage.INTENT
+
+    async def run(self, context: WorkflowExecutionContext) -> StageResult:
+        runtime = self._runtime
+        request = context.request
+        provider = runtime.provider
+        if provider is None:
+            return StageResult(
+                stage=self.stage,
+                status=RuntimeOutcomeStatus.FAILED,
+                outcome=_not_configured(request),
+            )
+        try:
+            outcome = await IntentResolver(
+                view=runtime.view,
+                semantic_references=runtime.references,
+                config=runtime.config,
+                min_confidence=runtime.min_confidence,
+            ).resolve(request, provider, context_extra=self._channel.get("context_extra"))
+        except Exception as error:
+            return StageResult(
+                stage=self.stage,
+                status=RuntimeOutcomeStatus.FAILED,
+                outcome=_outcome(
+                    request,
+                    status=OutcomeStatus.FAILED,
+                    error=as_error_record(error),
+                ),
+            )
+        if isinstance(outcome, ResolvedIntent):
+            self._channel["intent_outcome"] = outcome
+            return StageResult(
+                stage=self.stage,
+                status=RuntimeOutcomeStatus.SUCCEEDED,
+                next_stage=WorkflowStage.PLAN,
+            )
+        if isinstance(outcome, ClarificationRequired):
+            return StageResult(
+                stage=self.stage,
+                status=RuntimeOutcomeStatus.CLARIFICATION,
+                outcome=_clarification_outcome(request, outcome),
+            )
+        return StageResult(
+            stage=self.stage,
+            status=RuntimeOutcomeStatus.REJECTED,
+            outcome=_rejected_model_outcome(request, outcome),
+        )
+
+
+class _PlanNode(_NodeBase):
+    """Plan building from the validated structured intent."""
+
+    stage = WorkflowStage.PLAN
+
+    async def run(self, context: WorkflowExecutionContext) -> StageResult:
+        runtime = self._runtime
+        outcome = self._channel["intent_outcome"]
+        if not isinstance(outcome, ResolvedIntent):
+            raise RuntimeGateError(
+                "plan stage requires a resolved intent",
+                details={"stage": self.stage.value},
+            )
+        try:
+            plan = build_plan_from_intent(
+                outcome.intent,
+                binding=runtime.binding,
+                catalog_fingerprint=runtime.view.catalog_fingerprint,
+            )
+        except Exception as error:
+            return StageResult(
+                stage=self.stage,
+                status=RuntimeOutcomeStatus.FAILED,
+                outcome=_outcome(
+                    context.request, status=OutcomeStatus.FAILED, error=as_error_record(error)
+                ),
+            )
+        self._channel["plan"] = plan
+        return StageResult(
+            stage=self.stage,
+            status=RuntimeOutcomeStatus.SUCCEEDED,
+            next_stage=WorkflowStage.VALIDATE,
+        )
+
+
+class _ValidateNode(_NodeBase):
+    """Plan structure/view validation and artifact parse/validate.
+
+    Produces the plan-validation and artifact-validation gate evidence that
+    adapter execution later requires.
+    """
+
+    stage = WorkflowStage.VALIDATE
+
+    async def run(self, context: WorkflowExecutionContext) -> StageResult:
+        runtime = self._runtime
+        plan = self._channel["plan"]
+        structure = validate_plan_structure(plan)
+        view_result = validate_plan_against_view(plan, view=runtime.view)
+        if not structure.valid or not view_result.valid:
+            issue_codes = sorted(set(structure.issue_codes() + view_result.issue_codes()))
+            return StageResult(
+                stage=self.stage,
+                status=RuntimeOutcomeStatus.REJECTED,
+                outcome=_rejected(
+                    context.request,
+                    ErrorRecord(
+                        code=ErrorCode.PLAN_VALIDATION_FAILED,
+                        category=ErrorCategory.VALIDATION,
+                        message="semantic plan failed validation",
+                        details={"issue_codes": ",".join(issue_codes)},
+                    ),
+                ),
+            )
+        try:
+            sql = compile_plan(plan)
+            validation_context = ValidationContext(
+                snapshot_fingerprint=plan.lineage.catalog_fingerprint
+            )
+            parsed = runtime.adapter.parse(sql, validation_context)
+            validated = runtime.adapter.validate(parsed, validation_context)
+        except Exception as error:
+            return StageResult(
+                stage=self.stage,
+                status=RuntimeOutcomeStatus.REJECTED,
+                outcome=_rejected(context.request, as_error_record(error)),
+            )
+        self._channel["validated"] = validated
+        self._channel["validation_context"] = validation_context
+        gate_evidence: dict[WorkflowGate, str] = self._channel["gate_evidence"]
+        gate_evidence[WorkflowGate.PLAN_VALIDATION] = sha256_fingerprint(
+            {"plan": plan.fingerprint, "structure": "valid", "view": "valid"}
+        )
+        gate_evidence[WorkflowGate.ARTIFACT_VALIDATION] = validated.fingerprint
+        return StageResult(
+            stage=self.stage,
+            status=RuntimeOutcomeStatus.SUCCEEDED,
+            next_stage=WorkflowStage.GOVERN,
+        )
+
+
+class _GovernNode(_NodeBase):
+    """Governance evaluation; denial is a terminal rejection branch."""
+
+    stage = WorkflowStage.GOVERN
+
+    async def run(self, context: WorkflowExecutionContext) -> StageResult:
+        runtime = self._runtime
+        plan = self._channel["plan"]
+        scope_fingerprint = context.tenant_scope_fingerprint
+        isolation_profile = runtime.isolation_profile
+        policy_scope = runtime.policy_scope
+        if runtime.tenant_context is not None and (
+            policy_scope.tenant_scope_fingerprint != scope_fingerprint
+            or policy_scope.isolation_profile != isolation_profile
+        ):
+            return StageResult(
+                stage=self.stage,
+                status=RuntimeOutcomeStatus.REJECTED,
+                outcome=_rejected(
+                    context.request,
+                    ErrorRecord(
+                        code=ErrorCode.GOVERNANCE_DENIED,
+                        category=ErrorCategory.GOVERNANCE,
+                        message="tenant-scoped execution requires a matching tenant policy",
+                        retryable=False,
+                    ),
+                ),
+            )
+        decision = runtime.evaluator.evaluate(
+            runtime._facts_from_plan(
+                plan,
+                tenant_scope_fingerprint=scope_fingerprint,
+                isolation_profile=isolation_profile,
+            ),
+            policy_scope,
+        )
+        if decision.decision != GovernanceDecision.ALLOW:
+            return StageResult(
+                stage=self.stage,
+                status=RuntimeOutcomeStatus.REJECTED,
+                outcome=_rejected(
+                    context.request,
+                    ErrorRecord(
+                        code=ErrorCode.GOVERNANCE_DENIED,
+                        category=ErrorCategory.GOVERNANCE,
+                        message="query is denied by policy",
+                        details={"reasons": "; ".join(decision.reasons)},
+                    ),
+                ),
+            )
+        gate_evidence: dict[WorkflowGate, str] = self._channel["gate_evidence"]
+        gate_evidence[WorkflowGate.GOVERNANCE] = sha256_fingerprint(
+            {"policy": policy_scope.policy_fingerprint, "decision": "allow"}
+        )
+        return StageResult(
+            stage=self.stage,
+            status=RuntimeOutcomeStatus.SUCCEEDED,
+            next_stage=WorkflowStage.AUTHORIZE,
+        )
+
+
+class _AuthorizeNode(_NodeBase):
+    """Artifact-bound authorization issuance and verification.
+
+    An approval-required hook is a bounded extension point: when set and
+    satisfied, the workflow branches to a terminal approval-required
+    rejection before any adapter invocation.
+    """
+
+    stage = WorkflowStage.AUTHORIZE
+
+    async def run(self, context: WorkflowExecutionContext) -> StageResult:
+        runtime = self._runtime
+        plan = self._channel["plan"]
+        validated = self._channel["validated"]
+        scope_fingerprint = context.tenant_scope_fingerprint
+        isolation_profile = runtime.isolation_profile
+        policy_scope = runtime.policy_scope
+        if runtime.approval_required is not None and runtime.approval_required(plan):
+            raise ApprovalRequiredError(
+                "plan requires human approval before adapter execution",
+                details={"stage": self.stage.value},
+            )
+        capabilities = runtime.adapter.capabilities()
+        authorization = runtime.issuer.issue(
+            policy_scope=policy_scope,
+            adapter_type=capabilities.adapter_type,
+            source_id=plan.source_id,
+            operation="select",
+            artifact_fingerprint=validated.fingerprint,
+            tenant_scope_fingerprint=scope_fingerprint,
+            isolation_profile=isolation_profile,
+            effective_limits=runtime.effective_limits,
+            mandatory_filter_fingerprints=plan.filter_fingerprints(),
+            ttl_seconds=runtime.ttl_seconds,
+        )
+        verification = runtime.verifier.verify(
+            authorization,
+            artifact_fingerprint=validated.fingerprint,
+            adapter_type=capabilities.adapter_type,
+            source_id=plan.source_id,
+            operation="select",
+            filter_fingerprints=plan.filter_fingerprints(),
+            tenant_scope_fingerprint=scope_fingerprint,
+            isolation_profile=isolation_profile,
+        )
+        if not verification.verified:
+            return StageResult(
+                stage=self.stage,
+                status=RuntimeOutcomeStatus.REJECTED,
+                outcome=_rejected(
+                    context.request,
+                    ErrorRecord(
+                        code=ErrorCode.AUTHORIZATION_REJECTED,
+                        category=ErrorCategory.GOVERNANCE,
+                        message="execution authorization could not be verified",
+                        details={"reasons": "; ".join(verification.reasons)},
+                    ),
+                ),
+            )
+        self._channel["authorization"] = authorization
+        gate_evidence: dict[WorkflowGate, str] = self._channel["gate_evidence"]
+        gate_evidence[WorkflowGate.AUTHORIZATION] = authorization_evidence_fingerprint(
+            authorization
+        )
+        return StageResult(
+            stage=self.stage,
+            status=RuntimeOutcomeStatus.SUCCEEDED,
+            next_stage=WorkflowStage.EXECUTE,
+        )
+
+
+class _ExecuteNode(_NodeBase):
+    """Adapter execution bounded by the workflow deadline.
+
+    The deadline is cooperative: the adapter call is wrapped with the
+    remaining budget so a slow adapter cannot outlive the workflow.  Only
+    retryable :class:`NL2DataError` failures propagate to the bounded node
+    retry loop; everything else becomes a terminal failure outcome.
+    """
+
+    stage = WorkflowStage.EXECUTE
+
+    async def run(self, context: WorkflowExecutionContext) -> StageResult:
+        runtime = self._runtime
+        request = context.request
+        validated = self._channel["validated"]
+        validation_context = self._channel["validation_context"]
+        authorization = self._channel["authorization"]
+        limits = authorization.effective_limits
+        bounded = validation_context.model_copy(
+            update={
+                "limits": (
+                    validation_context.limits.model_copy(
+                        update={"max_result_rows": limits.max_rows}
+                    )
+                    if validation_context.limits is not None
+                    else AdapterLimits(max_result_rows=limits.max_rows)
+                ),
+                "execution_timeout_seconds": limits.max_execution_seconds,
+                "max_result_bytes": limits.max_result_bytes,
+            }
+        )
+        remaining = context.deadline.remaining_seconds(now=runtime._now())
+        timeout = min(remaining, limits.max_execution_seconds)
+        if timeout <= 0.0:
+            raise RuntimeTimeoutError(
+                "workflow deadline expired before adapter execution",
+                details={"stage": self.stage.value},
+            )
+        try:
+            execution = await asyncio.wait_for(
+                runtime.adapter.execute(validated, bounded), timeout=timeout
+            )
+        except TimeoutError as error:
+            raise RuntimeTimeoutError(
+                "adapter execution exceeded the workflow deadline",
+                details={"stage": self.stage.value, "timeout_seconds": str(timeout)},
+            ) from error
+        except NL2DataError as error:
+            if error.retryable:
+                raise
+            return StageResult(
+                stage=self.stage,
+                status=RuntimeOutcomeStatus.FAILED,
+                outcome=_failed(request, error),
+            )
+        except Exception as error:
+            return StageResult(
+                stage=self.stage,
+                status=RuntimeOutcomeStatus.FAILED,
+                outcome=_outcome(
+                    request, status=OutcomeStatus.FAILED, error=as_error_record(error)
+                ),
+            )
+        self._channel["execution"] = execution
+        return StageResult(
+            stage=self.stage,
+            status=RuntimeOutcomeStatus.SUCCEEDED,
+            next_stage=WorkflowStage.PROTECT,
+        )
+
+
+class _ProtectNode(_NodeBase):
+    """Public result protection and successful outcome construction."""
+
+    stage = WorkflowStage.PROTECT
+
+    async def run(self, context: WorkflowExecutionContext) -> StageResult:
+        request = context.request
+        plan = self._channel["plan"]
+        execution = self._channel["execution"]
+        authorization = self._channel["authorization"]
+        try:
+            result = protect_result(execution, plan=plan, limits=authorization.effective_limits)
+        except ResultProtectionError as error:
+            return StageResult(
+                stage=self.stage,
+                status=RuntimeOutcomeStatus.FAILED,
+                outcome=_outcome(
+                    request, status=OutcomeStatus.FAILED, error=error.to_record()
+                ),
+            )
+        self._channel["result"] = result
+        self._channel["outcome"] = _outcome(
+            request,
+            status=OutcomeStatus.SUCCEEDED,
+            result=result,
+            workflow_id=context.workflow_id,
+            tenant_scope_fingerprint=context.tenant_scope_fingerprint,
+        )
+        return StageResult(
+            stage=self.stage,
+            status=RuntimeOutcomeStatus.SUCCEEDED,
+            next_stage=WorkflowStage.PERSIST,
+        )
+
+
+class _PersistNode(_NodeBase):
+    """Memory write-back; recording failures never fail the query."""
+
+    stage = WorkflowStage.PERSIST
+
+    async def run(self, context: WorkflowExecutionContext) -> StageResult:
+        runtime = self._runtime
+        memory = runtime.memory
+        if memory is not None:
+            with contextlib.suppress(Exception):
+                intent_outcome = self._channel["intent_outcome"]
+                plan = self._channel["plan"]
+                result = self._channel.get("result")
+                record_query_reference(
+                    provider=memory,
+                    turn=self._channel["turn"],
+                    intent_fingerprint=intent_outcome.intent.fingerprint,
+                    plan_fingerprint=plan.fingerprint,
+                    artifact_fingerprint=(
+                        result.fingerprint if result is not None else None
+                    ),
+                    source_id=intent_outcome.intent.source_id,
+                    root_entity_id=intent_outcome.intent.root_entity_id,
+                    field_ids=intent_outcome.intent.field_ids(),
+                    ttl_seconds=runtime.memory_ttl_seconds,
+                )
+        return StageResult(
+            stage=self.stage,
+            status=RuntimeOutcomeStatus.SUCCEEDED,
+            next_stage=WorkflowStage.COMPLETE,
+        )
+
+
+class _CompleteNode(_NodeBase):
+    """Terminal success: returns the protected public outcome."""
+
+    stage = WorkflowStage.COMPLETE
+
+    async def run(self, context: WorkflowExecutionContext) -> StageResult:
+        return StageResult(
+            stage=self.stage,
+            status=RuntimeOutcomeStatus.SUCCEEDED,
+            outcome=self._channel["outcome"],
+        )
+
+
+#: Stage identity to node class for the deterministic graph.
+_NODES: dict[WorkflowStage, type[_NodeBase]] = {
+    WorkflowStage.INITIALIZE: _InitializeNode,
+    WorkflowStage.MEMORY: _MemoryNode,
+    WorkflowStage.INTENT: _IntentNode,
+    WorkflowStage.PLAN: _PlanNode,
+    WorkflowStage.VALIDATE: _ValidateNode,
+    WorkflowStage.GOVERN: _GovernNode,
+    WorkflowStage.AUTHORIZE: _AuthorizeNode,
+    WorkflowStage.EXECUTE: _ExecuteNode,
+    WorkflowStage.PROTECT: _ProtectNode,
+    WorkflowStage.PERSIST: _PersistNode,
+    WorkflowStage.COMPLETE: _CompleteNode,
+}
+
+
+class DeterministicWorkflowRuntime:
+    """The deterministic governed workflow graph.
+
+    The runtime composes the existing AI, Memory, Tenant, Governance,
+    Adapter, Result Protection, StateStore, and idempotency boundaries in
+    one explicit ordered graph.  When the full AI path is not configured it
+    reports not-configured exactly like every other runner; the P1
+    structured-plan fallback remains owned by :class:`QueryExecutionRunner`.
+
+    ``now`` injects the clock for deterministic deadline/cancellation tests;
+    ``approval_required`` is a bounded extension point that rejects a plan
+    before adapter execution when human approval is required.
+    """
+
+    def __init__(
+        self,
+        *,
+        provider: ModelProvider | None = None,
+        execution: QueryExecutionRunner | None = None,
+        semantic_references: Mapping[str, SemanticReference] | None = None,
+        binding: PhysicalBinding | None = None,
+        config: ModelConfig | None = None,
+        min_confidence: float = 0.6,
+        memory: MemoryProvider | None = None,
+        memory_budget: MemoryRecallBudget | None = None,
+        memory_ttl_seconds: int = 86_400,
+        budget: WorkflowBudget | None = None,
+        state_store: StateStore | None = None,
+        idempotency_ttl_seconds: float = 86_400.0,
+        approval_required: Callable[[SemanticQueryPlan], bool] | None = None,
+        now: Callable[[], datetime] | None = None,
+    ) -> None:
+        self._provider = provider
+        self._execution = execution
+        self._references = dict(semantic_references or {})
+        self._binding = binding
+        self._config = config or ModelConfig()
+        self._min_confidence = min_confidence
+        self._memory = memory
+        self._memory_budget = memory_budget
+        self._memory_ttl_seconds = memory_ttl_seconds
+        self._budget = budget or WorkflowBudget()
+        self._state_store = state_store
+        self._idempotency_ttl_seconds = idempotency_ttl_seconds
+        self._approval_required = approval_required
+        self._now_fn = now or _utc_now
+
+    # -- bound components ---------------------------------------------------
+
+    @property
+    def provider(self) -> ModelProvider | None:
+        """The bound model provider, or ``None`` for the P1 fallback path."""
+        return self._provider
+
+    @property
+    def memory(self) -> MemoryProvider | None:
+        """The bound memory provider, or ``None`` for stateless recall."""
+        return self._memory
+
+    @property
+    def references(self) -> dict[str, SemanticReference]:
+        """The bound semantic references used for context assembly."""
+        return self._references
+
+    @property
+    def binding(self) -> PhysicalBinding | None:
+        """The bound physical binding used for plan compilation, if any."""
+        return self._binding
+
+    @property
+    def config(self) -> ModelConfig:
+        """The bound model invocation configuration."""
+        return self._config
+
+    @property
+    def min_confidence(self) -> float:
+        """The minimum intent confidence accepted by the resolver."""
+        return self._min_confidence
+
+    @property
+    def memory_budget(self) -> MemoryRecallBudget | None:
+        """The bound memory recall budget, if any."""
+        return self._memory_budget
+
+    @property
+    def memory_ttl_seconds(self) -> int:
+        """The write-back TTL applied to recorded query references."""
+        return self._memory_ttl_seconds
+
+    @property
+    def approval_required(self) -> Callable[[SemanticQueryPlan], bool] | None:
+        """The bounded approval-required hook, if any."""
+        return self._approval_required
+
+    @property
+    def tenant_context(self) -> TenantScopeContext | None:
+        """The trusted tenant scope bound to the governed path."""
+        if self._execution is None:
+            return None
+        return self._execution.tenant_context
+
+    @property
+    def isolation_profile(self) -> str | None:
+        """The isolation profile of the trusted tenant scope, if any."""
+        tenant = self.tenant_context
+        if tenant is None:
+            return None
+        return tenant.tenant.isolation_profile.value
+
+    @property
+    def view(self) -> AuthorizedView:
+        """The authorized view of the governed path (configured only)."""
+        execution = self._execution
+        assert execution is not None and execution.view is not None
+        return execution.view
+
+    @property
+    def policy_scope(self) -> PolicyScope:
+        """The policy scope of the governed path (configured only)."""
+        execution = self._execution
+        assert execution is not None and execution.policy_scope is not None
+        return execution.policy_scope
+
+    @property
+    def adapter(self) -> QueryAdapter:
+        """The adapter bound to the governed path (configured only)."""
+        components = self.components
+        assert components is not None
+        return components.adapter
+
+    @property
+    def evaluator(self) -> PolicyEvaluator:
+        """The policy evaluator bound to the governed path."""
+        components = self.components
+        assert components is not None
+        return components.evaluator
+
+    @property
+    def issuer(self) -> AuthorizationIssuer:
+        """The authorization issuer bound to the governed path."""
+        components = self.components
+        assert components is not None
+        return components.issuer
+
+    @property
+    def verifier(self) -> AuthorizationVerifier:
+        """The authorization verifier bound to the governed path."""
+        components = self.components
+        assert components is not None
+        return components.verifier
+
+    @property
+    def effective_limits(self) -> EffectiveLimits:
+        """The effective execution limits bound to the governed path."""
+        components = self.components
+        assert components is not None
+        return components.effective_limits
+
+    @property
+    def ttl_seconds(self) -> float:
+        """The authorization TTL bound to the governed path."""
+        components = self.components
+        assert components is not None
+        return components.ttl_seconds
+
+    @property
+    def components(self) -> QueryExecutionComponents | None:
+        """The frozen governed components, or ``None`` when not configured."""
+        if self._execution is None:
+            return None
+        return self._execution.components()
+
+    # -- lifecycle ----------------------------------------------------------
+
+    def is_configured(self) -> bool:
+        """Whether the full AI path is available; otherwise fallbacks apply."""
+        return (
+            self._provider is not None
+            and self._execution is not None
+            and self._execution.is_configured()
+        )
+
+    async def execute(
+        self,
+        request: QueryRequest,
+        *,
+        cancellation: WorkflowCancellation | None = None,
+    ) -> QueryOutcome:
+        """Execute one request through the deterministic graph."""
+        if not self.is_configured():
+            return _not_configured(request)
+        if self._state_store is None:
+            return await self._execute_plain(request, cancellation=cancellation)
+        try:
+            return await self._execute_durable(request, cancellation=cancellation)
+        except NL2DataError as error:
+            return _outcome(
+                request, status=OutcomeStatus.FAILED, error=as_error_record(error)
+            )
+
+    async def close(self) -> None:
+        """Release the provider and the governed execution (idempotent)."""
+        if self._provider is not None:
+            await self._provider.close()
+        if self._execution is not None:
+            await self._execution.close()
+
+    # -- graph execution ----------------------------------------------------
+
+    async def _execute_plain(
+        self, request: QueryRequest, *, cancellation: WorkflowCancellation | None
+    ) -> QueryOutcome:
+        turn, compat = self._prepare_turn(request)
+        deadline = WorkflowDeadline.from_budget(self._budget, now=self._now())
+        options = _GraphOptions(
+            workflow_id=self._resolve_workflow_id(request),
+            scope_fingerprint=self._scope_fingerprint(),
+            deadline=deadline,
+            compatibility=compat,
+            cancellation_requested=bool(
+                cancellation is not None and cancellation.requested
+            ),
+        )
+        return await self._execute_graph(request, options, turn=turn, cancellation=cancellation)
+
+    async def _execute_durable(
+        self, request: QueryRequest, *, cancellation: WorkflowCancellation | None
+    ) -> QueryOutcome:
+        store = self._state_store
+        assert store is not None
+        scope_fingerprint = self._scope_fingerprint()
+        turn, compat = self._prepare_turn(request)
+        idempotency: IdempotencyStore | None = (
+            store if isinstance(store, IdempotencyStore) else None
+        )
+        existing_idempotency = (
+            idempotency.get_idempotency(
+                request.request_id, tenant_scope_fingerprint=scope_fingerprint
+            )
+            if idempotency is not None
+            else None
+        )
+        workflow_id = (
+            existing_idempotency.workflow_id
+            if existing_idempotency is not None
+            else self._resolve_workflow_id(request)
+        )
+        if idempotency is not None:
+            try:
+                record = idempotency.reserve_idempotency(
+                    request.request_id,
+                    request_id=request.request_id,
+                    workflow_id=workflow_id,
+                    tenant_scope_fingerprint=scope_fingerprint,
+                    expires_at=datetime.now(UTC)
+                    + timedelta(seconds=self._idempotency_ttl_seconds),
+                )
+            except IdempotencyConflictError as error:
+                return _rejected(request, error.to_record())
+            if (
+                record.status == IdempotencyStatus.COMPLETED
+                and record.terminal_outcome_fingerprint is not None
+            ):
+                return self._duplicate_outcome(
+                    request,
+                    record.workflow_id,
+                    record.terminal_outcome_fingerprint,
+                    scope_fingerprint,
+                )
+
+        checkpoint_state = store.get_checkpoint(
+            workflow_id, request.request_id, tenant_scope_fingerprint=scope_fingerprint
+        )
+        if checkpoint_state is None:
+            deadline = WorkflowDeadline.from_budget(self._budget, now=self._now())
+            created = WorkflowState(
+                workflow_id=workflow_id,
+                request_id=request.request_id,
+                tenant_scope_fingerprint=scope_fingerprint,
+                status=WorkflowStatus.CREATED,
+                budget=self._budget,
+                compatibility_fingerprints=compat,
+                deadline_at=deadline.deadline_at,
+            )
+            store.create(created)
+            state = created
+        else:
+            if checkpoint_state.status in TERMINAL_STATUSES:
+                fingerprint = None
+                if idempotency is not None:
+                    completed = idempotency.get_idempotency(
+                        request.request_id, tenant_scope_fingerprint=scope_fingerprint
+                    )
+                    if completed is not None:
+                        fingerprint = completed.terminal_outcome_fingerprint
+                return self._duplicate_outcome(
+                    request, workflow_id, fingerprint, scope_fingerprint
+                )
+            try:
+                state = self._validate_resume(checkpoint_state, compat)
+            except _RESUME_REJECTED_ERRORS as error:
+                return _outcome(
+                    request,
+                    status=OutcomeStatus.REJECTED,
+                    error=as_error_record(error),
+                    workflow_id=workflow_id,
+                    tenant_scope_fingerprint=scope_fingerprint,
+                )
+            except RuntimeRecoverableError as error:
+                return _outcome(
+                    request,
+                    status=OutcomeStatus.FAILED,
+                    error=as_error_record(error),
+                    workflow_id=workflow_id,
+                    tenant_scope_fingerprint=scope_fingerprint,
+                )
+            deadline = (
+                WorkflowDeadline(deadline_at=state.deadline_at)
+                if state.deadline_at is not None
+                else WorkflowDeadline.from_budget(self._budget, now=self._now())
+            )
+
+        state = self._advance_to_running(
+            store, workflow_id, request, state, scope_fingerprint=scope_fingerprint
+        )
+        binding = _DurableBinding(
+            store=store,
+            workflow_id=workflow_id,
+            state=state,
+            scope_fingerprint=scope_fingerprint,
+        )
+        options = _GraphOptions(
+            workflow_id=workflow_id,
+            scope_fingerprint=scope_fingerprint,
+            deadline=deadline,
+            compatibility=compat,
+            start_stage=state.current_stage or WorkflowStage.INITIALIZE,
+            cancellation_requested=state.cancellation_requested,
+            durable=binding,
+        )
+        outcome = await self._execute_graph(
+            request, options, turn=turn, cancellation=cancellation
+        )
+        if outcome.workflow_id is None:
+            outcome = outcome.model_copy(
+                update={
+                    "workflow_id": workflow_id,
+                    "tenant_scope_fingerprint": scope_fingerprint,
+                }
+            )
+        if (
+            outcome.status is OutcomeStatus.REJECTED
+            and outcome.error is not None
+            and outcome.error.code is ErrorCode.WORKFLOW_CANCELLED
+        ):
+            # The public outcome stands; the stored cancellation flag keeps
+            # later resumes failing fast when the commit failed.
+            with contextlib.suppress(NL2DataError):
+                binding.mark_cancelled()
+        if outcome.status in (OutcomeStatus.SUCCEEDED, OutcomeStatus.FAILED):
+            target = (
+                WorkflowStatus.SUCCEEDED
+                if outcome.status == OutcomeStatus.SUCCEEDED
+                else WorkflowStatus.FAILED
+            )
+            try:
+                binding.step(target)
+                if idempotency is not None and outcome.status == OutcomeStatus.SUCCEEDED:
+                    idempotency.complete_idempotency(
+                        request.request_id,
+                        workflow_id=workflow_id,
+                        terminal_outcome_fingerprint=terminal_outcome_fingerprint(outcome),
+                        tenant_scope_fingerprint=scope_fingerprint,
+                    )
+            except NL2DataError:
+                # The public outcome stands; the durable state remains
+                # reconcilable (at-least-once) if the commit failed.
+                pass
+        return outcome
+
+    async def _execute_graph(
+        self,
+        request: QueryRequest,
+        options: _GraphOptions,
+        *,
+        turn: CurrentTurnContext,
+        cancellation: WorkflowCancellation | None,
+    ) -> QueryOutcome:
+        """Run the ordered graph from ``options.start_stage`` onward.
+
+        Every stage entry re-validates mandatory gates, the cooperative
+        deadline, and cancellation.  A stage checkpoint is persisted after
+        each successful stage when a durable binding is attached.
+        """
+        scope_fingerprint = options.scope_fingerprint
+        base_evidence = {
+            WorkflowGate.TENANT_SCOPE: sha256_fingerprint(
+                {"tenant_scope": scope_fingerprint}
+            ),
+            WorkflowGate.DEADLINE: sha256_fingerprint(
+                {"deadline_at": options.deadline.deadline_at.isoformat()}
+            ),
+        }
+        channel: dict[str, Any] = {
+            "gate_evidence": dict(base_evidence),
+            "compat": dict(options.compatibility),
+            "turn": turn,
+        }
+        cancellation_ctx = cancellation or WorkflowCancellation()
+        if options.cancellation_requested:
+            cancellation_ctx = WorkflowCancellation(
+                requested=True, reason=cancellation_ctx.reason
+            )
+        context = WorkflowExecutionContext(
+            request=request,
+            workflow_id=options.workflow_id,
+            tenant_scope_fingerprint=scope_fingerprint,
+            current_stage=options.start_stage,
+            budget=self._budget,
+            deadline=options.deadline,
+            cancellation=cancellation_ctx,
+            compatibility_fingerprints=dict(options.compatibility),
+            gate_evidence_fingerprints=frozenset(base_evidence.values()),
+        )
+        stage = options.start_stage
+        while stage is not None:
+            try:
+                result = await self._run_stage(
+                    stage, context, channel, durable=options.durable
+                )
+            except RuntimeTimeoutError as error:
+                return self._branch_outcome(
+                    request, options, OutcomeStatus.REJECTED, as_error_record(error)
+                )
+            except RuntimeCancelledError as error:
+                return self._branch_outcome(
+                    request, options, OutcomeStatus.REJECTED, as_error_record(error)
+                )
+            except RuntimeRetryExhaustedError as error:
+                return self._branch_outcome(
+                    request, options, OutcomeStatus.REJECTED, as_error_record(error)
+                )
+            except ApprovalRequiredError as error:
+                return self._branch_outcome(
+                    request, options, OutcomeStatus.REJECTED, as_error_record(error)
+                )
+            except NL2DataError as error:
+                return self._branch_outcome(
+                    request, options, OutcomeStatus.FAILED, as_error_record(error)
+                )
+            if result.status is not RuntimeOutcomeStatus.SUCCEEDED:
+                outcome = result.outcome
+                if outcome is None:
+                    raise RuntimeGateError(
+                        f"stage '{stage.value}' branched without a final outcome",
+                        details={"stage": stage.value},
+                    )
+                return self._with_identity(outcome, options, scope_fingerprint)
+            if result.next_stage is None:
+                outcome = result.outcome
+                if outcome is None:
+                    raise RuntimeGateError(
+                        f"stage '{stage.value}' succeeded without a final outcome",
+                        details={"stage": stage.value},
+                    )
+                return self._with_identity(outcome, options, scope_fingerprint)
+            stage = result.next_stage
+            context = context.model_copy(
+                update={
+                    "current_stage": stage,
+                    "gate_evidence_fingerprints": frozenset(
+                        channel["gate_evidence"].values()
+                    ),
+                }
+            )
+        raise RuntimeGateError("workflow graph terminated without a final outcome")
+
+    def _with_identity(
+        self,
+        outcome: QueryOutcome,
+        options: _GraphOptions,
+        scope_fingerprint: str | None,
+    ) -> QueryOutcome:
+        """Stamp the run identity onto a node-branch outcome.
+
+        Branch helpers (denial, malformed intent, clarification) build the
+        public outcome from the request alone; the durable path already
+        repairs this, and the plain path must stay identical.
+        """
+        if (
+            outcome.workflow_id is not None
+            and outcome.tenant_scope_fingerprint is not None
+        ):
+            return outcome
+        return outcome.model_copy(
+            update={
+                "workflow_id": options.workflow_id,
+                "tenant_scope_fingerprint": scope_fingerprint,
+            }
+        )
+
+    async def _run_stage(
+        self,
+        stage: WorkflowStage,
+        context: WorkflowExecutionContext,
+        channel: dict[str, Any],
+        *,
+        durable: _DurableBinding | None,
+    ) -> StageResult:
+        """Validate entry gates, run one node with bounded retries, checkpoint."""
+        validate_stage_entry(
+            stage,
+            gate_evidence=channel["gate_evidence"],
+            deadline=context.deadline,
+            cancellation=context.cancellation,
+            now=self._now(),
+        )
+        node = _NODES[stage](self, channel)
+        result = await self._run_with_retries(node, context, channel)
+        if durable is not None and result.status is RuntimeOutcomeStatus.SUCCEEDED:
+            durable.checkpoint(
+                stage=result.next_stage or stage,
+                compatibility_fingerprints=dict(channel["compat"]),
+                gate_evidence_fingerprints=frozenset(channel["gate_evidence"].values()),
+            )
+        return result
+
+    async def _run_with_retries(
+        self,
+        node: _NodeBase,
+        context: WorkflowExecutionContext,
+        channel: dict[str, Any],
+    ) -> StageResult:
+        """Run one node with a bounded retry budget for retryable failures.
+
+        Runtime branch errors (timeout, cancellation, approval required)
+        always propagate; retryable :class:`NL2DataError` failures retry up
+        to the configured ``max_retries``, and the deadline is re-checked
+        between attempts so retries cannot outlive the workflow.
+        """
+        attempts = 0
+        while True:
+            attempts += 1
+            try:
+                return await node.run(context)
+            except RuntimeTimeoutError:
+                raise
+            except RuntimeCancelledError:
+                raise
+            except ApprovalRequiredError:
+                raise
+            except NL2DataError as error:
+                if not error.retryable:
+                    return StageResult(
+                        stage=node.stage,
+                        status=RuntimeOutcomeStatus.FAILED,
+                        outcome=_failed(context.request, error),
+                    )
+                if attempts >= context.budget.max_retries:
+                    raise RuntimeRetryExhaustedError(
+                        f"node '{node.stage.value}' exhausted its retry budget",
+                        details={
+                            "stage": node.stage.value,
+                            "attempts": str(attempts),
+                            "max_retries": str(context.budget.max_retries),
+                            "last_code": error.code.value,
+                        },
+                    ) from error
+                validate_stage_entry(
+                    node.stage,
+                    gate_evidence=channel["gate_evidence"],
+                    deadline=context.deadline,
+                    cancellation=context.cancellation,
+                    now=self._now(),
+                )
+
+    # -- durable resume helpers ---------------------------------------------
+
+    def _validate_resume(
+        self, state: WorkflowState, current_compat: dict[str, str]
+    ) -> WorkflowState:
+        """Reject a checkpoint that cannot resume safely.
+
+        Compatibility fingerprints must match the current configuration;
+        the stored deadline must not be expired; a requested cancellation
+        fails fast; post-execution stages are ambiguous and never
+        re-executed; and the bounded resume retry budget is enforced.
+        """
+        stored = state.compatibility_fingerprints
+        for key, fingerprint in sorted(stored.items()):
+            current_fingerprint = current_compat.get(key)
+            if current_fingerprint is None or current_fingerprint != fingerprint:
+                raise StaleCheckpointError(
+                    f"checkpoint is incompatible with the current '{key}' configuration",
+                    details={
+                        "key": key,
+                        "workflow_id": state.workflow_id,
+                    },
+                )
+        if state.deadline_at is not None and state.deadline_at <= self._now():
+            raise RuntimeTimeoutError(
+                "stored workflow deadline has expired",
+                details={
+                    "deadline_at": state.deadline_at.isoformat(),
+                    "workflow_id": state.workflow_id,
+                },
+            )
+        if state.cancellation_requested:
+            raise RuntimeCancelledError(
+                "workflow cancellation was requested before resume",
+                details={"workflow_id": state.workflow_id},
+            )
+        if state.current_stage in _AMBIGUOUS_STAGES:
+            raise RuntimeRecoverableError(
+                "checkpoint is after external execution; re-execution is not safe",
+                details={
+                    "workflow_id": state.workflow_id,
+                    "stage": (
+                        state.current_stage.value
+                        if state.current_stage is not None
+                        else ""
+                    ),
+                },
+            )
+        if state.retry_count >= state.budget.max_retries:
+            raise RuntimeRetryExhaustedError(
+                "workflow retry budget exhausted",
+                details={
+                    "workflow_id": state.workflow_id,
+                    "retry_count": str(state.retry_count),
+                    "max_retries": str(state.budget.max_retries),
+                },
+            )
+        return state
+
+    def _advance_to_running(
+        self,
+        store: StateStore,
+        workflow_id: str,
+        request: QueryRequest,
+        state: WorkflowState,
+        *,
+        scope_fingerprint: str | None,
+    ) -> WorkflowState:
+        """Move a checkpoint toward RUNNING through allowed transition edges.
+
+        A RUNNING checkpoint means a previous execution stopped before a
+        terminal commit; the retry edge records the recovery attempt so the
+        attempt budget still bounds re-execution and the bounded resume
+        retry counter advances.
+        """
+        status = state.status
+        if status == WorkflowStatus.CREATED:
+            queued = self._step(
+                store,
+                workflow_id,
+                request,
+                state,
+                WorkflowStatus.QUEUED,
+                scope_fingerprint=scope_fingerprint,
+            )
+            return self._step(
+                store,
+                workflow_id,
+                request,
+                queued,
+                WorkflowStatus.RUNNING,
+                scope_fingerprint=scope_fingerprint,
+            )
+        if status == WorkflowStatus.QUEUED:
+            return self._step(
+                store,
+                workflow_id,
+                request,
+                state,
+                WorkflowStatus.RUNNING,
+                scope_fingerprint=scope_fingerprint,
+            )
+        if status == WorkflowStatus.RUNNING:
+            queued = self._step(
+                store,
+                workflow_id,
+                request,
+                state,
+                WorkflowStatus.QUEUED,
+                scope_fingerprint=scope_fingerprint,
+            )
+            return self._step(
+                store,
+                workflow_id,
+                request,
+                queued,
+                WorkflowStatus.RUNNING,
+                scope_fingerprint=scope_fingerprint,
+                retry_count=queued.retry_count + 1,
+            )
+        raise WorkflowStateError(
+            f"workflow '{workflow_id}' is not resumable from '{status.value}'",
+            details={"workflow_id": workflow_id, "status": status.value},
+        )
+
+    def _step(
+        self,
+        store: StateStore,
+        workflow_id: str,
+        request: QueryRequest,
+        state: WorkflowState,
+        target: WorkflowStatus,
+        *,
+        scope_fingerprint: str | None,
+        retry_count: int | None = None,
+    ) -> WorkflowState:
+        """Persist one validated transition with compare-and-set."""
+        revision = store.get_revision(
+            workflow_id, tenant_scope_fingerprint=scope_fingerprint
+        )
+        next_state = transition(
+            state,
+            target,
+            event_id=f"ev-{uuid4().hex[:16]}",
+            retry_count=retry_count,
+        )
+        store.update(
+            workflow_id,
+            state.status,
+            next_state,
+            expected_version=revision,
+            tenant_scope_fingerprint=scope_fingerprint,
+        )
+        return next_state
+
+    def _duplicate_outcome(
+        self,
+        request: QueryRequest,
+        workflow_id: str,
+        outcome_fingerprint: str | None,
+        scope_fingerprint: str | None,
+    ) -> QueryOutcome:
+        """A replay reference for a completed request, without re-execution."""
+        details = {"workflow_id": workflow_id}
+        if outcome_fingerprint is not None:
+            details["outcome_fingerprint"] = outcome_fingerprint
+        return _outcome(
+            request,
+            status=OutcomeStatus.REJECTED,
+            error=ErrorRecord(
+                code=ErrorCode.DUPLICATE_REQUEST,
+                category=ErrorCategory.WORKFLOW,
+                message="duplicate request already completed; the existing terminal "
+                "outcome reference is returned",
+                retryable=False,
+                details=details,
+            ),
+            workflow_id=workflow_id,
+            tenant_scope_fingerprint=scope_fingerprint,
+        )
+
+    # -- shared helpers ------------------------------------------------------
+
+    def _branch_outcome(
+        self,
+        request: QueryRequest,
+        options: _GraphOptions,
+        status: OutcomeStatus,
+        error: ErrorRecord,
+    ) -> QueryOutcome:
+        return _outcome(
+            request,
+            status=status,
+            error=error,
+            workflow_id=options.workflow_id,
+            tenant_scope_fingerprint=options.scope_fingerprint,
+        )
+
+    def _prepare_turn(self, request: QueryRequest) -> tuple[CurrentTurnContext, dict[str, str]]:
+        """Build the trusted current-turn context and base compatibility map."""
+        execution = self._execution
+        assert execution is not None
+        view = execution.view
+        assert view is not None
+        context = request.context
+        conversation_id = (
+            context.conversation_id
+            if context is not None and context.conversation_id
+            else (
+                context.workflow_id
+                if context is not None and context.workflow_id
+                else request.request_id
+            )
+        )
+        session_id = (
+            context.workflow_id if context is not None and context.workflow_id else conversation_id
+        )
+        turn = build_current_turn_context(
+            session_id=session_id,
+            conversation_id=conversation_id,
+            tenant_scope=execution.tenant_context,
+            view=view,
+            policy_scope=execution.policy_scope,
+            adapter_id=execution.adapter_type,
+        )
+        policy_scope = execution.policy_scope
+        assert policy_scope is not None
+        semantic_view_fingerprint = turn.semantic_view_fingerprint
+        assert semantic_view_fingerprint is not None
+        compat: dict[str, str] = {
+            "config": self._config.fingerprint,
+            "policy": policy_scope.policy_fingerprint,
+            "semantic": semantic_view_fingerprint,
+        }
+        catalog_fingerprint = view.catalog_fingerprint
+        if catalog_fingerprint is not None:
+            compat["catalog"] = catalog_fingerprint
+        return turn, compat
+
+    def _scope_fingerprint(self) -> str | None:
+        if self._execution is None or self._execution.tenant_context is None:
+            return None
+        return self._execution.tenant_context.scope_fingerprint
+
+    def _resolve_workflow_id(self, request: QueryRequest) -> str:
+        """The explicit workflow identity from the request, or a fresh one."""
+        if request.context is not None and request.context.workflow_id is not None:
+            return request.context.workflow_id
+        return f"workflow-{uuid4().hex[:16]}"
+
+    def _now(self) -> datetime:
+        return self._now_fn()
+
+    @staticmethod
+    def _facts_from_plan(
+        plan: SemanticQueryPlan,
+        *,
+        tenant_scope_fingerprint: str | None = None,
+        isolation_profile: str | None = None,
+    ) -> GovernanceFacts:
+        resource_ids = (
+            {plan.binding.object_id} if plan.binding is not None else {plan.root_entity_id}
+        )
+        return GovernanceFacts(
+            source_id=plan.source_id,
+            operation="select",
+            resource_ids=frozenset(resource_ids),
+            field_ids=plan.field_ids(),
+            filter_fingerprints=plan.filter_fingerprints(),
+            tenant_scope_fingerprint=tenant_scope_fingerprint,
+            isolation_profile=isolation_profile,
+        )

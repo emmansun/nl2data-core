@@ -42,8 +42,7 @@ pip install -e ".[dev]"
 ```python
 import asyncio
 
-from nl2data import ErrorCode, NL2DataEngine, OutcomeStatus, QueryRequest
-from nl2data_core.config.loader import load_config  # P0: internal config loader
+from nl2data import ErrorCode, NL2DataEngine, OutcomeStatus, QueryRequest, load_config
 
 
 async def main() -> None:
@@ -98,9 +97,11 @@ how database adapters plug into the governed path:
   clarification, or safe rejection - never raw SQL/MQL/shell/AST/driver-shaped
   output. Semantic references outside the authorized view fail closed, and
   provider calls are bounded by the configured attempt budget.
-- The opt-in `AIWorkflowRunner` hands validated intent to the existing governed
-  execution boundary (`QueryExecutionRunner.execute_plan`); without a provider
-  it preserves the P1 structured-plan path and the not-configured fallback.
+- The opt-in `AIWorkflowRunner` is a compatibility facade: without a provider
+  it preserves the P1 structured-plan path and the not-configured fallback;
+  with a provider it delegates the whole AI+Memory composition to the
+  governed workflow runtime (see below), which owns validation, governance,
+  authorization, and execution ordering.
 - Vendor model providers (OpenAI, Anthropic, LangChain, ...) belong in optional
   packages behind the `ModelProvider` port, exactly like database drivers; the
   core import boundary never loads them.
@@ -221,6 +222,68 @@ results:
   exercises raw-payload rejection, scope isolation, stale reference denial,
   retention, deletion, compaction, stateless fallback, and bounded recall,
   emitting protected evidence and reports with no raw material.
+
+## Governed workflow runtime (P2)
+
+The P2.5 governed workflow runtime (internal `nl2data_core.workflow`) owns
+one explicit order for the existing boundaries instead of nesting
+conditionals inside runners:
+
+- A framework-neutral `WorkflowRuntime` protocol with typed immutable
+  `WorkflowExecutionContext`, stage results, deadlines, cancellation, safe
+  errors, and protected evidence. The core never imports or depends on
+  LangGraph; a deterministic reference runtime implements the same contract
+  and is the conformance baseline.
+- One explicit ordered stage graph:
+  `initialize -> memory -> intent -> plan -> validate -> govern -> authorize
+  -> execute -> protect -> persist -> complete`. Clarification, denial,
+  timeout, cancellation, retry exhaustion, and approval-required are typed
+  terminal or controlled branch outcomes - never generic provider
+  exceptions. `SUCCEEDED` and `CLARIFICATION` map one-to-one onto public
+  outcomes; the rest normalize to public `REJECTED`/`FAILED` outcomes with
+  specific error codes.
+- Mandatory gates: the adapter is never invoked unless current tenant
+  scope, plan validation, governance, artifact validation, and
+  authorization evidence are present and fresh. Denial or malformed input
+  stops before any external work starts, and a future optional backend must
+  pass the same gate assertions.
+- Cooperative cancellation and request deadlines: every stage that can
+  perform external work receives a bounded deadline/cancellation context
+  and stops before starting the next external operation. The runtime never
+  claims it cancelled an already-running external call; ambiguous
+  post-execution states are recorded for reconciliation.
+- Checkpoints persist only safe evidence: stage name, workflow state,
+  tenant scope, configuration/policy/catalog/semantic/artifact
+  fingerprints, and bounded retry/repair counters. Raw prompts, queries,
+  plans, results, provider, and native objects never enter runtime state.
+
+### At-least-once recovery and idempotency
+
+- Checkpoints persist through the replaceable P2.3 `StateStore` at stage
+  boundaries; restart resumes only compatible non-terminal checkpoints.
+  Stale configuration/policy/catalog/semantic/artifact snapshots and
+  cross-tenant checkpoints are rejected, never resumed.
+- Recovery is at-least-once: an interrupted workflow may re-run stages, and
+  this core never claims exactly-once external execution. Completed
+  terminal outcomes replay idempotently through durable idempotency-key
+  records without re-executing finished external work.
+
+### Optional LangGraph backend
+
+A future optional backend (for example `nl2data-langgraph`) may translate
+the core stage contract to LangGraph nodes and checkpoints behind the
+`WorkflowBackend`/`WorkflowBackendProfile` contract. It must pass the same
+mandatory conformance suite (`tests/contract/test_backend_conformance.py`,
+`tests/conformance/test_workflow_runtime_conformance.py`) and cannot bypass
+core gates; activation happens only after conformance passes.
+
+### Unsupported today
+
+Streaming wire protocols, distributed or multi-worker execution,
+autonomous repair or agent loops (only bounded extension points exist), a
+public approval-required outcome status (internal runtime event only), and
+service-backed stores (MongoDB, HTTP transport) are out of scope for this
+runtime.
 
 ## PostgreSQL conformance profile
 

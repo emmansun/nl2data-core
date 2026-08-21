@@ -6,6 +6,8 @@ Application code must never import ``nl2data_core`` internals.
 
 from __future__ import annotations
 
+from nl2data_core.config.loader import load_config
+
 from .engine import LifecycleError, NL2DataEngine
 from .errors import (
     ErrorCategory,
@@ -38,6 +40,7 @@ __all__ = [
     "HealthStatus",
     "LifecycleError",
     "LifecycleState",
+    "load_config",
     "NL2DataEngine",
     "NL2DataError",
     "OutcomeStatus",

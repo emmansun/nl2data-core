@@ -3,30 +3,30 @@
 Define the versioned workflow state, transition, budget, event, and replaceable state-store contracts.
 ## Requirements
 ### Requirement: Versioned workflow state
-The workflow foundation SHALL represent a workflow instance with a versioned immutable state containing request identity, workflow identity, status, attempt counters, safe evidence references, and an optional tenant scope fingerprint. Durable stores SHALL persist only the safe representation.
+The workflow foundation SHALL represent a workflow instance with a versioned immutable state containing request identity, workflow identity, status, current stage identity, attempt counters, safe evidence references, optional tenant scope fingerprint, and checkpoint compatibility fingerprints. Durable stores SHALL persist only the safe representation.
 
 #### Scenario: State snapshot is serializable
-- **WHEN** a workflow state is created with valid identifiers and status
-- **THEN** it can be serialized without raw prompts, raw queries, credentials, or raw result records
+- **WHEN** a workflow state is created with valid identifiers, stage, and status
+- **THEN** it can be serialized without raw prompts, raw queries, credentials, provider objects, or raw result records
 
 ### Requirement: Valid transitions are enforced
-The workflow foundation SHALL define allowed status transitions and SHALL reject transitions that bypass required foundation states or move from terminal states. Durable compare-and-set updates SHALL preserve these transition rules.
+The workflow foundation SHALL define allowed status and stage transitions and SHALL reject transitions that bypass mandatory runtime gates or move from terminal states. Durable compare-and-set updates SHALL preserve these rules.
 
-#### Scenario: Invalid transition is rejected
-- **WHEN** code attempts to transition a completed or closed workflow to an active state
-- **THEN** the state store rejects the transition with a structured workflow error
+#### Scenario: Gate-bypassing transition is rejected
+- **WHEN** code attempts to enter execution without current validation, governance, and authorization evidence
+- **THEN** the runtime/state store rejects the transition with a structured workflow error
 
 ### Requirement: Events and budgets are bounded
-Workflow events SHALL record transition identity and safe metadata, and workflow budgets SHALL bound attempts or event counts without accepting negative values. Durable snapshots SHALL preserve these bounds.
+Workflow events SHALL record transition/stage identity and safe metadata, and workflow budgets SHALL bound attempts, events, retries, repairs, and elapsed time without accepting negative values.
 
-#### Scenario: Budget exhaustion is explicit
-- **WHEN** a workflow exceeds its configured attempt or event budget
-- **THEN** the runtime records a bounded failure or terminal status instead of continuing indefinitely
+#### Scenario: Runtime budget exhaustion is explicit
+- **WHEN** a workflow exceeds its configured attempt, event, retry, repair, or deadline budget
+- **THEN** the runtime records a bounded terminal or resumable failure instead of continuing indefinitely
 
 ### Requirement: In-memory state store is available
-P0 SHALL provide an in-memory state-store implementation behind a replaceable protocol for deterministic unit and contract tests, and P2 SHALL provide a durable SQLite implementation behind the same boundary.
+P0 SHALL provide an in-memory state-store implementation and P2 SHALL provide a durable SQLite implementation behind a replaceable protocol; both SHALL support runtime checkpoint identity and tenant-scoped lookup.
 
-#### Scenario: State can be created and read
-- **WHEN** a valid workflow state is stored
-- **THEN** it can be retrieved by workflow ID and reflects accepted transitions from either the in-memory or configured durable store
+#### Scenario: Runtime checkpoint can be resumed safely
+- **WHEN** a matching tenant and compatible checkpoint are loaded
+- **THEN** the runtime resumes from the persisted stage without exposing raw checkpoint content
 

@@ -9,6 +9,7 @@ exactly like the P0 fallback - so the engine never fabricates results.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
 from uuid import uuid4
@@ -88,6 +89,27 @@ class StaticPlanResolver:
         return self._plan
 
 
+@dataclass(frozen=True)
+class QueryExecutionComponents:
+    """Frozen snapshot of the governed components bound to a runner.
+
+    The deterministic runtime consumes this snapshot so it never reaches
+    into runner internals; the snapshot itself is immutable and carries
+    no raw payloads.
+    """
+
+    adapter: QueryAdapter
+    policy_scope: PolicyScope
+    view: AuthorizedView
+    plan_resolver: PlanResolver
+    evaluator: PolicyEvaluator
+    issuer: AuthorizationIssuer
+    verifier: AuthorizationVerifier
+    effective_limits: EffectiveLimits
+    ttl_seconds: float
+    tenant_context: TenantScopeContext | None
+
+
 def _outcome(
     request: QueryRequest,
     *,
@@ -165,6 +187,41 @@ class QueryExecutionRunner:
     def policy_scope(self) -> PolicyScope | None:
         """The policy scope bound to the governed path."""
         return self._policy_scope
+
+    @property
+    def plan_resolver(self) -> PlanResolver | None:
+        """The plan resolver bound to the governed path."""
+        return self._plan_resolver
+
+    @property
+    def state_store(self) -> StateStore | None:
+        """The durable state store bound to the governed path, if any."""
+        return self._state_store
+
+    def components(self) -> QueryExecutionComponents | None:
+        """A frozen snapshot of the bound governed components, or ``None``.
+
+        ``None`` exactly when the runner reports not-configured, so the
+        deterministic runtime can fall back to the same P1 behavior.
+        """
+        adapter = self._adapter
+        policy_scope = self._policy_scope
+        view = self._view
+        plan_resolver = self._plan_resolver
+        if adapter is None or policy_scope is None or view is None or plan_resolver is None:
+            return None
+        return QueryExecutionComponents(
+            adapter=adapter,
+            policy_scope=policy_scope,
+            view=view,
+            plan_resolver=plan_resolver,
+            evaluator=self._evaluator,
+            issuer=self._issuer,
+            verifier=self._verifier,
+            effective_limits=self._effective_limits,
+            ttl_seconds=self._ttl_seconds,
+            tenant_context=self._tenant_context,
+        )
 
     @property
     def tenant_context(self) -> TenantScopeContext | None:

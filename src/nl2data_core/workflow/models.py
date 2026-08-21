@@ -29,6 +29,38 @@ class WorkflowStatus(StrEnum):
     CLOSED = "closed"
 
 
+class WorkflowStage(StrEnum):
+    """Ordered stages of the governed workflow graph.
+
+    The order is fixed: request initialization, Memory recall, intent
+    resolution, plan building, plan validation, governance, authorization,
+    adapter execution, result protection, Memory write-back, and completion.
+    """
+
+    INITIALIZE = "initialize"
+    MEMORY = "memory"
+    INTENT = "intent"
+    PLAN = "plan"
+    VALIDATE = "validate"
+    GOVERN = "govern"
+    AUTHORIZE = "authorize"
+    EXECUTE = "execute"
+    PROTECT = "protect"
+    PERSIST = "persist"
+    COMPLETE = "complete"
+
+
+class WorkflowGate(StrEnum):
+    """Mandatory execution gates that must carry current evidence."""
+
+    TENANT_SCOPE = "tenant_scope"
+    PLAN_VALIDATION = "plan_validation"
+    GOVERNANCE = "governance"
+    ARTIFACT_VALIDATION = "artifact_validation"
+    AUTHORIZATION = "authorization"
+    DEADLINE = "deadline"
+
+
 #: Terminal statuses from which no transition is allowed.
 TERMINAL_STATUSES = frozenset(
     {WorkflowStatus.SUCCEEDED, WorkflowStatus.FAILED, WorkflowStatus.CLOSED}
@@ -85,12 +117,19 @@ class WorkflowStateError(NL2DataError):
 
 
 class WorkflowBudget(BaseModel):
-    """Bounded attempt and event budgets; negative values are rejected."""
+    """Bounded attempt, event, retry, repair and duration budgets.
+
+    Negative or zero values are rejected; every bound has an explicit
+    upper limit so a misconfiguration cannot produce unbounded work.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     max_attempts: int = Field(default=3, ge=1, le=100)
     max_events: int = Field(default=100, ge=1, le=10_000)
+    max_retries: int = Field(default=3, ge=1, le=100)
+    max_repairs: int = Field(default=1, ge=1, le=100)
+    max_duration_seconds: float = Field(default=300.0, gt=0.0, le=86_400.0)
 
 
 class WorkflowEvent(BaseModel):
@@ -118,7 +157,13 @@ class WorkflowEvent(BaseModel):
 
 
 class WorkflowState(BaseModel):
-    """Immutable versioned workflow instance state."""
+    """Immutable versioned workflow instance state.
+
+    Stage identity, gate evidence references, compatibility fingerprints,
+    cancellation/deadline state, and bounded retry/repair counters extend
+    the foundation state so the runtime can checkpoint safely at stage
+    boundaries and resume only compatible snapshots.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -133,14 +178,32 @@ class WorkflowState(BaseModel):
     budget: WorkflowBudget = Field(default_factory=WorkflowBudget)
     events: tuple[WorkflowEvent, ...] = Field(default_factory=tuple)
     evidence_fingerprints: frozenset[str] = Field(default_factory=frozenset)
+    current_stage: WorkflowStage | None = Field(default=None)
+    gate_evidence_fingerprints: frozenset[str] = Field(default_factory=frozenset)
+    compatibility_fingerprints: dict[str, str] = Field(default_factory=dict, max_length=16)
+    cancellation_requested: bool = False
+    deadline_at: datetime | None = None
+    retry_count: int = Field(default=0, ge=0, le=100)
+    repair_count: int = Field(default=0, ge=0, le=100)
 
-    @field_validator("evidence_fingerprints")
+    @field_validator("evidence_fingerprints", "gate_evidence_fingerprints")
     @classmethod
     def _valid_fingerprints(cls, value: frozenset[str]) -> frozenset[str]:
         pattern = re.compile(_FINGERPRINT_PATTERN)
         for fingerprint in value:
             if not pattern.fullmatch(fingerprint):
                 raise ValueError("evidence references must be sha256 fingerprints")
+        return value
+
+    @field_validator("compatibility_fingerprints")
+    @classmethod
+    def _valid_compatibility_fingerprints(cls, value: dict[str, str]) -> dict[str, str]:
+        pattern = re.compile(_FINGERPRINT_PATTERN)
+        for key, fingerprint in value.items():
+            if re.fullmatch(_IDENTIFIER_PATTERN, key) is None:
+                raise ValueError("compatibility keys must be identifier-safe")
+            if pattern.fullmatch(fingerprint) is None:
+                raise ValueError("compatibility values must be sha256 fingerprints")
         return value
 
     def serialize_safe(self) -> dict[str, Any]:
@@ -155,7 +218,21 @@ class WorkflowState(BaseModel):
             "budget": {
                 "max_attempts": self.budget.max_attempts,
                 "max_events": self.budget.max_events,
+                "max_retries": self.budget.max_retries,
+                "max_repairs": self.budget.max_repairs,
+                "max_duration_seconds": self.budget.max_duration_seconds,
             },
             "events": [event.serialize_safe() for event in self.events],
             "evidence_fingerprints": sorted(self.evidence_fingerprints),
+            "current_stage": (
+                self.current_stage.value if self.current_stage is not None else None
+            ),
+            "gate_evidence_fingerprints": sorted(self.gate_evidence_fingerprints),
+            "compatibility_fingerprints": dict(
+                sorted(self.compatibility_fingerprints.items())
+            ),
+            "cancellation_requested": self.cancellation_requested,
+            "deadline_at": self.deadline_at.isoformat() if self.deadline_at is not None else None,
+            "retry_count": self.retry_count,
+            "repair_count": self.repair_count,
         }
