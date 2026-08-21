@@ -46,6 +46,8 @@ from nl2data_core.planning.validation import (
     AuthorizedView,
     validate_plan_against_view,
 )
+from nl2data_core.tenancy.models import TenantScopeContext
+from nl2data_core.tenancy.validation import validate_tenant_scope
 from nl2data_core.workflow.protection import ResultProtectionError, protect_result
 
 
@@ -79,11 +81,13 @@ def _outcome(
     result: QueryResult | None = None,
     clarification: QueryClarification | None = None,
     workflow_id: str | None = None,
+    tenant_scope_fingerprint: str | None = None,
 ) -> QueryOutcome:
     return QueryOutcome(
         status=status,
         request_id=request.request_id,
         workflow_id=workflow_id,
+        tenant_scope_fingerprint=tenant_scope_fingerprint,
         result=result,
         clarification=clarification,
         error=error,
@@ -111,6 +115,7 @@ class QueryExecutionRunner:
         verifier: AuthorizationVerifier | None = None,
         effective_limits: EffectiveLimits | None = None,
         ttl_seconds: float = 60.0,
+        tenant_context: TenantScopeContext | None = None,
     ) -> None:
         self._adapter = adapter
         self._policy_scope = policy_scope
@@ -121,6 +126,7 @@ class QueryExecutionRunner:
         self._verifier = verifier or AuthorizationVerifier()
         self._effective_limits = effective_limits or EffectiveLimits()
         self._ttl_seconds = ttl_seconds
+        self._tenant_context = tenant_context
 
     def is_configured(self) -> bool:
         """Whether the full P1 path is available; otherwise the fallback applies."""
@@ -154,6 +160,10 @@ class QueryExecutionRunner:
                 ),
             )
 
+        tenant_denial = self._tenant_denial(request)
+        if tenant_denial is not None:
+            return tenant_denial
+
         plan = plan_resolver.resolve(request)
         if plan is None:
             return self._rejected(
@@ -167,14 +177,53 @@ class QueryExecutionRunner:
 
         return await self.execute_plan(request, plan)
 
+    def _tenant_denial(self, request: QueryRequest) -> QueryOutcome | None:
+        """Reject requests whose tenant scope cannot be established safely.
+
+        The trusted context is host-integration input only; a client hint
+        is untrusted routing metadata that can neither establish authority
+        nor override the trusted context.
+        """
+        hint = request.context.tenant_hint if request.context is not None else None
+        if hint is None and self._tenant_context is None:
+            return None
+        validation = validate_tenant_scope(
+            self._tenant_context,
+            client_tenant_hint=hint,
+        )
+        if validation.valid:
+            return None
+        return self._rejected(
+            request,
+            ErrorRecord(
+                code=ErrorCode.TENANT_CONTEXT_REJECTED,
+                category=ErrorCategory.GOVERNANCE,
+                message="tenant-scoped execution was denied by trusted context validation",
+                details={"reasons": "; ".join(validation.reasons)},
+            ),
+        )
+
     async def execute_plan(self, request: QueryRequest, plan: SemanticQueryPlan) -> QueryOutcome:
         """Execute an already-built semantic plan through the governed boundary.
 
         This is the shared execution boundary for the P1 structured-plan
         path and the AI intent handoff: structural and view validation,
-        governance decision, artifact-bound authorization, adapter
-        execution, and protected result construction.
+        tenant-scope validation, governance decision, artifact-bound
+        authorization, adapter execution, and protected result construction.
         """
+        tenant_denial = self._tenant_denial(request)
+        if tenant_denial is not None:
+            return tenant_denial
+        scope_fingerprint = (
+            self._tenant_context.scope_fingerprint
+            if self._tenant_context is not None
+            else None
+        )
+        isolation_profile = (
+            self._tenant_context.tenant.isolation_profile.value
+            if self._tenant_context is not None
+            else None
+        )
         adapter = self._adapter
         policy_scope = self._policy_scope
         view = self._view
@@ -186,6 +235,20 @@ class QueryExecutionRunner:
                     code=ErrorCode.NOT_CONFIGURED,
                     category=ErrorCategory.NOT_CONFIGURED,
                     message=NOT_CONFIGURED_MESSAGE,
+                    retryable=False,
+                ),
+            )
+
+        if self._tenant_context is not None and (
+            policy_scope.tenant_scope_fingerprint != scope_fingerprint
+            or policy_scope.isolation_profile != isolation_profile
+        ):
+            return self._rejected(
+                request,
+                ErrorRecord(
+                    code=ErrorCode.GOVERNANCE_DENIED,
+                    category=ErrorCategory.GOVERNANCE,
+                    message="tenant-scoped execution requires a matching tenant policy",
                     retryable=False,
                 ),
             )
@@ -204,7 +267,14 @@ class QueryExecutionRunner:
                 ),
             )
 
-        decision = self._evaluator.evaluate(self._facts_from_plan(plan), policy_scope)
+        decision = self._evaluator.evaluate(
+            self._facts_from_plan(
+                plan,
+                tenant_scope_fingerprint=scope_fingerprint,
+                isolation_profile=isolation_profile,
+            ),
+            policy_scope,
+        )
         if decision.decision != GovernanceDecision.ALLOW:
             return self._rejected(
                 request,
@@ -231,6 +301,8 @@ class QueryExecutionRunner:
             source_id=plan.source_id,
             operation="select",
             artifact_fingerprint=validated.fingerprint,
+            tenant_scope_fingerprint=scope_fingerprint,
+            isolation_profile=isolation_profile,
             effective_limits=self._effective_limits,
             mandatory_filter_fingerprints=plan.filter_fingerprints(),
             ttl_seconds=self._ttl_seconds,
@@ -242,6 +314,8 @@ class QueryExecutionRunner:
             source_id=plan.source_id,
             operation="select",
             filter_fingerprints=plan.filter_fingerprints(),
+            tenant_scope_fingerprint=scope_fingerprint,
+            isolation_profile=isolation_profile,
         )
         if not verification.verified:
             return self._rejected(
@@ -288,6 +362,7 @@ class QueryExecutionRunner:
             status=OutcomeStatus.SUCCEEDED,
             result=result,
             workflow_id=f"workflow-{uuid4().hex[:16]}",
+            tenant_scope_fingerprint=scope_fingerprint,
         )
 
     async def close(self) -> None:
@@ -296,7 +371,12 @@ class QueryExecutionRunner:
             await self._adapter.close()
 
     @staticmethod
-    def _facts_from_plan(plan: SemanticQueryPlan) -> GovernanceFacts:
+    def _facts_from_plan(
+        plan: SemanticQueryPlan,
+        *,
+        tenant_scope_fingerprint: str | None = None,
+        isolation_profile: str | None = None,
+    ) -> GovernanceFacts:
         resource_ids = (
             {plan.binding.object_id} if plan.binding is not None else {plan.root_entity_id}
         )
@@ -306,6 +386,8 @@ class QueryExecutionRunner:
             resource_ids=frozenset(resource_ids),
             field_ids=plan.field_ids(),
             filter_fingerprints=plan.filter_fingerprints(),
+            tenant_scope_fingerprint=tenant_scope_fingerprint,
+            isolation_profile=isolation_profile,
         )
 
     @staticmethod

@@ -72,6 +72,21 @@ class PolicyEvaluator:
         if facts.operation not in scope.operation_ids:
             reasons.append(f"operation '{facts.operation}' is not in policy scope")
 
+        if scope.tenant_scope_fingerprint is not None:
+            if facts.tenant_scope_fingerprint is None:
+                reasons.append(
+                    "tenant-scoped execution requires a trusted tenant scope fingerprint"
+                )
+            elif facts.tenant_scope_fingerprint != scope.tenant_scope_fingerprint:
+                reasons.append("tenant scope fingerprint does not match the policy scope")
+            if scope.isolation_profile is None:
+                reasons.append("tenant-scoped policy requires an isolation profile")
+        if (
+            scope.isolation_profile is not None
+            and facts.isolation_profile != scope.isolation_profile
+        ):
+            reasons.append("isolation profile does not match the policy scope")
+
         if reasons:
             return GovernanceDecisionResult(
                 decision=GovernanceDecision.DENY,

@@ -35,6 +35,7 @@ class TelemetryContext(BaseModel):
     metadata_fingerprint: str | None = Field(default=None, pattern=_FINGERPRINT_PATTERN)
     semantic_fingerprint: str | None = Field(default=None, pattern=_FINGERPRINT_PATTERN)
     artifact_fingerprint: str | None = Field(default=None, pattern=_FINGERPRINT_PATTERN)
+    tenant_scope_fingerprint: str | None = Field(default=None, pattern=_FINGERPRINT_PATTERN)
 
 
 class TelemetryLevel(StrEnum):
@@ -110,6 +111,7 @@ class AuditEvent(_Record):
             "actor_id": self.actor_id,
             "request_id": self.context.request_id,
             "workflow_id": self.context.workflow_id,
+            "tenant_scope_fingerprint": self.context.tenant_scope_fingerprint,
             "attributes": redact_attributes(self.attributes),
             "evidence_fingerprint": self.evidence_fingerprint,
             "occurred_at": self.occurred_at.isoformat(),

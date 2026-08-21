@@ -115,6 +115,9 @@ class WorkflowState(BaseModel):
     version: int = Field(default=1, ge=1, le=1)
     workflow_id: str = Field(pattern=_IDENTIFIER_PATTERN)
     request_id: str = Field(pattern=_IDENTIFIER_PATTERN)
+    tenant_scope_fingerprint: str | None = Field(
+        default=None, pattern=_FINGERPRINT_PATTERN
+    )
     status: WorkflowStatus = WorkflowStatus.CREATED
     attempts: int = Field(default=0, ge=0, le=100)
     budget: WorkflowBudget = Field(default_factory=WorkflowBudget)
@@ -136,6 +139,7 @@ class WorkflowState(BaseModel):
             "version": self.version,
             "workflow_id": self.workflow_id,
             "request_id": self.request_id,
+            "tenant_scope_fingerprint": self.tenant_scope_fingerprint,
             "status": self.status.value,
             "attempts": self.attempts,
             "budget": {

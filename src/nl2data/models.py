@@ -64,12 +64,16 @@ class QueryContext(BaseModel):
     """Opaque request correlation context.
 
     Carries only identifiers; it is not an authorization or identity source.
+    ``tenant_hint`` is untrusted routing metadata supplied by the client and
+    is never treated as effective authorization context: only a trusted
+    host-integration context can establish tenant scope.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     request_id: str = Field(min_length=1, max_length=128)
     workflow_id: str | None = Field(default=None, min_length=1, max_length=128)
+    tenant_hint: str | None = Field(default=None, min_length=1, max_length=128)
 
 
 class QueryRequest(BaseModel):
@@ -156,6 +160,9 @@ class QueryOutcome(BaseModel):
     status: OutcomeStatus
     request_id: str = Field(min_length=1, max_length=128)
     workflow_id: str | None = Field(default=None, min_length=1, max_length=128)
+    tenant_scope_fingerprint: str | None = Field(
+        default=None, pattern=r"^sha256:[0-9a-f]{64}$"
+    )
     result: QueryResult | None = None
     clarification: QueryClarification | None = None
     error: ErrorRecord | None = None

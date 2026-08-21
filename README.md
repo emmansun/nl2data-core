@@ -105,6 +105,53 @@ how database adapters plug into the governed path:
   packages behind the `ModelProvider` port, exactly like database drivers; the
   core import boundary never loads them.
 
+## Trusted tenant-context boundary (P2)
+
+The P2 tenant boundary lets hosts bind query execution to a trusted tenant
+scope without ever trusting client-supplied claims:
+
+- `TenantScopeContext` (internal `nl2data_core.tenancy`) is composed only from
+  trusted host integration input - never from `QueryRequest` bodies or
+  prompts. `QueryContext.tenant_hint` is recorded as untrusted routing
+  metadata only.
+- Trusted-context validation fails closed: missing context, inactive tenant
+  lifecycle states, unknown or unsupported isolation profiles, and client
+  hints that conflict with the trusted context are denied before any
+  adapter execution with `TENANT_CONTEXT_REJECTED`.
+- Tenant scope travels as deterministic SHA-256 scope fingerprints through
+  governance facts, policy scopes, execution authorization, workflow state,
+  telemetry context, and tenant-scoped namespace/cache-key primitives - raw
+  tenant IDs, principal IDs, delegation actors, entitlement claims, and
+  client hints are never persisted or exposed. Outcomes expose only the
+  bounded opaque `tenant_scope_fingerprint` reference.
+- Isolation profiles (`pooled`, `schema_isolated`, `database_isolated`,
+  `deployment_isolated`) declare the minimum enforcement obligations the
+  host must guarantee; missing or unsupported profile data denies
+  tenant-scoped execution instead of silently downgrading.
+- A deterministic conformance suite (`nl2data_core.tenancy.conformance`)
+  exercises positive propagation, cross-tenant reuse, inactive tenants,
+  delegation, namespace separation, missing context, and adversarial client
+  claims, emitting protected evidence and reports with no raw identity.
+
+### Host-integration responsibilities
+
+Authentication, durable state, and cryptographic trust remain outside this
+boundary and are owned by the host integration:
+
+- **Authentication**: verifying end-user and principal identity before
+  composing `SubjectContext`.
+- **Durable tenant state**: managing tenant lifecycle, entitlements, and
+  delegation records that feed trusted contexts.
+- **Memory**: long-lived cross-request state (sessions, caches, audit
+  stores) is host-owned; this core only defines bounded scope references for
+  future namespace primitives.
+- **HTTP authentication**: request authentication and tenant routing are
+  host gateway concerns; the core treats `tenant_hint` as untrusted input.
+- **Cryptographic trust**: key management, token signing, and trust
+  establishment for fingerprints and authorization artifacts are host
+  responsibilities; scope fingerprints are deterministic references and are
+  never treated as authentication.
+
 ## PostgreSQL conformance profile
 
 The P1 query-execution foundation ships an optional PostgreSQL conformance

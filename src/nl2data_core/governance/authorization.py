@@ -55,11 +55,18 @@ class AuthorizationIssuer:
         source_id: str,
         operation: Literal["select"] = "select",
         artifact_fingerprint: str,
+        tenant_scope_fingerprint: str | None = None,
+        isolation_profile: str | None = None,
         effective_limits: EffectiveLimits | None = None,
         mandatory_filter_fingerprints: frozenset[str] = frozenset(),
         ttl_seconds: float = 60.0,
     ) -> ExecutionAuthorization:
-        """Issue an authorization valid for ``ttl_seconds`` from now."""
+        """Issue an authorization valid for ``ttl_seconds`` from now.
+
+        ``tenant_scope_fingerprint`` and ``isolation_profile`` bind the
+        authorization to the trusted tenant scope when tenant isolation is
+        active; non-tenant local composition omits them.
+        """
         issued_at = self.clock()
         return ExecutionAuthorization(
             authorization_id=f"authz-{uuid4().hex[:16]}",
@@ -68,6 +75,8 @@ class AuthorizationIssuer:
             source_id=source_id,
             operation=operation,
             artifact_fingerprint=artifact_fingerprint,
+            tenant_scope_fingerprint=tenant_scope_fingerprint,
+            isolation_profile=isolation_profile,
             effective_limits=effective_limits or EffectiveLimits(),
             mandatory_filter_fingerprints=mandatory_filter_fingerprints,
             issued_at=issued_at,
@@ -90,8 +99,16 @@ class AuthorizationVerifier:
         source_id: str,
         operation: str,
         filter_fingerprints: frozenset[str] = frozenset(),
+        tenant_scope_fingerprint: str | None = None,
+        isolation_profile: str | None = None,
     ) -> AuthorizationVerificationResult:
-        """Verify that the submitted artifact is exactly what was approved."""
+        """Verify that the submitted artifact is exactly what was approved.
+
+        When either the authorization or the current trusted context carries
+        a tenant scope, the fingerprints and isolation profiles must match;
+        a scope mismatch invalidates the authorization even when the
+        artifact fingerprint matches.
+        """
         reasons: list[str] = []
 
         if authorization.is_expired(now=self.clock()):
@@ -104,6 +121,10 @@ class AuthorizationVerifier:
             reasons.append("source does not match the authorization")
         if authorization.operation != operation:
             reasons.append("operation does not match the authorization")
+        if authorization.tenant_scope_fingerprint != tenant_scope_fingerprint:
+            reasons.append("tenant scope fingerprint does not match the authorization")
+        if authorization.isolation_profile != isolation_profile:
+            reasons.append("isolation profile does not match the authorization")
         for mandatory in sorted(authorization.mandatory_filter_fingerprints):
             if mandatory not in filter_fingerprints:
                 reasons.append(f"required protected filter '{mandatory}' is missing from the query")

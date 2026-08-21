@@ -34,7 +34,12 @@ class GovernanceDecision(StrEnum):
 
 
 class GovernanceFacts(BaseModel):
-    """Typed facts submitted for evaluation; never raw payloads."""
+    """Typed facts submitted for evaluation; never raw payloads.
+
+    ``tenant_scope_fingerprint`` and ``isolation_profile`` are optional so
+    non-tenant local composition keeps working; when either is present the
+    evaluation is tenant-scoped and strict.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -43,6 +48,8 @@ class GovernanceFacts(BaseModel):
     resource_ids: frozenset[str] = Field(default_factory=frozenset)
     field_ids: frozenset[str] = Field(default_factory=frozenset)
     filter_fingerprints: frozenset[str] = Field(default_factory=frozenset)
+    tenant_scope_fingerprint: str | None = Field(default=None, pattern=_FINGERPRINT_PATTERN)
+    isolation_profile: str | None = Field(default=None, min_length=1, max_length=32)
 
     @model_validator(mode="after")
     def _validate_fingerprints(self) -> GovernanceFacts:
@@ -56,7 +63,13 @@ class GovernanceFacts(BaseModel):
 
 
 class PolicyScope(BaseModel):
-    """Explicit allow-scope; anything not listed is denied by default."""
+    """Explicit allow-scope; anything not listed is denied by default.
+
+    ``tenant_scope_fingerprint`` and ``isolation_profile`` are optional:
+    a tenant-scoped policy binds to a trusted scope fingerprint and
+    requires matching facts, while a non-tenant local policy keeps the
+    P1 behavior for single-local-fixture composition.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -65,6 +78,8 @@ class PolicyScope(BaseModel):
     resource_ids: frozenset[str] = Field(default_factory=frozenset)
     operation_ids: frozenset[str] = Field(default_factory=frozenset)
     field_ids: frozenset[str] = Field(default_factory=frozenset)
+    tenant_scope_fingerprint: str | None = Field(default=None, pattern=_FINGERPRINT_PATTERN)
+    isolation_profile: str | None = Field(default=None, min_length=1, max_length=32)
     policy_fingerprint: str = Field(default="", pattern=_FINGERPRINT_PATTERN)
 
     @model_validator(mode="after")
@@ -76,6 +91,8 @@ class PolicyScope(BaseModel):
                 "resource_ids": sorted(self.resource_ids),
                 "operation_ids": sorted(self.operation_ids),
                 "field_ids": sorted(self.field_ids),
+                "tenant_scope_fingerprint": self.tenant_scope_fingerprint,
+                "isolation_profile": self.isolation_profile,
             }
         )
         object.__setattr__(self, "policy_fingerprint", fingerprint)
@@ -146,6 +163,8 @@ class ExecutionAuthorization(BaseModel):
     source_id: str = Field(pattern=_IDENTIFIER_PATTERN)
     operation: Literal["select"] = "select"
     artifact_fingerprint: str = Field(pattern=_FINGERPRINT_PATTERN)
+    tenant_scope_fingerprint: str | None = Field(default=None, pattern=_FINGERPRINT_PATTERN)
+    isolation_profile: str | None = Field(default=None, min_length=1, max_length=32)
     effective_limits: EffectiveLimits = Field(default_factory=EffectiveLimits)
     mandatory_filter_fingerprints: frozenset[str] = Field(default_factory=frozenset)
     issued_at: datetime = Field(default_factory=_utc_now)
@@ -159,6 +178,17 @@ class ExecutionAuthorization(BaseModel):
         for fingerprint in self.mandatory_filter_fingerprints:
             if not pattern.fullmatch(fingerprint):
                 raise ValueError("mandatory filter references must be sha256 fingerprints")
+        if (self.tenant_scope_fingerprint is None) != (self.isolation_profile is None):
+            raise ValueError(
+                "tenant scope fingerprint and isolation profile must be supplied together"
+            )
+        if self.isolation_profile is not None and self.isolation_profile not in {
+            "pooled",
+            "schema_isolated",
+            "database_isolated",
+            "deployment_isolated",
+        }:
+            raise ValueError("isolation profile is unsupported")
         if self.expires_at <= self.issued_at:
             raise ValueError("expires_at must be after issued_at")
         return self
