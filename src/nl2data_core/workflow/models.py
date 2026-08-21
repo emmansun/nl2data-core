@@ -62,14 +62,24 @@ class WorkflowBudgetError(NL2DataError):
 
 
 class WorkflowStateError(NL2DataError):
-    """Raised when a state-store operation conflicts with stored state."""
+    """Raised when a state-store operation conflicts with stored state.
 
-    def __init__(self, message: str, *, details: dict[str, Any] | None = None) -> None:
+    Store conflicts (status/version/scope) are non-retryable; backend
+    unavailability such as a locked SQLite database is marked retryable.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        details: dict[str, Any] | None = None,
+        retryable: bool = False,
+    ) -> None:
         super().__init__(
             ErrorCategory.WORKFLOW,
             ErrorCode.INVALID_TRANSITION,
             message,
-            retryable=False,
+            retryable=retryable,
             details=details,
         )
 

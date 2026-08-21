@@ -96,6 +96,7 @@ def transition(
         version=state.version,
         workflow_id=state.workflow_id,
         request_id=state.request_id,
+        tenant_scope_fingerprint=state.tenant_scope_fingerprint,
         status=target,
         attempts=attempts,
         budget=state.budget,

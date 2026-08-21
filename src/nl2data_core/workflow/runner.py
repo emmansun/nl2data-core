@@ -9,7 +9,7 @@ exactly like the P0 fallback - so the engine never fabricates results.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Protocol
 from uuid import uuid4
 
@@ -17,6 +17,7 @@ from nl2data.errors import (
     ErrorCategory,
     ErrorCode,
     ErrorRecord,
+    NL2DataError,
     as_error_record,
 )
 from nl2data.models import (
@@ -48,7 +49,21 @@ from nl2data_core.planning.validation import (
 )
 from nl2data_core.tenancy.models import TenantScopeContext
 from nl2data_core.tenancy.validation import validate_tenant_scope
+from nl2data_core.workflow.durable import (
+    IdempotencyConflictError,
+    IdempotencyStatus,
+    IdempotencyStore,
+    terminal_outcome_fingerprint,
+)
+from nl2data_core.workflow.models import (
+    TERMINAL_STATUSES,
+    WorkflowState,
+    WorkflowStateError,
+    WorkflowStatus,
+)
 from nl2data_core.workflow.protection import ResultProtectionError, protect_result
+from nl2data_core.workflow.store import StateStore
+from nl2data_core.workflow.transitions import transition
 
 
 def _utc_now() -> datetime:
@@ -116,6 +131,8 @@ class QueryExecutionRunner:
         effective_limits: EffectiveLimits | None = None,
         ttl_seconds: float = 60.0,
         tenant_context: TenantScopeContext | None = None,
+        state_store: StateStore | None = None,
+        idempotency_ttl_seconds: float = 86_400.0,
     ) -> None:
         self._adapter = adapter
         self._policy_scope = policy_scope
@@ -127,6 +144,8 @@ class QueryExecutionRunner:
         self._effective_limits = effective_limits or EffectiveLimits()
         self._ttl_seconds = ttl_seconds
         self._tenant_context = tenant_context
+        self._state_store = state_store
+        self._idempotency_ttl_seconds = idempotency_ttl_seconds
 
     def is_configured(self) -> bool:
         """Whether the full P1 path is available; otherwise the fallback applies."""
@@ -210,10 +229,46 @@ class QueryExecutionRunner:
         path and the AI intent handoff: structural and view validation,
         tenant-scope validation, governance decision, artifact-bound
         authorization, adapter execution, and protected result construction.
+        When a durable ``state_store`` is bound, execution additionally
+        persists transition snapshots, enforces idempotency, and replays
+        terminal outcome references instead of re-executing completed work.
         """
         tenant_denial = self._tenant_denial(request)
         if tenant_denial is not None:
             return tenant_denial
+        if self._adapter is None or self._policy_scope is None or self._view is None:
+            return _outcome(
+                request,
+                status=OutcomeStatus.NOT_CONFIGURED,
+                error=ErrorRecord(
+                    code=ErrorCode.NOT_CONFIGURED,
+                    category=ErrorCategory.NOT_CONFIGURED,
+                    message=NOT_CONFIGURED_MESSAGE,
+                    retryable=False,
+                ),
+            )
+        if self._state_store is None:
+            return await self._execute_governed(request, plan)
+        try:
+            return await self._execute_durable(request, plan)
+        except NL2DataError as error:
+            return _outcome(
+                request, status=OutcomeStatus.FAILED, error=as_error_record(error)
+            )
+
+    async def _execute_governed(
+        self,
+        request: QueryRequest,
+        plan: SemanticQueryPlan,
+        *,
+        workflow_id: str | None = None,
+    ) -> QueryOutcome:
+        """Run validation, governance, authorization, adapter, and protection.
+
+        This is the shared governed execution boundary for the P1
+        structured-plan path, the AI intent handoff, and the durable
+        composition; ``workflow_id`` is the durable workflow when set.
+        """
         scope_fingerprint = (
             self._tenant_context.scope_fingerprint
             if self._tenant_context is not None
@@ -361,7 +416,251 @@ class QueryExecutionRunner:
             request,
             status=OutcomeStatus.SUCCEEDED,
             result=result,
-            workflow_id=f"workflow-{uuid4().hex[:16]}",
+            workflow_id=workflow_id or f"workflow-{uuid4().hex[:16]}",
+            tenant_scope_fingerprint=scope_fingerprint,
+        )
+
+    async def _execute_durable(
+        self, request: QueryRequest, plan: SemanticQueryPlan
+    ) -> QueryOutcome:
+        """Durable composition: persist transitions and enforce idempotency.
+
+        The in-memory store remains the default when no durable path is
+        configured; this path only runs with an explicit store.  Idempotency
+        records suppress duplicate submissions, and repeated terminal
+        requests receive the safe stored outcome reference without
+        re-executing external work.  A crash between external execution and
+        terminal commit leaves a RUNNING checkpoint with evidence for
+        at-least-once reconciliation - never a silent success claim.
+        """
+        store = self._state_store
+        assert store is not None
+        scope_fingerprint = (
+            self._tenant_context.scope_fingerprint
+            if self._tenant_context is not None
+            else None
+        )
+        idempotency: IdempotencyStore | None = (
+            store if isinstance(store, IdempotencyStore) else None
+        )
+        existing_idempotency = (
+            idempotency.get_idempotency(
+                request.request_id, tenant_scope_fingerprint=scope_fingerprint
+            )
+            if idempotency is not None
+            else None
+        )
+        workflow_id = (
+            existing_idempotency.workflow_id
+            if existing_idempotency is not None
+            else self._resolve_workflow_id(request)
+        )
+        if idempotency is not None:
+            try:
+                record = idempotency.reserve_idempotency(
+                    request.request_id,
+                    request_id=request.request_id,
+                    workflow_id=workflow_id,
+                    tenant_scope_fingerprint=scope_fingerprint,
+                    expires_at=datetime.now(UTC)
+                    + timedelta(seconds=self._idempotency_ttl_seconds),
+                )
+            except IdempotencyConflictError as error:
+                return self._rejected(request, error.to_record())
+            if (
+                record.status == IdempotencyStatus.COMPLETED
+                and record.terminal_outcome_fingerprint is not None
+            ):
+                return self._duplicate_outcome(
+                    request,
+                    record.workflow_id,
+                    record.terminal_outcome_fingerprint,
+                    scope_fingerprint,
+                )
+
+        checkpoint = store.get_checkpoint(
+            workflow_id, request.request_id, tenant_scope_fingerprint=scope_fingerprint
+        )
+        if checkpoint is None:
+            created = WorkflowState(
+                workflow_id=workflow_id,
+                request_id=request.request_id,
+                tenant_scope_fingerprint=scope_fingerprint,
+                status=WorkflowStatus.CREATED,
+            )
+            store.create(created)
+            state = created
+        else:
+            if checkpoint.status in TERMINAL_STATUSES:
+                fingerprint = None
+                if idempotency is not None:
+                    completed = idempotency.get_idempotency(
+                        request.request_id, tenant_scope_fingerprint=scope_fingerprint
+                    )
+                    if completed is not None:
+                        fingerprint = completed.terminal_outcome_fingerprint
+                return self._duplicate_outcome(
+                    request, workflow_id, fingerprint, scope_fingerprint
+                )
+            state = checkpoint
+
+        state = self._advance_to_running(
+            store, workflow_id, request, state, scope_fingerprint=scope_fingerprint
+        )
+        outcome = await self._execute_governed(request, plan, workflow_id=workflow_id)
+        if outcome.workflow_id is None:
+            outcome = outcome.model_copy(
+                update={
+                    "workflow_id": workflow_id,
+                    "tenant_scope_fingerprint": scope_fingerprint,
+                }
+            )
+        if outcome.status in (OutcomeStatus.SUCCEEDED, OutcomeStatus.FAILED):
+            target = (
+                WorkflowStatus.SUCCEEDED
+                if outcome.status == OutcomeStatus.SUCCEEDED
+                else WorkflowStatus.FAILED
+            )
+            try:
+                self._step(
+                    store,
+                    workflow_id,
+                    request,
+                    state,
+                    target,
+                    scope_fingerprint=scope_fingerprint,
+                )
+                if idempotency is not None and outcome.status == OutcomeStatus.SUCCEEDED:
+                    idempotency.complete_idempotency(
+                        request.request_id,
+                        workflow_id=workflow_id,
+                        terminal_outcome_fingerprint=terminal_outcome_fingerprint(outcome),
+                        tenant_scope_fingerprint=scope_fingerprint,
+                    )
+            except NL2DataError:
+                # The public outcome stands; the durable state remains
+                # reconcilable (at-least-once) if the commit failed.
+                pass
+        return outcome
+
+    @staticmethod
+    def _resolve_workflow_id(request: QueryRequest) -> str:
+        """The explicit workflow identity from the request, or a fresh one."""
+        if request.context is not None and request.context.workflow_id is not None:
+            return request.context.workflow_id
+        return f"workflow-{uuid4().hex[:16]}"
+
+    def _advance_to_running(
+        self,
+        store: StateStore,
+        workflow_id: str,
+        request: QueryRequest,
+        state: WorkflowState,
+        *,
+        scope_fingerprint: str | None,
+    ) -> WorkflowState:
+        """Move a checkpoint toward RUNNING through allowed transition edges.
+
+        A RUNNING checkpoint means a previous execution stopped before a
+        terminal commit; the retry edge records the recovery attempt so the
+        attempt budget still bounds re-execution.
+        """
+        status = state.status
+        if status == WorkflowStatus.CREATED:
+            queued = self._step(
+                store,
+                workflow_id,
+                request,
+                state,
+                WorkflowStatus.QUEUED,
+                scope_fingerprint=scope_fingerprint,
+            )
+            return self._step(
+                store,
+                workflow_id,
+                request,
+                queued,
+                WorkflowStatus.RUNNING,
+                scope_fingerprint=scope_fingerprint,
+            )
+        if status == WorkflowStatus.QUEUED:
+            return self._step(
+                store,
+                workflow_id,
+                request,
+                state,
+                WorkflowStatus.RUNNING,
+                scope_fingerprint=scope_fingerprint,
+            )
+        if status == WorkflowStatus.RUNNING:
+            queued = self._step(
+                store,
+                workflow_id,
+                request,
+                state,
+                WorkflowStatus.QUEUED,
+                scope_fingerprint=scope_fingerprint,
+            )
+            return self._step(
+                store,
+                workflow_id,
+                request,
+                queued,
+                WorkflowStatus.RUNNING,
+                scope_fingerprint=scope_fingerprint,
+            )
+        raise WorkflowStateError(
+            f"workflow '{workflow_id}' is not resumable from '{status.value}'",
+            details={"workflow_id": workflow_id, "status": status.value},
+        )
+
+    def _step(
+        self,
+        store: StateStore,
+        workflow_id: str,
+        request: QueryRequest,
+        state: WorkflowState,
+        target: WorkflowStatus,
+        *,
+        scope_fingerprint: str | None,
+    ) -> WorkflowState:
+        """Persist one validated transition with compare-and-set."""
+        revision = store.get_revision(
+            workflow_id, tenant_scope_fingerprint=scope_fingerprint
+        )
+        next_state = transition(state, target, event_id=f"ev-{uuid4().hex[:16]}")
+        store.update(
+            workflow_id,
+            state.status,
+            next_state,
+            expected_version=revision,
+            tenant_scope_fingerprint=scope_fingerprint,
+        )
+        return next_state
+
+    def _duplicate_outcome(
+        self,
+        request: QueryRequest,
+        workflow_id: str,
+        outcome_fingerprint: str | None,
+        scope_fingerprint: str | None,
+    ) -> QueryOutcome:
+        """A replay reference for a completed request, without re-execution."""
+        details = {"workflow_id": workflow_id}
+        if outcome_fingerprint is not None:
+            details["outcome_fingerprint"] = outcome_fingerprint
+        return _outcome(
+            request,
+            status=OutcomeStatus.REJECTED,
+            error=ErrorRecord(
+                code=ErrorCode.DUPLICATE_REQUEST,
+                category=ErrorCategory.WORKFLOW,
+                message="duplicate request already completed; the existing terminal "
+                "outcome reference is returned",
+                retryable=False,
+                details=details,
+            ),
+            workflow_id=workflow_id,
             tenant_scope_fingerprint=scope_fingerprint,
         )
 

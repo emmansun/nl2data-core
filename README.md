@@ -152,6 +152,41 @@ boundary and are owned by the host integration:
   responsibilities; scope fingerprints are deterministic references and are
   never treated as authentication.
 
+## Durable workflow-state boundary (P2)
+
+An optional durable workflow-state store (internal `nl2data_core.workflow`)
+persists safe workflow snapshots and idempotency records behind the
+replaceable `StateStore` protocol, so hosts can resume and deduplicate query
+work across restarts:
+
+- `SQLiteStateStore` implements the protocol with the Python standard library
+  `sqlite3` - no external database dependency. Records are keyed by
+  `(scope_namespace, workflow_id)`; tenant-scoped workflows are isolated in
+  opaque `tenant:workflow:<fingerprint>` namespaces derived only from scope
+  fingerprints, and unscoped lookups can never observe scoped records.
+- Snapshots are canonical JSON with an explicit `schema_version`; raw payload
+  fields (prompts, queries, SQL, results, rows, credentials, secrets, tokens)
+  are rejected on write and on read, so durable state never leaks raw input
+  or tenant identity.
+- Updates run inside `BEGIN IMMEDIATE` transactions with monotonic revision
+  compare-and-set: missing records, status changes, stale revisions, and
+  tenant-scope mismatches fail with structured `WorkflowStateError`
+  conflicts - stale writers never silently overwrite newer state.
+- Idempotency-key records bind a request identity to one workflow within its
+  scope namespace; reuse with a different request raises
+  `IDEMPOTENCY_CONFLICT`, and completed keys store only a safe terminal
+  outcome fingerprint reference.
+- When a `state_store` is bound, `QueryExecutionRunner` persists workflow
+  transitions, reserves the request id, and replays completed work as
+  `REJECTED` with the public `DUPLICATE_REQUEST` error code instead of
+  re-executing it. Recovery from a `RUNNING` checkpoint re-executes at
+  least once; this core never claims exactly-once external execution.
+- Retention is host-owned: `cleanup()` removes bounded batches of terminal
+  snapshots and expired idempotency records older than the given cutoffs;
+  active or running workflows are never touched.
+- SQLite file locking serializes writers, bounding this store to local
+  workers; the protocol stays replaceable for a future service-backed store.
+
 ## PostgreSQL conformance profile
 
 The P1 query-execution foundation ships an optional PostgreSQL conformance
