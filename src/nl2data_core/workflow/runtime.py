@@ -1370,7 +1370,21 @@ class DeterministicWorkflowRuntime:
             now=self._now(),
         )
         node = _NODES[stage](self, channel)
-        result = await self._run_with_retries(node, context, channel)
+        remaining = context.deadline.remaining_seconds(now=self._now())
+        if remaining <= 0.0:
+            raise RuntimeTimeoutError(
+                f"workflow deadline expired before stage '{stage.value}'",
+                details={"stage": stage.value},
+            )
+        try:
+            result = await asyncio.wait_for(
+                self._run_with_retries(node, context, channel), timeout=remaining
+            )
+        except TimeoutError as error:
+            raise RuntimeTimeoutError(
+                f"stage '{stage.value}' exceeded the workflow deadline",
+                details={"stage": stage.value, "timeout_seconds": str(remaining)},
+            ) from error
         if durable is not None and result.status is RuntimeOutcomeStatus.SUCCEEDED:
             durable.checkpoint(
                 stage=result.next_stage or stage,

@@ -430,6 +430,23 @@ class TestRejectedBranches:
 
 
 class TestCooperativeDeadlineAndCancellation:
+    async def test_slow_model_is_cancelled_by_workflow_deadline(
+        self, tmp_path: Path
+    ) -> None:
+        adapter = CountingAdapter(make_adapter(tmp_path))
+        provider = FakeModelProvider(default_response=VALID_INTENT, latency_ms=100)
+        runtime = make_runtime(
+            tmp_path,
+            provider=provider,
+            execution=make_execution(tmp_path, adapter=adapter),
+            budget=WorkflowBudget(max_duration_seconds=0.01),
+        )
+        outcome = await runtime.execute(request())
+        assert outcome.status == OutcomeStatus.REJECTED
+        assert outcome.error is not None
+        assert outcome.error.code == ErrorCode.WORKFLOW_TIMEOUT
+        assert adapter.execution_count == 0
+
     async def test_deadline_expiry_rejects_before_adapter_execution(
         self, tmp_path: Path
     ) -> None:
@@ -449,9 +466,9 @@ class TestCooperativeDeadlineAndCancellation:
         assert outcome.status == OutcomeStatus.REJECTED
         assert outcome.error is not None
         assert outcome.error.code == ErrorCode.WORKFLOW_TIMEOUT
-        # The model was invoked once (intent stage); the deadline expired at
-        # the plan-stage entry check before any adapter invocation.
-        assert provider.call_count == 1
+        # The stage deadline prevents the model call once the workflow budget
+        # has expired; no external work starts after the deadline.
+        assert provider.call_count == 0
         assert adapter.execution_count == 0
 
     async def test_cancellation_requested_before_adapter_execution(
