@@ -86,3 +86,38 @@ class TestDynamicImportBoundary:
         config = load_config({"schema_version": 1, "service": {"name": "boundary"}})
         engine = NL2DataEngine(config=config)
         assert engine.lifecycle.value == "created"
+
+
+class TestAiImportBoundary:
+    def test_importing_the_ai_package_loads_no_optional_provider(self) -> None:
+        import nl2data_core.ai  # noqa: F401
+
+        loaded = {name.split(".")[0] for name in sys.modules}
+        for forbidden in FORBIDDEN_IMPORTS:
+            assert forbidden not in loaded, f"optional provider loaded: {forbidden}"
+
+    def test_ai_modules_never_import_optional_providers(self) -> None:
+        ai_root = SRC_ROOT / "nl2data_core" / "ai"
+        offenders: list[str] = []
+        for module_path in ai_root.rglob("*.py"):
+            imported = _imported_names(module_path)
+            for forbidden in FORBIDDEN_IMPORTS:
+                if forbidden in imported:
+                    offenders.append(
+                        f"{module_path.relative_to(SRC_ROOT)} -> {forbidden}"
+                    )
+        assert offenders == [], f"forbidden imports found: {offenders}"
+
+
+class TestAiProviderBoundary:
+    async def test_fake_provider_runs_without_credentials_or_network(self) -> None:
+        from nl2data_core.ai.fake import FakeModelProvider
+        from nl2data_core.ai.models import ModelInvocationRequest
+
+        provider = FakeModelProvider(default_response={"intent": {"source_id": "sales"}})
+        response = await provider.generate(
+            ModelInvocationRequest(request_id="r1", prompt="orders")
+        )
+        assert response.content == {"intent": {"source_id": "sales"}}
+        assert provider.closed is False
+        await provider.close()

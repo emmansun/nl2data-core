@@ -83,6 +83,28 @@ during drain/close are rejected with structured `LifecycleError`s, and the
 engine lifecycle is explicit: `created → initializing → ready → draining →
 closed`.
 
+## AI runtime boundary (P2)
+
+The P2 AI runtime boundary keeps model providers optional and lazy, mirroring
+how database adapters plug into the governed path:
+
+- `ModelProvider` (internal `nl2data_core.ai.protocol`) is a provider-neutral
+  asynchronous port for structured output. It receives a bounded invocation
+  request (natural-language prompt plus an authorized context payload) and
+  never receives database clients, credentials, or unfiltered catalog objects.
+- The core ships a deterministic `FakeModelProvider` for contract, security,
+  and evaluation tests; it requires no credentials and no network access.
+- `IntentResolver` converts provider output into validated structured intent,
+  clarification, or safe rejection - never raw SQL/MQL/shell/AST/driver-shaped
+  output. Semantic references outside the authorized view fail closed, and
+  provider calls are bounded by the configured attempt budget.
+- The opt-in `AIWorkflowRunner` hands validated intent to the existing governed
+  execution boundary (`QueryExecutionRunner.execute_plan`); without a provider
+  it preserves the P1 structured-plan path and the not-configured fallback.
+- Vendor model providers (OpenAI, Anthropic, LangChain, ...) belong in optional
+  packages behind the `ModelProvider` port, exactly like database drivers; the
+  core import boundary never loads them.
+
 ## PostgreSQL conformance profile
 
 The P1 query-execution foundation ships an optional PostgreSQL conformance

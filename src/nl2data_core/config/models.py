@@ -8,6 +8,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from nl2data.errors import ErrorCategory, ErrorCode, NL2DataError
+from nl2data_core.ai.config import ModelConfig
 
 #: The only supported configuration schema version.
 SUPPORTED_SCHEMA_VERSION: Literal[1] = 1
@@ -117,6 +118,7 @@ class EffectiveConfig(BaseModel):
     runtime: RuntimeSettings = Field(default_factory=RuntimeSettings)
     secrets: Mapping[str, SecretReference] = Field(default_factory=dict, max_length=256)
     extensions: Mapping[str, ExtensionSection] = Field(default_factory=dict, max_length=128)
+    model: ModelConfig | None = None
     fingerprint: str = Field(min_length=71, max_length=71, pattern=r"^sha256:[0-9a-f]{64}$")
 
     def safe_payload(self) -> dict[str, Any]:
@@ -132,6 +134,7 @@ class EffectiveConfig(BaseModel):
             "extensions": {
                 name: section.values for name, section in sorted(self.extensions.items())
             },
+            "model": self.model.safe_payload() if self.model is not None else None,
         }
 
     def safe_dump(self) -> dict[str, Any]:

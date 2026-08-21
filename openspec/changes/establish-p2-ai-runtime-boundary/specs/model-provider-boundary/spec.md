@@ -1,0 +1,23 @@
+## ADDED Requirements
+
+### Requirement: Provider-neutral bounded model invocation
+The system SHALL define an asynchronous `ModelProvider` contract that accepts an immutable bounded invocation request and returns a typed structured response envelope or a normalized safe model error without exposing provider-native clients or exceptions.
+
+#### Scenario: Deterministic fake provider satisfies the contract
+- **WHEN** a fake provider receives a valid invocation request
+- **THEN** it returns a reproducible structured response with stable usage metadata and no network dependency
+
+#### Scenario: Provider call exceeds a bound
+- **WHEN** an invocation exceeds its timeout, attempt, input, or output bound
+- **THEN** the call ends with a safe structured model error and no unbounded retry occurs
+
+### Requirement: Provider output is immutable and fingerprintable
+Model invocation configuration, structured output, usage metadata, and normalized errors SHALL reject unknown fields, remain immutable, and expose canonical fingerprints that exclude secrets and raw credentials.
+
+#### Scenario: Equivalent responses have the same fingerprint
+- **WHEN** equivalent provider responses are serialized with different mapping insertion orders
+- **THEN** their protected fingerprints are identical
+
+#### Scenario: Provider credentials never enter evidence
+- **WHEN** a provider error contains credential or connection information
+- **THEN** the normalized error contains only safe error code, category, message, and redacted details

@@ -19,7 +19,13 @@ from nl2data.errors import (
     ErrorRecord,
     as_error_record,
 )
-from nl2data.models import OutcomeStatus, QueryOutcome, QueryRequest, QueryResult
+from nl2data.models import (
+    OutcomeStatus,
+    QueryClarification,
+    QueryOutcome,
+    QueryRequest,
+    QueryResult,
+)
 from nl2data_core.adapters.models import AdapterLimits, ValidationContext
 from nl2data_core.adapters.protocol import QueryAdapter
 from nl2data_core.adapters.sql.compile import compile_plan
@@ -71,6 +77,7 @@ def _outcome(
     status: OutcomeStatus,
     error: ErrorRecord | None = None,
     result: QueryResult | None = None,
+    clarification: QueryClarification | None = None,
     workflow_id: str | None = None,
 ) -> QueryOutcome:
     return QueryOutcome(
@@ -78,6 +85,7 @@ def _outcome(
         request_id=request.request_id,
         workflow_id=workflow_id,
         result=result,
+        clarification=clarification,
         error=error,
         attempts_used=1,
     )
@@ -123,6 +131,11 @@ class QueryExecutionRunner:
             and self._plan_resolver is not None
         )
 
+    @property
+    def view(self) -> AuthorizedView | None:
+        """The authorized view bound to the governed path."""
+        return self._view
+
     async def execute(self, request: QueryRequest) -> QueryOutcome:
         """Execute one query through the governed path."""
         adapter = self._adapter
@@ -149,6 +162,31 @@ class QueryExecutionRunner:
                     code=ErrorCode.PLAN_VALIDATION_FAILED,
                     category=ErrorCategory.VALIDATION,
                     message="no semantic plan could be resolved for the request",
+                ),
+            )
+
+        return await self.execute_plan(request, plan)
+
+    async def execute_plan(self, request: QueryRequest, plan: SemanticQueryPlan) -> QueryOutcome:
+        """Execute an already-built semantic plan through the governed boundary.
+
+        This is the shared execution boundary for the P1 structured-plan
+        path and the AI intent handoff: structural and view validation,
+        governance decision, artifact-bound authorization, adapter
+        execution, and protected result construction.
+        """
+        adapter = self._adapter
+        policy_scope = self._policy_scope
+        view = self._view
+        if adapter is None or policy_scope is None or view is None:
+            return _outcome(
+                request,
+                status=OutcomeStatus.NOT_CONFIGURED,
+                error=ErrorRecord(
+                    code=ErrorCode.NOT_CONFIGURED,
+                    category=ErrorCategory.NOT_CONFIGURED,
+                    message=NOT_CONFIGURED_MESSAGE,
+                    retryable=False,
                 ),
             )
 

@@ -47,6 +47,7 @@ class OutcomeStatus(StrEnum):
     FAILED = "failed"
     NOT_CONFIGURED = "not_configured"
     REJECTED = "rejected"
+    CLARIFICATION = "clarification"
 
 
 class QueryOptions(BaseModel):
@@ -121,6 +122,26 @@ class QueryResult(BaseModel):
         return value
 
 
+class QueryClarificationOption(BaseModel):
+    """A bounded public option for resolving an ambiguous query."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    option_id: str = Field(min_length=1, max_length=128)
+    label: str = Field(min_length=1, max_length=256)
+    detail: str | None = Field(default=None, max_length=1024)
+
+
+class QueryClarification(BaseModel):
+    """Protected public clarification required before query execution."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    clarification_id: str = Field(min_length=1, max_length=128)
+    question: str = Field(min_length=1, max_length=2000)
+    options: tuple[QueryClarificationOption, ...] = Field(default_factory=tuple, max_length=10)
+
+
 class QueryOutcome(BaseModel):
     """Public outcome of a query submission.
 
@@ -136,6 +157,7 @@ class QueryOutcome(BaseModel):
     request_id: str = Field(min_length=1, max_length=128)
     workflow_id: str | None = Field(default=None, min_length=1, max_length=128)
     result: QueryResult | None = None
+    clarification: QueryClarification | None = None
     error: ErrorRecord | None = None
     attempts_used: int = Field(default=0, ge=0, le=_MAX_ATTEMPTS)
     occurred_at: datetime = Field(default_factory=_utc_now)
@@ -145,12 +167,18 @@ class QueryOutcome(BaseModel):
         if self.status == OutcomeStatus.SUCCEEDED:
             if self.result is None:
                 raise ValueError("a successful outcome must contain a protected result")
-            if self.error is not None:
-                raise ValueError("a successful outcome must not carry an error")
-        else:
-            if self.result is not None:
+            if self.error is not None or self.clarification is not None:
+                raise ValueError("a successful outcome must not carry error or clarification")
+        elif self.status == OutcomeStatus.CLARIFICATION:
+            if self.result is not None or self.error is not None or self.clarification is None:
                 raise ValueError(
-                    "failed, rejected, and not-configured outcomes must not contain a result"
+                    "a clarification outcome must contain clarification and no result or error"
+                )
+        else:
+            if self.result is not None or self.clarification is not None:
+                raise ValueError(
+                    "failed, rejected, and not-configured outcomes must not contain "
+                    "result or clarification"
                 )
             if self.error is None:
                 raise ValueError("a non-successful outcome must carry a safe structured error")

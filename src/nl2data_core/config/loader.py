@@ -13,6 +13,7 @@ from typing import Any
 import yaml
 
 from nl2data.errors import ErrorCode
+from nl2data_core.ai.config import ModelConfig
 from nl2data_core.canonical import sha256_fingerprint
 
 from .models import (
@@ -27,10 +28,10 @@ from .models import (
 
 #: Core section names that cannot be overridden through extensions.
 _PROTECTED_SECTION_NAMES = frozenset(
-    {"schema_version", "service", "runtime", "secrets", "extensions", "fingerprint"}
+    {"schema_version", "service", "runtime", "secrets", "extensions", "model", "fingerprint"}
 )
 _CONFIGURATION_FIELD_NAMES = frozenset(
-    {"schema_version", "service", "runtime", "secrets", "extensions"}
+    {"schema_version", "service", "runtime", "secrets", "extensions", "model"}
 )
 
 
@@ -131,6 +132,11 @@ def load_config(source: Mapping[str, Any] | str) -> EffectiveConfig:
         service = _validate_section("service", ServiceIdentity, parsed.get("service", {}))
         runtime = _validate_section("runtime", RuntimeSettings, parsed.get("runtime", {}))
 
+        model: ModelConfig | None = None
+        raw_model = parsed.get("model")
+        if raw_model is not None:
+            model = _validate_section("model", ModelConfig, raw_model)
+
         secrets: dict[str, SecretReference] = {}
         raw_secrets = parsed.get("secrets", {})
         if not isinstance(raw_secrets, Mapping):
@@ -182,6 +188,7 @@ def load_config(source: Mapping[str, Any] | str) -> EffectiveConfig:
             name: {"kind": ref.kind, "name": ref.name} for name, ref in sorted(secrets.items())
         },
         "extensions": {name: section.values for name, section in sorted(extensions.items())},
+        "model": model.safe_payload() if model is not None else None,
     }
     fingerprint = sha256_fingerprint(payload)
     return EffectiveConfig(
@@ -190,5 +197,6 @@ def load_config(source: Mapping[str, Any] | str) -> EffectiveConfig:
         runtime=runtime,
         secrets=secrets,
         extensions=extensions,
+        model=model,
         fingerprint=fingerprint,
     )
