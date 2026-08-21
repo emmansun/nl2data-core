@@ -206,7 +206,10 @@ class TestRepeatability:
     async def test_equal_inputs_produce_equal_evidence(self) -> None:
         first = await run("run-1")
         second = await run("run-1")
-        assert first.results == second.results
+        # Durations are environmental; compare the semantic payload only.
+        assert (
+            first._semantic_payload()["results"] == second._semantic_payload()["results"]
+        )
         assert first.fingerprint == second.fingerprint
         assert all(
             a.evidence == b.evidence
@@ -216,14 +219,16 @@ class TestRepeatability:
     async def test_equal_inputs_produce_equal_reports(self) -> None:
         first = await run("run-1")
         second = await run("run-1")
-        assert first.to_json() == second.to_json()
+        assert first._semantic_payload() == second._semantic_payload()
 
     async def test_run_identity_changes_the_report_fingerprint(self) -> None:
         first = await run("run-1")
         second = await run("run-2")
         assert first.fingerprint != second.fingerprint
         # Semantic evidence stays equal across runs; only identity differs.
-        assert first.results == second.results
+        assert (
+            first._semantic_payload()["results"] == second._semantic_payload()["results"]
+        )
 
     async def test_report_fingerprint_excludes_durations(self) -> None:
         report = await run("run-1")

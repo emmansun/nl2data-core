@@ -41,7 +41,7 @@ from nl2data_core.ai.models import (
     StructuredIntent,
 )
 from nl2data_core.ai.protocol import ModelProvider
-from nl2data_core.canonical import canonical_json
+from nl2data_core.canonical import canonical_json, sha256_fingerprint
 from nl2data_core.planning.validation import AuthorizedView
 
 #: Top-level fields a provider may emit in the structured output envelope.
@@ -172,8 +172,15 @@ class IntentResolver:
         provider: ModelProvider,
         *,
         max_output_tokens: int | None = None,
+        context_extra: Mapping[str, Any] | None = None,
     ) -> ResolvedIntent | ClarificationRequired | RejectedIntent:
-        """Resolve one request into a validated outcome."""
+        """Resolve one request into a validated outcome.
+
+        ``context_extra`` is merged into the provider context payload (for
+        example recalled memory references) without changing the stateless
+        P2.1 behavior when absent; the invocation fingerprint always covers
+        the merged payload.
+        """
         bound_tokens = max_output_tokens or self._config.max_output_tokens
         context = assemble_model_context(
             request=request,
@@ -181,7 +188,9 @@ class IntentResolver:
             semantic_references=self._references,
             max_output_tokens=bound_tokens,
         )
-        outcome = await self._invoke_with_budget(request, provider, context, bound_tokens)
+        outcome = await self._invoke_with_budget(
+            request, provider, context, bound_tokens, context_extra=context_extra
+        )
         if isinstance(outcome, ModelErrorRecord):
             return RejectedIntent(error=outcome)
         return self._validate_response(request, outcome, context)
@@ -192,14 +201,25 @@ class IntentResolver:
         provider: ModelProvider,
         context: AuthorizedModelContext,
         max_output_tokens: int,
+        *,
+        context_extra: Mapping[str, Any] | None = None,
     ) -> ModelResponse | ModelErrorRecord:
         """Invoke the provider with a bounded retry budget."""
+        payload = context.safe_payload()
+        if context_extra is not None:
+            payload = {**payload, **context_extra}
         invocation = ModelInvocationRequest(
             request_id=request.request_id,
             prompt=request.prompt,
-            context=context.safe_payload(),
+            context=payload,
             max_output_tokens=max_output_tokens,
-            metadata={"context_fingerprint": context.fingerprint},
+            metadata={
+                "context_fingerprint": (
+                    sha256_fingerprint(payload)
+                    if context_extra is not None
+                    else context.fingerprint
+                )
+            },
         )
         if len(request.prompt) > self._config.max_input_chars:
             return self._reject_record(

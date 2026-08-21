@@ -161,6 +161,23 @@ class QueryExecutionRunner:
         """The authorized view bound to the governed path."""
         return self._view
 
+    @property
+    def policy_scope(self) -> PolicyScope | None:
+        """The policy scope bound to the governed path."""
+        return self._policy_scope
+
+    @property
+    def tenant_context(self) -> TenantScopeContext | None:
+        """The trusted tenant scope bound to the governed path."""
+        return self._tenant_context
+
+    @property
+    def adapter_type(self) -> str | None:
+        """The bound adapter's declared type, when an adapter is present."""
+        if self._adapter is None:
+            return None
+        return self._adapter.capabilities().adapter_type
+
     async def execute(self, request: QueryRequest) -> QueryOutcome:
         """Execute one query through the governed path."""
         adapter = self._adapter

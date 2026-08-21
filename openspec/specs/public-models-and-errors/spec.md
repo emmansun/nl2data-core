@@ -1,11 +1,17 @@
-## ADDED Requirements
+## Purpose
 
+Define the stable public models, structured errors, import boundary, and protected outcome contract for NL2Data applications.
+## Requirements
 ### Requirement: Stable public import boundary
-The public package SHALL expose the P0 engine, request, context, outcome, capability, and error contracts from `nl2data`, and application code SHALL NOT need to import `nl2data_core` internals.
+The public package SHALL expose the P0/P1 engine, request, context, outcome, capability, clarification, and error contracts from `nl2data`, and application code SHALL NOT need to import `nl2data_core` internals. Trusted tenant claims SHALL remain internal host-integration data rather than public client authorization inputs.
 
 #### Scenario: Public imports are available
-- **WHEN** an application imports the documented P0 symbols from `nl2data`
-- **THEN** the imports succeed without importing a database driver or transport framework
+- **WHEN** an application imports the documented public symbols from `nl2data`
+- **THEN** the imports succeed without importing a database driver, identity provider, or transport framework
+
+#### Scenario: Tenant claims are not client authority
+- **WHEN** a public request includes an untrusted tenant hint
+- **THEN** the public boundary does not treat it as effective authorization context
 
 ### Requirement: Immutable public models
 Public request, context, outcome, result, and capability models SHALL reject unknown fields and SHALL be immutable after construction.
@@ -39,3 +45,4 @@ Public query outcomes SHALL expose only protected result contracts and SHALL not
 #### Scenario: Rejected execution cannot contain a result
 - **WHEN** governance rejects a query or validation fails
 - **THEN** the public outcome has rejected or failed status, no result, and a safe structured error
+

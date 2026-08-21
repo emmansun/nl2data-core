@@ -187,6 +187,41 @@ work across restarts:
 - SQLite file locking serializes writers, bounding this store to local
   workers; the protocol stays replaceable for a future service-backed store.
 
+## Memory / multi-turn context boundary (P2)
+
+The P2 memory boundary lets hosts bind multi-turn context to query execution
+while keeping Memory strictly contextual - it never caches or replays raw
+results:
+
+- Immutable, bounded `MemoryRecord` models (internal `nl2data_core.memory`)
+  cover working state, session summaries, query references, semantic
+  decisions, and audit references. They store only logical facts and
+  protected SHA-256 fingerprints of intent, plans, artifacts, policies, and
+  catalogs - never raw prompts, SQL/MQL, result rows or documents, secrets,
+  or native objects.
+- The replaceable `MemoryProvider` protocol (append, recall, compare-and-set,
+  compact, expire, delete) ships with a deterministic in-memory
+  implementation scoped by tenant, session, and conversation fingerprints.
+  Scope mismatches are denied, records expire by TTL, recall honors bounded
+  budgets, and unavailable providers raise normalized errors.
+- `MultiTurnResolver` projects recalled references into the P2.1 provider
+  context and revalidates them on every turn: tenant scope, policy/catalog
+  fingerprints, semantic view, adapter/artifact references, and record
+  expiry. Stale or out-of-scope references fail closed into clarification,
+  and a dependent follow-up never executes a recalled plan directly.
+- Memory is context only. Raw result caching is unsupported: no path stores
+  or replays query results or rows, and durable or service-backed (for
+  example Redis) providers remain future work behind the replaceable
+  protocol.
+- When Memory is unavailable the workflow degrades statelessly to the P2.1
+  path; memory injection into `AIWorkflowRunner` is opt-in and keeps the
+  governed boundary - validation, authorization, and plan checks still run
+  on every turn.
+- A deterministic conformance suite (`nl2data_core.memory.conformance`)
+  exercises raw-payload rejection, scope isolation, stale reference denial,
+  retention, deletion, compaction, stateless fallback, and bounded recall,
+  emitting protected evidence and reports with no raw material.
+
 ## PostgreSQL conformance profile
 
 The P1 query-execution foundation ships an optional PostgreSQL conformance
