@@ -48,6 +48,11 @@ class GovernanceFacts(BaseModel):
     resource_ids: frozenset[str] = Field(default_factory=frozenset)
     field_ids: frozenset[str] = Field(default_factory=frozenset)
     filter_fingerprints: frozenset[str] = Field(default_factory=frozenset)
+    ir_fingerprint: str | None = Field(default=None, pattern=_FINGERPRINT_PATTERN)
+    view_fingerprint: str | None = Field(default=None, pattern=_FINGERPRINT_PATTERN)
+    bundle_fingerprint: str | None = Field(default=None, pattern=_FINGERPRINT_PATTERN)
+    capability_ids: frozenset[str] = Field(default_factory=frozenset)
+    artifact_fingerprint: str | None = Field(default=None, pattern=_FINGERPRINT_PATTERN)
     tenant_scope_fingerprint: str | None = Field(default=None, pattern=_FINGERPRINT_PATTERN)
     isolation_profile: str | None = Field(default=None, min_length=1, max_length=32)
 
@@ -163,6 +168,10 @@ class ExecutionAuthorization(BaseModel):
     source_id: str = Field(pattern=_IDENTIFIER_PATTERN)
     operation: Literal["select"] = "select"
     artifact_fingerprint: str = Field(pattern=_FINGERPRINT_PATTERN)
+    ir_fingerprint: str | None = Field(default=None, pattern=_FINGERPRINT_PATTERN)
+    view_fingerprint: str | None = Field(default=None, pattern=_FINGERPRINT_PATTERN)
+    bundle_fingerprint: str | None = Field(default=None, pattern=_FINGERPRINT_PATTERN)
+    capability_ids: frozenset[str] = Field(default_factory=frozenset)
     tenant_scope_fingerprint: str | None = Field(default=None, pattern=_FINGERPRINT_PATTERN)
     isolation_profile: str | None = Field(default=None, min_length=1, max_length=32)
     effective_limits: EffectiveLimits = Field(default_factory=EffectiveLimits)

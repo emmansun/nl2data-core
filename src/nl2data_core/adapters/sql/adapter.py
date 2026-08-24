@@ -8,6 +8,7 @@ capabilities, parse, validate, generate, estimate_cost, execute, close.
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -94,6 +95,10 @@ class SqlQueryAdapter:
             "single_statement",
             "bounded_results",
             "ast_validation",
+            "aggregation",
+            "ordering",
+            "list_ops",
+            "contains",
             "cte" if profile.supports_cte else "no_cte",
             "grouping" if profile.supports_grouping else "no_grouping",
             "union" if profile.supports_union else "no_union",
@@ -127,6 +132,18 @@ class SqlQueryAdapter:
             },
         )
 
+    def _obligation_policy(self, context: ValidationContext) -> SQLGuardPolicy:
+        """The guard policy with the context's mandatory obligations merged in."""
+        if not context.required_obligation_fingerprints:
+            return self._policy
+        return replace(
+            self._policy,
+            required_obligation_fingerprints=(
+                self._policy.required_obligation_fingerprints
+                | context.required_obligation_fingerprints
+            ),
+        )
+
     def validate(self, artifact: ParsedArtifact, context: ValidationContext) -> ValidatedArtifact:
         parsed = self._parsed_by_id.get(artifact.artifact_id)
         if parsed is None:
@@ -135,7 +152,12 @@ class SqlQueryAdapter:
                 details={"artifact_id": artifact.artifact_id},
             )
         statement: exp.Expression | None = exp.maybe_parse(parsed.sql_text, dialect=self._dialect)
-        guard = assert_guarded(parsed, self._policy, statement=statement)
+        guard = assert_guarded(
+            parsed,
+            self._obligation_policy(context),
+            statement=statement,
+            field_bindings=context.field_bindings,
+        )
         self._sql_by_id[artifact.artifact_id] = parsed.sql_text
         return ValidatedArtifact(
             artifact_id=artifact.artifact_id,
@@ -146,6 +168,8 @@ class SqlQueryAdapter:
                 "limit": str(parsed.limit_value or 0),
                 "columns": ",".join(parsed.columns),
             },
+            obligations_verified=guard.obligations_verified,
+            bounded_rows=parsed.limit_value,
         )
 
     async def generate(self, query: str, context: ValidationContext) -> GeneratedArtifact:
@@ -156,7 +180,12 @@ class SqlQueryAdapter:
             max_query_length=self._max_query_length,
         )
         statement: exp.Expression | None = exp.maybe_parse(parsed.sql_text, dialect=self._dialect)
-        guard = assert_guarded(parsed, self._policy, statement=statement)
+        guard = assert_guarded(
+            parsed,
+            self._obligation_policy(context),
+            statement=statement,
+            field_bindings=context.field_bindings,
+        )
         self._parsed_by_id[parsed.artifact_id] = parsed
         self._sql_by_id[parsed.artifact_id] = parsed.sql_text
         return GeneratedArtifact(

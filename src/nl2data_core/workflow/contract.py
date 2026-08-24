@@ -67,6 +67,8 @@ STAGE_ORDER: tuple[WorkflowStage, ...] = (
     WorkflowStage.INTENT,
     WorkflowStage.PLAN,
     WorkflowStage.VALIDATE,
+    WorkflowStage.COMPILE,
+    WorkflowStage.GUARD,
     WorkflowStage.GOVERN,
     WorkflowStage.AUTHORIZE,
     WorkflowStage.EXECUTE,
@@ -76,13 +78,20 @@ STAGE_ORDER: tuple[WorkflowStage, ...] = (
 )
 
 #: Mandatory gates per stage.  Adapter execution requires current tenant,
-#: IR validation, governance, artifact validation, authorization, and
-#: deadline evidence; later stages re-check the artifact and authorization.
+#: IR validation, compilation, artifact guard, governance, artifact
+#: validation, authorization, and deadline evidence; later stages re-check
+#: the artifact and authorization.  Stages before EXECUTE perform no
+#: adapter work: compilation and the artifact guard only gate their own
+#: successors.
 REQUIRED_GATES: dict[WorkflowStage, frozenset[WorkflowGate]] = {
+    WorkflowStage.COMPILE: frozenset({WorkflowGate.PLAN_VALIDATION}),
+    WorkflowStage.GUARD: frozenset({WorkflowGate.COMPILATION}),
     WorkflowStage.EXECUTE: frozenset(
         {
             WorkflowGate.TENANT_SCOPE,
             WorkflowGate.PLAN_VALIDATION,
+            WorkflowGate.COMPILATION,
+            WorkflowGate.ARTIFACT_GUARD,
             WorkflowGate.GOVERNANCE,
             WorkflowGate.ARTIFACT_VALIDATION,
             WorkflowGate.AUTHORIZATION,
@@ -366,6 +375,10 @@ def authorization_evidence_fingerprint(authorization: ExecutionAuthorization) ->
             "source_id": authorization.source_id,
             "operation": authorization.operation,
             "artifact_fingerprint": authorization.artifact_fingerprint,
+            "ir_fingerprint": authorization.ir_fingerprint,
+            "view_fingerprint": authorization.view_fingerprint,
+            "bundle_fingerprint": authorization.bundle_fingerprint,
+            "capability_ids": sorted(authorization.capability_ids),
             "tenant_scope_fingerprint": authorization.tenant_scope_fingerprint,
             "isolation_profile": authorization.isolation_profile,
             "effective_limits": {

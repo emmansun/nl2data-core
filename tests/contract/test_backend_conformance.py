@@ -54,6 +54,8 @@ class TestProtocolConformance:
             {
                 WorkflowGate.TENANT_SCOPE,
                 WorkflowGate.PLAN_VALIDATION,
+                WorkflowGate.COMPILATION,
+                WorkflowGate.ARTIFACT_GUARD,
                 WorkflowGate.GOVERNANCE,
                 WorkflowGate.ARTIFACT_VALIDATION,
                 WorkflowGate.AUTHORIZATION,
@@ -73,7 +75,7 @@ class TestBypassProtection:
             )
 
     def test_partial_evidence_still_rejects_adapter_execution(self) -> None:
-        """Fabricating five of six gates is not enough: authorization is
+        """Fabricating seven of eight gates is not enough: authorization is
         mandatory, so a conforming host must stop before the adapter."""
         partial = dict(EVIDENCE)
         del partial[WorkflowGate.AUTHORIZATION]

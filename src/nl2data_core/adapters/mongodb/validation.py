@@ -21,9 +21,22 @@ from .models import (
     MongoOperation,
     MongoQuerySpec,
 )
+from .normalize import predicate_fingerprint
 
 #: Leaf comparison operators an allowed filter value may carry.
 DEFAULT_OPERATORS = frozenset({"$eq", "$ne", "$gt", "$gte", "$lt", "$lte", "$in", "$nin"})
+
+#: MQL comparison operators -> canonical semantic filter operators.
+_MQL_TO_SEMANTIC = {
+    "$eq": "eq",
+    "$ne": "ne",
+    "$gt": "gt",
+    "$gte": "gte",
+    "$lt": "lt",
+    "$lte": "lte",
+    "$in": "in",
+    "$nin": "not_in",
+}
 
 #: Aggregation pipeline stages with a read-only, bounded profile.
 DEFAULT_STAGES = frozenset(
@@ -168,6 +181,7 @@ class MongoGuardPolicy:
     require_limit: bool = True
     tenant_profile: str | None = None
     required_obligation_fingerprint: str | None = None
+    required_obligation_fingerprints: frozenset[str] = frozenset()
 
     def policy_hash(self) -> str:
         """Canonical fingerprint of the policy used in guard fingerprints."""
@@ -184,6 +198,9 @@ class MongoGuardPolicy:
                 "require_limit": self.require_limit,
                 "tenant_profile": self.tenant_profile,
                 "required_obligation_fingerprint": self.required_obligation_fingerprint,
+                "required_obligation_fingerprints": sorted(
+                    self.required_obligation_fingerprints
+                ),
             }
         )
 
@@ -228,30 +245,59 @@ def _validate_filter(
                 reasons.append(f"operator '{key}' is not approved by the profile")
 
 
-def _filter_fingerprints(filter_: Mapping[str, Any]) -> frozenset[str]:
-    """Canonical leaf predicates present in a structured filter."""
-    from .normalize import predicate_fingerprint
+def _filter_fingerprints(
+    filter_: Mapping[str, Any],
+    field_bindings: Mapping[str, str] | None = None,
+) -> frozenset[str]:
+    """Canonical leaf predicates present in a structured filter.
 
+    Fingerprints use the canonical semantic operator space (``eq``,
+    ``ne``, ...) so obligations bound to IR filter evidence match across
+    the boundary; ``field_bindings`` maps physical dotted paths to
+    semantic field ids.  Operators without a semantic mapping are never
+    counted as enforced (fail closed).
+    """
+    bindings = field_bindings or {}
     fingerprints: set[str] = set()
     for path, value in filter_.items():
+        field_id = bindings.get(path, path)
         if isinstance(value, Mapping) and value and all(
             isinstance(key, str) and key.startswith("$") for key in value
         ):
             for operator, operand in value.items():
-                fingerprints.add(predicate_fingerprint(path, operator, operand))
+                semantic = _MQL_TO_SEMANTIC.get(operator)
+                if semantic is None:
+                    continue
+                fingerprints.add(predicate_fingerprint(field_id, semantic, operand))
         elif not isinstance(value, Mapping):
-            fingerprints.add(predicate_fingerprint(path, "$eq", value))
+            fingerprints.add(predicate_fingerprint(field_id, "eq", value))
     return frozenset(fingerprints)
 
 
-def _spec_filter_fingerprints(spec: MongoQuerySpec) -> frozenset[str]:
+def _spec_filter_fingerprints(
+    spec: MongoQuerySpec,
+    field_bindings: Mapping[str, str] | None = None,
+) -> frozenset[str]:
     """Predicates that the executor will apply for the operation."""
-    fingerprints = set(_filter_fingerprints(spec.filter))
+    fingerprints = set(_filter_fingerprints(spec.filter, field_bindings))
     if spec.pipeline is not None:
         for stage in spec.pipeline:
             if "$match" in stage and isinstance(stage["$match"], Mapping):
-                fingerprints.update(_filter_fingerprints(stage["$match"]))
+                fingerprints.update(_filter_fingerprints(stage["$match"], field_bindings))
     return frozenset(fingerprints)
+
+
+def _spec_bounded_rows(spec: MongoQuerySpec) -> int | None:
+    """The bounded row count the executor will apply, if any."""
+    if spec.limit is not None:
+        return spec.limit
+    if spec.pipeline:
+        last = spec.pipeline[-1]
+        if isinstance(last, Mapping):
+            limit = last.get("$limit")
+            if isinstance(limit, int):
+                return limit
+    return None
 
 
 def _validate_projection(
@@ -477,6 +523,8 @@ def _validate_tenant(
     spec: MongoQuerySpec,
     policy: MongoGuardPolicy,
     reasons: list[str],
+    *,
+    field_bindings: Mapping[str, str] | None = None,
 ) -> None:
     profile = policy.tenant_profile
     if profile is None:
@@ -499,7 +547,11 @@ def _validate_tenant(
             reasons.append(
                 f"tenant obligation operator '{obligation.operator}' is not approved"
             )
-        if obligation.fingerprint not in _spec_filter_fingerprints(spec):
+        semantic_operator = _MQL_TO_SEMANTIC.get(obligation.operator, obligation.operator)
+        obligation_fingerprint = predicate_fingerprint(
+            obligation.field_id, semantic_operator, obligation.value
+        )
+        if obligation_fingerprint not in _spec_filter_fingerprints(spec, field_bindings):
             reasons.append("tenant obligation is not enforced by the query filter")
         return
     routing = spec.routing_evidence
@@ -515,7 +567,12 @@ def _validate_tenant(
         )
 
 
-def run_guard(spec: MongoQuerySpec, policy: MongoGuardPolicy) -> MongoGuardResult:
+def run_guard(
+    spec: MongoQuerySpec,
+    policy: MongoGuardPolicy,
+    *,
+    field_bindings: Mapping[str, str] | None = None,
+) -> MongoGuardResult:
     """Evaluate the guard against a typed spec; never raises for denials."""
     reasons: list[str] = []
 
@@ -552,18 +609,37 @@ def run_guard(spec: MongoQuerySpec, policy: MongoGuardPolicy) -> MongoGuardResul
             )
         _validate_aggregate(spec, policy, reasons)
 
-    _validate_tenant(spec, policy, reasons)
+    _validate_tenant(spec, policy, reasons, field_bindings=field_bindings)
+
+    verified = _spec_filter_fingerprints(spec, field_bindings=field_bindings)
+    for obligation in sorted(policy.required_obligation_fingerprints):
+        if obligation not in verified:
+            reasons.append(
+                f"mandatory filter obligation '{obligation[:16]}...' is not "
+                "enforced by the query filter"
+            )
 
     return MongoGuardResult(
         accepted=not reasons,
         reasons=tuple(reasons),
         fingerprint=_guard_fingerprint(spec, policy),
+        obligations_verified=frozenset(
+            obligation
+            for obligation in policy.required_obligation_fingerprints
+            if obligation in verified
+        ),
+        bounded_rows=_spec_bounded_rows(spec),
     )
 
 
-def assert_validated(spec: MongoQuerySpec, policy: MongoGuardPolicy) -> MongoGuardResult:
+def assert_validated(
+    spec: MongoQuerySpec,
+    policy: MongoGuardPolicy,
+    *,
+    field_bindings: Mapping[str, str] | None = None,
+) -> MongoGuardResult:
     """Run the guard and raise :class:`MongoAdapterError` when rejected."""
-    result = run_guard(spec, policy)
+    result = run_guard(spec, policy, field_bindings=field_bindings)
     if not result.accepted:
         raise MongoAdapterError(
             "specification was rejected by the MongoDB guard",

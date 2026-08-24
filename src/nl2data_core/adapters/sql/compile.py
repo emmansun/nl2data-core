@@ -4,6 +4,11 @@ Compilation is deterministic and covers the first supported select,
 filter, grouping, ordering, and limit cases.  Identifiers come only from
 the validated physical binding; values are rendered through the parser's
 literal escaping.
+
+The compiler consumes the shared immutable :class:`CompilationContext` and
+emits a backend artifact plus safe compilation evidence.  It never grants
+authority: no governance evaluation, authorization issuance, or capability
+broadening happens here, and the produced SQL stays bounded by the IR.
 """
 
 from __future__ import annotations
@@ -13,9 +18,16 @@ from typing import Any
 from sqlglot import exp
 
 from nl2data.errors import ErrorCategory, ErrorCode, NL2DataError
+from nl2data_core.compilation.contract import (
+    CompilationContext,
+    CompilationEvidence,
+    CompileResult,
+)
 from nl2data_core.planning.ir.models import IRFilter, SemanticQueryIR
 from nl2data_core.planning.ir.validation import validate_ir, verify_ir_fingerprint
 from nl2data_core.planning.models import PhysicalBinding
+
+from .models import sql_artifact_fingerprint
 
 #: Stable compiler identity/version for artifact evidence (DDS-019).
 COMPILER_IDENTITY = "sql-compiler"
@@ -112,7 +124,8 @@ def compile_ir(ir: SemanticQueryIR, *, binding: PhysicalBinding | None) -> str:
     The IR fingerprint is verified first and compilation fails closed on a
     tampered or stale fingerprint; the physical binding is explicit
     compiler context and never part of the IR payload.  The produced SQL
-    is bounded by the IR limit.
+    is bounded by the IR limit.  Legacy entry point: prefer
+    :func:`compile_sql` with the shared compilation context.
     """
     if binding is None:
         raise SQLCompileError("IR compilation requires a physical binding")
@@ -128,6 +141,68 @@ def compile_ir(ir: SemanticQueryIR, *, binding: PhysicalBinding | None) -> str:
             details={"issue_codes": ",".join(validation.issue_codes())},
         )
     return _compile(ir, binding)
+
+
+def compile_sql(
+    ir: SemanticQueryIR, *, context: CompilationContext
+) -> CompileResult:
+    """Compile a validated IR with the shared immutable compilation context.
+
+    Fail-closed on a tampered or stale IR fingerprint, failed structural
+    validation, an adapter mismatch, or a missing physical binding.  The
+    emitted evidence links the artifact to the IR, view/model bundle,
+    policy, tenant scope, adapter capabilities, effective bounds, and
+    mandatory filter obligations - never raw payloads or credentials.
+    """
+    if context.ir.fingerprint != ir.fingerprint:
+        raise SQLCompileError("compilation context does not match the supplied IR")
+    if context.adapter_capabilities.adapter_type != "sql":
+        raise SQLCompileError(
+            "the SQL compiler cannot serve a non-SQL adapter profile",
+            details={"adapter_type": context.adapter_capabilities.adapter_type},
+        )
+    binding = context.compiler_context
+    if binding is None:
+        raise SQLCompileError("IR compilation requires a physical binding")
+    if not verify_ir_fingerprint(ir):
+        raise SQLCompileError(
+            "IR fingerprint does not match its canonical payload",
+            details={"ir_id": ir.ir_id},
+        )
+    validation = validate_ir(ir, view=context.view)
+    if not validation.valid:
+        raise SQLCompileError(
+            "IR failed structural validation",
+            details={"issue_codes": ",".join(validation.issue_codes())},
+        )
+    artifact = _compile(ir, binding)
+    limits = context.effective_limits
+    evidence = CompilationEvidence(
+        ir_version=ir.ir_version,
+        ir_fingerprint=ir.fingerprint,
+        source_id=ir.source_id,
+        operation="select",
+        field_ids=ir.field_ids(),
+        view_fingerprint=context.view_fingerprint,
+        bundle_fingerprint=context.bundle_fingerprint,
+        policy_fingerprint=context.policy_fingerprint,
+        tenant_scope_fingerprint=context.tenant_scope_fingerprint,
+        purpose=context.purpose,
+        adapter_type="sql",
+        capability_ids=context.adapter_capabilities.features,
+        required_capabilities=frozenset(ir.required_capabilities),
+        mandatory_filter_fingerprints=context.mandatory_filter_fingerprints,
+        max_rows=limits.max_rows if limits is not None else None,
+        max_columns=limits.max_columns if limits is not None else None,
+        max_execution_seconds=(
+            limits.max_execution_seconds if limits is not None else None
+        ),
+        max_result_bytes=limits.max_result_bytes if limits is not None else None,
+        compiler_identity=COMPILER_IDENTITY,
+        compiler_version=COMPILER_VERSION,
+        artifact_fingerprint=sql_artifact_fingerprint(artifact, binding.dialect),
+    )
+    return CompileResult(artifact=artifact, evidence=evidence)
 
 
 def _compile(ir: SemanticQueryIR, binding: PhysicalBinding) -> str:

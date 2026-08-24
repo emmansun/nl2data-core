@@ -211,13 +211,20 @@ class MongoParsedArtifact(BaseModel):
 
 
 class MongoGuardResult(BaseModel):
-    """Structured outcome of MQL validation against a guard policy."""
+    """Structured outcome of MQL validation against a guard policy.
+
+    ``obligations_verified`` are the mandatory filter obligations the
+    spec demonstrably enforces (semantic fingerprint space);
+    ``bounded_rows`` is the bounded row count the executor will apply.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     accepted: bool
     reasons: tuple[str, ...] = Field(default_factory=tuple, max_length=32)
     fingerprint: str = Field(pattern=_FINGERPRINT_PATTERN)
+    obligations_verified: frozenset[str] = Field(default_factory=frozenset)
+    bounded_rows: int | None = Field(default=None, ge=1, le=1_000_000_000)
 
     @property
     def rejected(self) -> bool:

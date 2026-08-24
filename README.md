@@ -468,18 +468,35 @@ conditionals inside runners:
   LangGraph; a deterministic reference runtime implements the same contract
   and is the conformance baseline.
 - One explicit ordered stage graph:
-  `initialize -> memory -> intent -> plan -> validate -> govern -> authorize
-  -> execute -> protect -> persist -> complete`. Clarification, denial,
-  timeout, cancellation, retry exhaustion, and approval-required are typed
-  terminal or controlled branch outcomes - never generic provider
-  exceptions. `SUCCEEDED` and `CLARIFICATION` map one-to-one onto public
-  outcomes; the rest normalize to public `REJECTED`/`FAILED` outcomes with
-  specific error codes.
+  `initialize -> memory -> intent -> plan -> validate -> compile -> guard
+  -> govern -> authorize -> execute -> protect -> persist -> complete`.
+  Clarification, denial, timeout, cancellation, retry exhaustion, and
+  approval-required are typed terminal or controlled branch outcomes -
+  never generic provider exceptions. `SUCCEEDED` and `CLARIFICATION` map
+  one-to-one onto public outcomes; the rest normalize to public
+  `REJECTED`/`FAILED` outcomes with specific error codes.
 - Mandatory gates: the adapter is never invoked unless current tenant
-  scope, IR validation, governance, artifact validation, and
-  authorization evidence are present and fresh. Denial or malformed input
-  stops before any external work starts, and a future optional backend must
-  pass the same gate assertions.
+  scope, IR validation, compilation, artifact-guard, governance, artifact
+  validation, authorization, and deadline evidence are present and fresh.
+  `validate_stage_entry` enforces the ordered `REQUIRED_GATES`: COMPILE
+  requires IR validation, GUARD requires compilation, and EXECUTE requires
+  all eight gates (tenant scope, IR validation, compilation, artifact
+  guard, governance, artifact validation, authorization, deadline).
+  Denial or malformed input stops before any external work starts, and a
+  future optional backend must pass the same gate assertions.
+- Compiler-governance boundary: SQL and MongoDB compilers consume one
+  immutable `CompilationContext` (validated IR, adapter capabilities,
+  effective limits, mandatory filter obligations, view/bundle/tenant/
+  policy references, physical bindings) and emit backend-neutral
+  `CompilationEvidence` carrying only fingerprints - never raw SQL/MQL,
+  credentials, or identity. Compilation alone cannot grant authority:
+  execution requires an artifact guard bound to the compiled artifact and
+  an authorization issued only after governance, then re-verified by
+  `verify_pre_execution_guard` immediately before execution against IR,
+  capability, obligation, bound, tenant, and authorization evidence.
+  Protected results and audit evidence retain the full logical-to-physical
+  lineage (IR, view/model/policy, artifact, guard, authorization, and
+  result fingerprints) without raw payloads.
 - Cooperative cancellation and request deadlines: every stage that can
   perform external work receives a bounded deadline/cancellation context
   and stops before starting the next external operation. The runtime never
@@ -489,6 +506,10 @@ conditionals inside runners:
   tenant scope, configuration/policy/catalog/semantic/artifact
   fingerprints, and bounded retry/repair counters. Raw prompts, queries,
   IRs, results, provider, and native objects never enter runtime state.
+- Relevant suites: `tests/contract/test_compiler_governance_boundaries.py`,
+  `tests/contract/test_compiler_parity.py`, and
+  `tests/security/test_compiler_governance_security.py`, alongside the
+  backend conformance suites below.
 
 ### At-least-once recovery and idempotency
 
@@ -538,8 +559,8 @@ cases, and protected result assertions.
 
 The P2 query-execution foundation adds a structured, read-only MongoDB
 specialization behind the same generic `QueryAdapter` lifecycle, with the
-same governed order (IR validation, governance, authorization, adapter
-guard, protected results) as SQL.
+same governed order (IR validation, compilation, artifact guard,
+governance, authorization, protected results) as SQL.
 
 - **Optional installation**: `pip install nl2data-core[mongodb]` (PyMongo
   4.6+). The base package never imports PyMongo; MongoDB models, the
@@ -576,7 +597,9 @@ guard, protected results) as SQL.
   normalized scalar set are out of scope for the first profile.
 - Relevant suites: `tests/unit/test_mongodb_specs.py`,
   `tests/contract/test_mongodb_adapter.py`,
+  `tests/contract/test_compiler_parity.py`,
   `tests/security/test_mongodb_security.py`,
+  `tests/security/test_compiler_governance_security.py`,
   `tests/conformance/test_mongodb_conformance.py`,
   `tests/integration/test_mongodb_governance.py`, and
   `tests/integration/test_mongodb_real.py` (optional service).

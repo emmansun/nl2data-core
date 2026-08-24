@@ -79,6 +79,8 @@ class TestStageGraph:
             "intent",
             "plan",
             "validate",
+            "compile",
+            "guard",
             "govern",
             "authorize",
             "execute",
@@ -95,11 +97,19 @@ class TestStageGraph:
             {
                 WorkflowGate.TENANT_SCOPE,
                 WorkflowGate.PLAN_VALIDATION,
+                WorkflowGate.COMPILATION,
+                WorkflowGate.ARTIFACT_GUARD,
                 WorkflowGate.GOVERNANCE,
                 WorkflowGate.ARTIFACT_VALIDATION,
                 WorkflowGate.AUTHORIZATION,
                 WorkflowGate.DEADLINE,
             }
+        )
+        assert REQUIRED_GATES[WorkflowStage.COMPILE] == frozenset(
+            {WorkflowGate.PLAN_VALIDATION}
+        )
+        assert REQUIRED_GATES[WorkflowStage.GUARD] == frozenset(
+            {WorkflowGate.COMPILATION}
         )
         assert REQUIRED_GATES[WorkflowStage.PROTECT] == frozenset(
             {WorkflowGate.ARTIFACT_VALIDATION}
@@ -107,8 +117,10 @@ class TestStageGraph:
         assert REQUIRED_GATES[WorkflowStage.PERSIST] == frozenset(
             {WorkflowGate.AUTHORIZATION}
         )
-        # Stages before EXECUTE perform no adapter work and require no gates.
-        for stage in STAGE_ORDER[: STAGE_ORDER.index(WorkflowStage.EXECUTE)]:
+        # Stages before COMPILE perform no adapter or compiler work and
+        # require no gates; compilation and the artifact guard only gate
+        # their own successors.
+        for stage in STAGE_ORDER[: STAGE_ORDER.index(WorkflowStage.COMPILE)]:
             assert stage not in REQUIRED_GATES
 
 

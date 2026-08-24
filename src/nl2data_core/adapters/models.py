@@ -6,6 +6,7 @@ type appears here.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from enum import StrEnum
 from typing import Any
 
@@ -50,6 +51,10 @@ class ValidationContext(BaseModel):
     """Context for pure parse/validate operations.
 
     Carries fingerprint references only; never raw payloads or credentials.
+    ``required_obligation_fingerprints`` are the mandatory filter
+    obligations the artifact guard must verify (semantic fingerprint
+    space); ``field_bindings`` maps physical artifact names to semantic
+    field ids so obligations can be matched across the boundary.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -59,6 +64,17 @@ class ValidationContext(BaseModel):
     limits: AdapterLimits | None = None
     execution_timeout_seconds: float | None = Field(default=None, gt=0.0, le=3600.0)
     max_result_bytes: int | None = Field(default=None, ge=1, le=1_073_741_824)
+    required_obligation_fingerprints: frozenset[str] = Field(default_factory=frozenset)
+    field_bindings: Mapping[str, str] | None = None
+
+    @field_validator("required_obligation_fingerprints")
+    @classmethod
+    def _valid_obligations(cls, value: frozenset[str]) -> frozenset[str]:
+        pattern = __import__("re").compile(_FINGERPRINT_PATTERN)
+        for fingerprint in value:
+            if pattern.fullmatch(fingerprint) is None:
+                raise ValueError("obligation references must be sha256 fingerprints")
+        return value
 
 
 class GeneratedArtifact(BaseModel):
@@ -84,7 +100,13 @@ class ParsedArtifact(BaseModel):
 
 
 class ValidatedArtifact(BaseModel):
-    """A generic artifact after validation against a snapshot."""
+    """A generic artifact after validation against a snapshot.
+
+    ``fingerprint`` is the artifact guard fingerprint (the identity bound
+    into the execution authorization); ``obligations_verified`` and
+    ``bounded_rows`` surface the guard facts the pre-execution boundary
+    re-checks before adapter execution.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -92,6 +114,17 @@ class ValidatedArtifact(BaseModel):
     fingerprint: str = Field(pattern=_FINGERPRINT_PATTERN)
     snapshot_fingerprint: str | None = Field(default=None, pattern=_FINGERPRINT_PATTERN)
     validation_metadata: dict[str, str] = Field(default_factory=dict, max_length=64)
+    obligations_verified: frozenset[str] = Field(default_factory=frozenset)
+    bounded_rows: int | None = Field(default=None, ge=1, le=1_000_000_000)
+
+    @field_validator("obligations_verified")
+    @classmethod
+    def _valid_obligations(cls, value: frozenset[str]) -> frozenset[str]:
+        pattern = __import__("re").compile(_FINGERPRINT_PATTERN)
+        for fingerprint in value:
+            if pattern.fullmatch(fingerprint) is None:
+                raise ValueError("obligation references must be sha256 fingerprints")
+        return value
 
 
 class CostEstimate(BaseModel):

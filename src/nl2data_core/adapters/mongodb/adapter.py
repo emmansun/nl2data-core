@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import replace
 
 from nl2data_core.adapters.models import (
     AdapterCapabilities,
@@ -107,6 +108,9 @@ class MongoQueryAdapter:
             "bounded_results",
             "allowlist_validation",
             "tenant_obligations",
+            "aggregation",
+            "ordering",
+            "list_ops",
             "fake" if profile == MongoProfile.FAKE else "pymongo",
         }
         return AdapterCapabilities(
@@ -151,6 +155,18 @@ class MongoQueryAdapter:
             },
         )
 
+    def _obligation_policy(self, context: ValidationContext) -> MongoGuardPolicy:
+        """The guard policy with the context's mandatory obligations merged in."""
+        if not context.required_obligation_fingerprints:
+            return self._policy
+        return replace(
+            self._policy,
+            required_obligation_fingerprints=(
+                self._policy.required_obligation_fingerprints
+                | context.required_obligation_fingerprints
+            ),
+        )
+
     def validate(self, artifact: ParsedArtifact, context: ValidationContext) -> ValidatedArtifact:
         parsed = self._parsed_by_id.get(artifact.artifact_id)
         if parsed is None:
@@ -167,7 +183,11 @@ class MongoQueryAdapter:
                 "the metadata snapshot does not match the adapter's bound snapshot",
                 details={"artifact_id": artifact.artifact_id},
             )
-        guard = assert_validated(parsed.spec, self._policy)
+        guard = assert_validated(
+            parsed.spec,
+            self._obligation_policy(context),
+            field_bindings=context.field_bindings,
+        )
         self._spec_by_id[artifact.artifact_id] = parsed.spec
         return ValidatedArtifact(
             artifact_id=artifact.artifact_id,
@@ -178,11 +198,15 @@ class MongoQueryAdapter:
                 "collection": parsed.spec.collection,
                 "limit": str(parsed.spec.limit or 0),
             },
+            obligations_verified=guard.obligations_verified,
+            bounded_rows=guard.bounded_rows,
         )
 
     async def generate(self, query: str, context: ValidationContext) -> GeneratedArtifact:
         spec = self._parse_spec(query)
-        guard = assert_validated(spec, self._policy)
+        guard = assert_validated(
+            spec, self._obligation_policy(context), field_bindings=context.field_bindings
+        )
         parsed = MongoParsedArtifact(
             artifact_id=f"mongo-{len(self._parsed_by_id) + 1}",
             fingerprint=mql_spec_fingerprint(spec),

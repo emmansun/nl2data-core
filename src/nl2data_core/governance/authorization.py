@@ -55,6 +55,10 @@ class AuthorizationIssuer:
         source_id: str,
         operation: Literal["select"] = "select",
         artifact_fingerprint: str,
+        ir_fingerprint: str | None = None,
+        view_fingerprint: str | None = None,
+        bundle_fingerprint: str | None = None,
+        capability_ids: frozenset[str] = frozenset(),
         tenant_scope_fingerprint: str | None = None,
         isolation_profile: str | None = None,
         effective_limits: EffectiveLimits | None = None,
@@ -65,7 +69,10 @@ class AuthorizationIssuer:
 
         ``tenant_scope_fingerprint`` and ``isolation_profile`` bind the
         authorization to the trusted tenant scope when tenant isolation is
-        active; non-tenant local composition omits them.
+        active; non-tenant local composition omits them.  ``ir_fingerprint``,
+        ``view_fingerprint``, ``bundle_fingerprint``, and ``capability_ids``
+        bind the complete logical/physical governance context; when set they
+        are re-verified before execution.
         """
         issued_at = self.clock()
         return ExecutionAuthorization(
@@ -75,6 +82,10 @@ class AuthorizationIssuer:
             source_id=source_id,
             operation=operation,
             artifact_fingerprint=artifact_fingerprint,
+            ir_fingerprint=ir_fingerprint,
+            view_fingerprint=view_fingerprint,
+            bundle_fingerprint=bundle_fingerprint,
+            capability_ids=capability_ids,
             tenant_scope_fingerprint=tenant_scope_fingerprint,
             isolation_profile=isolation_profile,
             effective_limits=effective_limits or EffectiveLimits(),
@@ -98,6 +109,10 @@ class AuthorizationVerifier:
         adapter_type: str,
         source_id: str,
         operation: str,
+        ir_fingerprint: str | None = None,
+        view_fingerprint: str | None = None,
+        bundle_fingerprint: str | None = None,
+        capability_ids: frozenset[str] = frozenset(),
         filter_fingerprints: frozenset[str] = frozenset(),
         tenant_scope_fingerprint: str | None = None,
         isolation_profile: str | None = None,
@@ -107,7 +122,9 @@ class AuthorizationVerifier:
         When either the authorization or the current trusted context carries
         a tenant scope, the fingerprints and isolation profiles must match;
         a scope mismatch invalidates the authorization even when the
-        artifact fingerprint matches.
+        artifact fingerprint matches.  Logical-context bindings (IR, view,
+        model bundle) and bound capabilities are verified when the
+        authorization carries them; capabilities never broaden.
         """
         reasons: list[str] = []
 
@@ -121,6 +138,26 @@ class AuthorizationVerifier:
             reasons.append("source does not match the authorization")
         if authorization.operation != operation:
             reasons.append("operation does not match the authorization")
+        if (
+            authorization.ir_fingerprint is not None
+            and authorization.ir_fingerprint != ir_fingerprint
+        ):
+            reasons.append("IR fingerprint does not match the authorization")
+        if (
+            authorization.view_fingerprint is not None
+            and authorization.view_fingerprint != view_fingerprint
+        ):
+            reasons.append("view fingerprint does not match the authorization")
+        if (
+            authorization.bundle_fingerprint is not None
+            and authorization.bundle_fingerprint != bundle_fingerprint
+        ):
+            reasons.append("model bundle fingerprint does not match the authorization")
+        for capability in sorted(authorization.capability_ids):
+            if capability not in capability_ids:
+                reasons.append(
+                    f"bound capability '{capability}' is not available on the adapter"
+                )
         if authorization.tenant_scope_fingerprint != tenant_scope_fingerprint:
             reasons.append("tenant scope fingerprint does not match the authorization")
         if authorization.isolation_profile != isolation_profile:

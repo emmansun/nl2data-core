@@ -7,6 +7,7 @@ bounded result.  It never interprets identity or business policy.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -16,6 +17,7 @@ from nl2data.errors import ErrorCategory, ErrorCode, NL2DataError
 from nl2data_core.canonical import sha256_fingerprint
 
 from .models import SQLGuardResult, SQLParsedArtifact, sql_guard_fingerprint
+from .parsing import sql_filter_predicate_fingerprints
 
 #: Node types that would make a statement mutating or administrative.
 _FORBIDDEN_NODES = (
@@ -62,12 +64,17 @@ class SQLGuardError(NL2DataError):
 
 @dataclass(frozen=True)
 class SQLGuardPolicy:
-    """Guard policy: what a validated statement is allowed to touch."""
+    """Guard policy: what a validated statement is allowed to touch.
+
+    ``required_obligation_fingerprints`` are the mandatory filter
+    obligations (semantic fingerprint space) the statement must enforce.
+    """
 
     allowed_objects: frozenset[str] = frozenset()
     allowed_columns: frozenset[str] | None = None
     max_rows: int = 100_000
     require_limit: bool = True
+    required_obligation_fingerprints: frozenset[str] = frozenset()
 
     def policy_hash(self) -> str:
         """Canonical fingerprint of the policy used in guard fingerprints."""
@@ -79,6 +86,9 @@ class SQLGuardPolicy:
                 ),
                 "max_rows": self.max_rows,
                 "require_limit": self.require_limit,
+                "required_obligation_fingerprints": sorted(
+                    self.required_obligation_fingerprints
+                ),
             }
         )
 
@@ -96,7 +106,11 @@ def _forbidden_function_calls(statement: exp.Expression) -> list[str]:
 
 
 def run_guard(
-    parsed: SQLParsedArtifact, policy: SQLGuardPolicy, statement: exp.Expression | None = None
+    parsed: SQLParsedArtifact,
+    policy: SQLGuardPolicy,
+    statement: exp.Expression | None = None,
+    *,
+    field_bindings: Mapping[str, str] | None = None,
 ) -> SQLGuardResult:
     """Evaluate the guard against parsed facts; never raises for denials."""
     reasons: list[str] = []
@@ -138,19 +152,41 @@ def run_guard(
             f"LIMIT {parsed.limit_value} exceeds the maximum bounded rows {policy.max_rows}"
         )
 
+    obligations: frozenset[str] = frozenset()
+    if statement is not None:
+        obligations = sql_filter_predicate_fingerprints(
+            statement, field_bindings=field_bindings
+        )
+    for obligation in sorted(policy.required_obligation_fingerprints):
+        if obligation not in obligations:
+            reasons.append(
+                f"mandatory filter obligation '{obligation[:16]}...' is not "
+                "enforced by the statement"
+            )
+
     fingerprint = sql_guard_fingerprint(parsed, policy.policy_hash())
     return SQLGuardResult(
         accepted=not reasons,
         reasons=tuple(reasons),
         fingerprint=fingerprint,
+        obligations_verified=frozenset(
+            obligation
+            for obligation in policy.required_obligation_fingerprints
+            if obligation in obligations
+        ),
+        bounded_rows=parsed.limit_value,
     )
 
 
 def assert_guarded(
-    parsed: SQLParsedArtifact, policy: SQLGuardPolicy, statement: exp.Expression | None = None
+    parsed: SQLParsedArtifact,
+    policy: SQLGuardPolicy,
+    statement: exp.Expression | None = None,
+    *,
+    field_bindings: Mapping[str, str] | None = None,
 ) -> SQLGuardResult:
     """Run the guard and raise :class:`SQLGuardError` when the query is rejected."""
-    result = run_guard(parsed, policy, statement=statement)
+    result = run_guard(parsed, policy, statement=statement, field_bindings=field_bindings)
     if not result.accepted:
         raise SQLGuardError(
             "query was rejected by the SQL guard",

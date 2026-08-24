@@ -33,8 +33,11 @@ class WorkflowStage(StrEnum):
     """Ordered stages of the governed workflow graph.
 
     The order is fixed: request initialization, Memory recall, intent
-    resolution, IR building, IR validation, governance, authorization,
-    adapter execution, result protection, Memory write-back, and completion.
+    resolution, IR building, IR validation, compilation, artifact guard,
+    governance, authorization, adapter execution, result protection,
+    Memory write-back, and completion.  Compilation and the artifact guard
+    are pre-execution stages: they produce and validate the backend
+    artifact before any governance or authorization decision is made.
     """
 
     INITIALIZE = "initialize"
@@ -42,6 +45,8 @@ class WorkflowStage(StrEnum):
     INTENT = "intent"
     PLAN = "plan"
     VALIDATE = "validate"
+    COMPILE = "compile"
+    GUARD = "guard"
     GOVERN = "govern"
     AUTHORIZE = "authorize"
     EXECUTE = "execute"
@@ -55,6 +60,8 @@ class WorkflowGate(StrEnum):
 
     TENANT_SCOPE = "tenant_scope"
     PLAN_VALIDATION = "plan_validation"
+    COMPILATION = "compilation"
+    ARTIFACT_GUARD = "artifact_guard"
     GOVERNANCE = "governance"
     ARTIFACT_VALIDATION = "artifact_validation"
     AUTHORIZATION = "authorization"

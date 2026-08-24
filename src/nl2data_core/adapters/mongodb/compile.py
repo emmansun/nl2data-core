@@ -4,6 +4,11 @@ Compilation is deterministic and mirrors the SQL compiler's first cases:
 plain selects compile to ``find``; grouped/aggregated selects compile to a
 bounded ``aggregate`` pipeline.  Identifiers come only from the validated
 physical binding, so no shell text or JavaScript can enter a spec.
+
+The compiler consumes the shared immutable :class:`CompilationContext` and
+emits a backend artifact plus safe compilation evidence.  It never grants
+authority: no governance evaluation, authorization issuance, or capability
+broadening happens here, and the produced spec stays bounded by the IR.
 """
 
 from __future__ import annotations
@@ -11,11 +16,17 @@ from __future__ import annotations
 from typing import Any
 
 from nl2data.errors import ErrorCategory, ErrorCode, NL2DataError
+from nl2data_core.compilation.contract import (
+    CompilationContext,
+    CompilationEvidence,
+    CompileResult,
+)
 from nl2data_core.planning.ir.models import IRSelection, SemanticQueryIR
 from nl2data_core.planning.ir.validation import validate_ir, verify_ir_fingerprint
 from nl2data_core.planning.models import PhysicalBinding
 
 from .models import MongoOperation, MongoQuerySpec, mongo_spec_json
+from .normalize import mql_spec_fingerprint
 
 #: Stable compiler identity/version for artifact evidence (DDS-019).
 COMPILER_IDENTITY = "mongodb-compiler"
@@ -150,7 +161,8 @@ def compile_mongo_ir(ir: SemanticQueryIR, *, binding: PhysicalBinding | None) ->
     tampered or stale fingerprint; the physical binding is explicit
     compiler context and never part of the IR payload.  The spec id is
     derived from the logical IR fingerprint so the artifact is provably
-    linked to the canonical query.
+    linked to the canonical query.  Legacy entry point: prefer
+    :func:`compile_mongo` with the shared compilation context.
     """
     if binding is None:
         raise MongoCompileError("IR compilation requires a physical binding")
@@ -167,6 +179,70 @@ def compile_mongo_ir(ir: SemanticQueryIR, *, binding: PhysicalBinding | None) ->
         )
     spec_id = f"mongo-{ir.fingerprint[-16:]}"
     return _compile_mongo(ir, binding, spec_id)
+
+
+def compile_mongo(
+    ir: SemanticQueryIR, *, context: CompilationContext
+) -> CompileResult:
+    """Compile a validated IR with the shared immutable compilation context.
+
+    Fail-closed on a tampered or stale IR fingerprint, failed structural
+    validation, an adapter mismatch, or a missing physical binding.  The
+    emitted evidence links the artifact to the IR, view/model bundle,
+    policy, tenant scope, adapter capabilities, effective bounds, and
+    mandatory filter obligations - never raw payloads or credentials.
+    """
+    if context.ir.fingerprint != ir.fingerprint:
+        raise MongoCompileError("compilation context does not match the supplied IR")
+    if context.adapter_capabilities.adapter_type != "mongodb":
+        raise MongoCompileError(
+            "the MongoDB compiler cannot serve a non-MongoDB adapter profile",
+            details={"adapter_type": context.adapter_capabilities.adapter_type},
+        )
+    binding = context.compiler_context
+    if binding is None:
+        raise MongoCompileError("IR compilation requires a physical binding")
+    if not verify_ir_fingerprint(ir):
+        raise MongoCompileError(
+            "IR fingerprint does not match its canonical payload",
+            details={"ir_id": ir.ir_id},
+        )
+    validation = validate_ir(ir, view=context.view)
+    if not validation.valid:
+        raise MongoCompileError(
+            "IR failed structural validation",
+            details={"issue_codes": ",".join(validation.issue_codes())},
+        )
+    spec_id = f"mongo-{ir.fingerprint[-16:]}"
+    artifact = _compile_mongo(ir, binding, spec_id)
+    spec = MongoQuerySpec.model_validate_json(artifact)
+    limits = context.effective_limits
+    evidence = CompilationEvidence(
+        ir_version=ir.ir_version,
+        ir_fingerprint=ir.fingerprint,
+        source_id=ir.source_id,
+        operation="select",
+        field_ids=ir.field_ids(),
+        view_fingerprint=context.view_fingerprint,
+        bundle_fingerprint=context.bundle_fingerprint,
+        policy_fingerprint=context.policy_fingerprint,
+        tenant_scope_fingerprint=context.tenant_scope_fingerprint,
+        purpose=context.purpose,
+        adapter_type="mongodb",
+        capability_ids=context.adapter_capabilities.features,
+        required_capabilities=frozenset(ir.required_capabilities),
+        mandatory_filter_fingerprints=context.mandatory_filter_fingerprints,
+        max_rows=limits.max_rows if limits is not None else None,
+        max_columns=limits.max_columns if limits is not None else None,
+        max_execution_seconds=(
+            limits.max_execution_seconds if limits is not None else None
+        ),
+        max_result_bytes=limits.max_result_bytes if limits is not None else None,
+        compiler_identity=COMPILER_IDENTITY,
+        compiler_version=COMPILER_VERSION,
+        artifact_fingerprint=mql_spec_fingerprint(spec),
+    )
+    return CompileResult(artifact=artifact, evidence=evidence)
 
 
 def _compile_mongo(

@@ -1,12 +1,17 @@
 """Deterministic governed workflow runtime over AI, Memory, and P1 components.
 
 The runtime owns the single ordered stage graph
-(``initialize -> memory -> intent -> plan -> validate -> govern -> authorize
--> execute -> protect -> persist -> complete``) and enforces the mandatory
-gates from :mod:`nl2data_core.workflow.contract` before every stage entry.
-Each stage is one deterministic node; branches (clarification, rejection,
-timeout, cancellation, retry exhaustion, approval required) are terminal and
-carry the final public outcome - never raw provider or task material.
+(``initialize -> memory -> intent -> plan -> validate -> compile -> guard
+-> govern -> authorize -> execute -> protect -> persist -> complete``) and
+enforces the mandatory gates from :mod:`nl2data_core.workflow.contract`
+before every stage entry.  Compilation and the artifact guard are
+pre-execution stages: they produce and validate the backend artifact with
+shared compiler governance evidence before any governance or
+authorization decision, and the full chain is re-verified immediately
+before adapter execution.  Each stage is one deterministic node;
+branches (clarification, rejection, timeout, cancellation, retry
+exhaustion, approval required) are terminal and carry the final public
+outcome - never raw provider or task material.
 
 The runtime never imports framework-specific packages (such as LangGraph);
 optional backends implement the same contract and cannot weaken gates.
@@ -21,7 +26,7 @@ import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Protocol, cast
 from uuid import uuid4
 
 from nl2data.errors import (
@@ -43,12 +48,10 @@ from nl2data.models import (
 )
 from nl2data_core.adapters.models import (
     AdapterLimits,
-    CompilerArtifactEvidence,
-    ValidatedArtifact,
     ValidationContext,
 )
 from nl2data_core.adapters.protocol import QueryAdapter
-from nl2data_core.adapters.sql.compile import compile_ir
+from nl2data_core.adapters.sql.compile import compile_sql
 from nl2data_core.ai.config import ModelConfig
 from nl2data_core.ai.context import SemanticReference
 from nl2data_core.ai.models import ClarificationRequired, RejectedIntent, ResolvedIntent
@@ -56,6 +59,18 @@ from nl2data_core.ai.plan_builder import build_ir_from_intent
 from nl2data_core.ai.protocol import ModelProvider
 from nl2data_core.ai.resolver import IntentResolver
 from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.compilation.contract import (
+    ArtifactGuardResult,
+    CompilationContext,
+    CompilationEvidence,
+    CompileResult,
+    IRCompiler,
+    ResultLineageEvidence,
+    artifact_guard_evidence_fingerprint,
+    compilation_evidence_fingerprint,
+    result_lineage_fingerprint,
+    verify_pre_execution_guard,
+)
 from nl2data_core.engine.ports import NOT_CONFIGURED_MESSAGE
 from nl2data_core.governance.authorization import (
     AuthorizationIssuer,
@@ -151,6 +166,122 @@ _RUNTIME_ACCUMULATED_COMPAT_KEYS = frozenset({"ir"})
 
 #: Safe compiler identity shape (module-declared constant).
 _COMPILER_IDENTITY_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_\-\.]{0,127}$")
+
+
+def _compiler_identity(compiler: object) -> str:
+    """A safe compiler identity: module constant, module name, fallback."""
+    module = inspect.getmodule(compiler)
+    identity = getattr(module, "COMPILER_IDENTITY", None) if module is not None else None
+    if isinstance(identity, str) and _COMPILER_IDENTITY_PATTERN.fullmatch(identity):
+        return identity
+    if module is not None and module.__name__:
+        return re.sub(r"[^A-Za-z0-9_\-\.]", "_", module.__name__)[:128]
+    return "compiler"
+
+
+def _compiler_version(compiler: object) -> str:
+    """The module-declared compiler version, defaulted when absent."""
+    module = inspect.getmodule(compiler)
+    version = getattr(module, "COMPILER_VERSION", None) if module is not None else None
+    if isinstance(version, str) and version:
+        return version[:64]
+    return "1.0.0"
+
+
+def _has_context_parameter(compiler: object) -> bool:
+    """Whether a callable compiler consumes the shared compilation context."""
+    if not callable(compiler):
+        return False
+    try:
+        return "context" in inspect.signature(compiler).parameters
+    except (TypeError, ValueError):
+        return False
+
+
+class _ContextCompiler(Protocol):
+    """A standalone context-aware compiler callable (e.g. ``compile_sql``)."""
+
+    def __call__(
+        self, ir: SemanticQueryIR, *, context: CompilationContext
+    ) -> CompileResult: ...
+
+
+class _BoundCompiler:
+    """Binds one compiler implementation to the shared IRCompiler protocol.
+
+    Context-based compilers (``compile_sql``/``compile_mongo`` and any
+    :class:`IRCompiler`) emit their own evidence; legacy
+    ``Callable[[SemanticQueryIR], str]`` compilers are wrapped and emit the
+    same safe evidence with module-introspected identity/version and a
+    backend-specific artifact fingerprint (a generic fingerprint for
+    unknown adapter profiles, fail closed).
+    """
+
+    def __init__(
+        self,
+        compiler: IRCompiler | Callable[[SemanticQueryIR], str] | _ContextCompiler,
+    ) -> None:
+        self._compiler = compiler
+        self._identity = _compiler_identity(compiler)
+        self._version = _compiler_version(compiler)
+        self._context_aware = isinstance(compiler, IRCompiler) or _has_context_parameter(
+            compiler
+        )
+
+    def compile(
+        self, ir: SemanticQueryIR, *, context: CompilationContext
+    ) -> CompileResult:
+        compiler = self._compiler
+        if isinstance(compiler, IRCompiler):
+            return compiler.compile(ir, context=context)
+        if self._context_aware:
+            return cast(_ContextCompiler, compiler)(ir, context=context)
+        artifact = cast(Callable[[SemanticQueryIR], str], compiler)(ir)
+        limits = context.effective_limits
+        return CompileResult(
+            artifact=artifact,
+            evidence=CompilationEvidence(
+                ir_version=ir.ir_version,
+                ir_fingerprint=ir.fingerprint,
+                source_id=ir.source_id,
+                operation="select",
+                field_ids=ir.field_ids(),
+                view_fingerprint=context.view_fingerprint,
+                bundle_fingerprint=context.bundle_fingerprint,
+                policy_fingerprint=context.policy_fingerprint,
+                tenant_scope_fingerprint=context.tenant_scope_fingerprint,
+                purpose=context.purpose,
+                adapter_type=context.adapter_capabilities.adapter_type,
+                capability_ids=context.adapter_capabilities.features,
+                required_capabilities=frozenset(ir.required_capabilities),
+                mandatory_filter_fingerprints=context.mandatory_filter_fingerprints,
+                max_rows=limits.max_rows if limits is not None else None,
+                max_columns=limits.max_columns if limits is not None else None,
+                max_execution_seconds=(
+                    limits.max_execution_seconds if limits is not None else None
+                ),
+                max_result_bytes=limits.max_result_bytes if limits is not None else None,
+                compiler_identity=self._identity,
+                compiler_version=self._version,
+                artifact_fingerprint=self._artifact_fingerprint(artifact, context),
+            ),
+        )
+
+    def _artifact_fingerprint(self, artifact: str, context: CompilationContext) -> str:
+        """The canonical artifact identity for the context's adapter profile."""
+        adapter_type = context.adapter_capabilities.adapter_type
+        if adapter_type == "sql":
+            from nl2data_core.adapters.sql.models import sql_artifact_fingerprint
+
+            binding = context.compiler_context
+            dialect = binding.dialect if binding is not None else "sqlite"
+            return sql_artifact_fingerprint(artifact, dialect)
+        if adapter_type == "mongodb":
+            from nl2data_core.adapters.mongodb.models import MongoQuerySpec
+            from nl2data_core.adapters.mongodb.normalize import mql_spec_fingerprint
+
+            return mql_spec_fingerprint(MongoQuerySpec.model_validate_json(artifact))
+        return sha256_fingerprint({"artifact": artifact, "adapter_type": adapter_type})
 
 
 def _utc_now() -> datetime:
@@ -517,11 +648,7 @@ class _PlanNode(_NodeBase):
 
 
 class _ValidateNode(_NodeBase):
-    """IR validation and artifact parse/validate.
-
-    Produces the IR-validation and artifact-validation gate evidence that
-    adapter execution later requires.
-    """
+    """IR/view validation only; compilation and guarding are separate stages."""
 
     stage = WorkflowStage.VALIDATE
 
@@ -543,24 +670,6 @@ class _ValidateNode(_NodeBase):
                     ),
                 ),
             )
-        try:
-            artifact = runtime.ir_compiler(ir)
-            validation_context = ValidationContext(
-                snapshot_fingerprint=ir.provenance.catalog_fingerprint
-            )
-            parsed = runtime.adapter.parse(artifact, validation_context)
-            validated = runtime.adapter.validate(parsed, validation_context)
-        except Exception as error:
-            return StageResult(
-                stage=self.stage,
-                status=RuntimeOutcomeStatus.REJECTED,
-                outcome=_rejected(context.request, as_error_record(error)),
-            )
-        self._channel["validated"] = validated
-        self._channel["validation_context"] = validation_context
-        self._channel["compiler_evidence"] = runtime._build_compiler_evidence(
-            ir, runtime.ir_compiler, validated
-        )
         gate_evidence: dict[WorkflowGate, str] = self._channel["gate_evidence"]
         plan_evidence: dict[str, object] = {
             "ir": ir.fingerprint,
@@ -571,6 +680,121 @@ class _ValidateNode(_NodeBase):
             assert runtime.view.view_fingerprint is not None
             plan_evidence["view_fingerprint"] = runtime.view.view_fingerprint
         gate_evidence[WorkflowGate.PLAN_VALIDATION] = sha256_fingerprint(plan_evidence)
+        return StageResult(
+            stage=self.stage,
+            status=RuntimeOutcomeStatus.SUCCEEDED,
+            next_stage=WorkflowStage.COMPILE,
+        )
+
+
+class _CompileNode(_NodeBase):
+    """Compilation with the shared immutable compilation context.
+
+    Produces the compilation gate evidence.  The compiler cannot grant
+    authority: it never evaluates governance or issues authorizations, and
+    its artifact is guarded by the next stage before any governance or
+    authorization decision is made.
+    """
+
+    stage = WorkflowStage.COMPILE
+
+    async def run(self, context: WorkflowExecutionContext) -> StageResult:
+        runtime = self._runtime
+        ir = self._channel["ir"]
+        view = runtime.view
+        projection = runtime.projection
+        compilation_context = CompilationContext(
+            ir=ir,
+            view=view,
+            view_reference=runtime._view_reference(),
+            view_fingerprint=(view.view_fingerprint if view.view_bound else None),
+            bundle_id=(projection.bundle_id if projection is not None else None),
+            bundle_version=(projection.bundle_version if projection is not None else None),
+            bundle_fingerprint=(
+                projection.bundle_fingerprint if projection is not None else None
+            ),
+            tenant_scope_fingerprint=context.tenant_scope_fingerprint,
+            purpose=None,
+            policy_fingerprint=runtime.policy_scope.policy_fingerprint,
+            adapter_capabilities=runtime.adapter.capabilities(),
+            effective_limits=runtime.effective_limits,
+            mandatory_filter_fingerprints=ir.filter_fingerprints(),
+            compiler_context=runtime.binding,
+        )
+        try:
+            result = runtime.compiler.compile(ir, context=compilation_context)
+        except Exception as error:
+            return StageResult(
+                stage=self.stage,
+                status=RuntimeOutcomeStatus.REJECTED,
+                outcome=_rejected(context.request, as_error_record(error)),
+            )
+        self._channel["compilation_context"] = compilation_context
+        self._channel["compiler_result"] = result
+        gate_evidence: dict[WorkflowGate, str] = self._channel["gate_evidence"]
+        gate_evidence[WorkflowGate.COMPILATION] = compilation_evidence_fingerprint(
+            result.evidence
+        )
+        return StageResult(
+            stage=self.stage,
+            status=RuntimeOutcomeStatus.SUCCEEDED,
+            next_stage=WorkflowStage.GUARD,
+        )
+
+
+class _GuardNode(_NodeBase):
+    """Artifact parse/validate; the guard result gates governance onward.
+
+    The guard consumes the IR filter obligations (semantic fingerprint
+    space) and physical-to-semantic field bindings; a rejected or
+    unguardable artifact stops the workflow before governance and adapter
+    execution.
+    """
+
+    stage = WorkflowStage.GUARD
+
+    async def run(self, context: WorkflowExecutionContext) -> StageResult:
+        runtime = self._runtime
+        ir = self._channel["ir"]
+        result = self._channel["compiler_result"]
+        binding = runtime.binding
+        validation_context = ValidationContext(
+            snapshot_fingerprint=ir.provenance.catalog_fingerprint,
+            required_obligation_fingerprints=ir.filter_fingerprints(),
+            field_bindings=(
+                {
+                    column.physical_name: column.field_id
+                    for column in binding.column_bindings
+                }
+                if binding is not None
+                else None
+            ),
+        )
+        try:
+            parsed = runtime.adapter.parse(result.artifact, validation_context)
+            validated = runtime.adapter.validate(parsed, validation_context)
+        except Exception as error:
+            return StageResult(
+                stage=self.stage,
+                status=RuntimeOutcomeStatus.REJECTED,
+                outcome=_rejected(context.request, as_error_record(error)),
+            )
+        guard = ArtifactGuardResult(
+            accepted=True,
+            fingerprint=validated.fingerprint,
+            guard_identity=f"{runtime.adapter.capabilities().adapter_type}-artifact-guard",
+            artifact_fingerprint=parsed.fingerprint,
+            obligations_verified=validated.obligations_verified,
+            bounded_rows=validated.bounded_rows,
+        )
+        self._channel["parsed"] = parsed
+        self._channel["validated"] = validated
+        self._channel["validation_context"] = validation_context
+        self._channel["artifact_guard"] = guard
+        gate_evidence: dict[WorkflowGate, str] = self._channel["gate_evidence"]
+        gate_evidence[WorkflowGate.ARTIFACT_GUARD] = artifact_guard_evidence_fingerprint(
+            guard
+        )
         gate_evidence[WorkflowGate.ARTIFACT_VALIDATION] = validated.fingerprint
         return StageResult(
             stage=self.stage,
@@ -607,12 +831,23 @@ class _GovernNode(_NodeBase):
                     ),
                 ),
             )
+        capabilities = runtime.adapter.capabilities()
         decision = runtime.evaluator.evaluate(
             runtime._facts_from_ir(
                 ir,
                 binding=runtime.binding,
                 tenant_scope_fingerprint=scope_fingerprint,
                 isolation_profile=isolation_profile,
+                view_fingerprint=(
+                    runtime.view.view_fingerprint if runtime.view.view_bound else None
+                ),
+                bundle_fingerprint=(
+                    runtime.projection.bundle_fingerprint
+                    if runtime.projection is not None
+                    else None
+                ),
+                capability_ids=capabilities.features,
+                artifact_fingerprint=self._channel["validated"].fingerprint,
             ),
             policy_scope,
         )
@@ -664,12 +899,24 @@ class _AuthorizeNode(_NodeBase):
                 details={"stage": self.stage.value},
             )
         capabilities = runtime.adapter.capabilities()
+        view_fingerprint = (
+            runtime.view.view_fingerprint if runtime.view.view_bound else None
+        )
+        bundle_fingerprint = (
+            runtime.projection.bundle_fingerprint
+            if runtime.projection is not None
+            else None
+        )
         authorization = runtime.issuer.issue(
             policy_scope=policy_scope,
             adapter_type=capabilities.adapter_type,
             source_id=ir.source_id,
             operation="select",
             artifact_fingerprint=validated.fingerprint,
+            ir_fingerprint=ir.fingerprint,
+            view_fingerprint=view_fingerprint,
+            bundle_fingerprint=bundle_fingerprint,
+            capability_ids=capabilities.features,
             tenant_scope_fingerprint=scope_fingerprint,
             isolation_profile=isolation_profile,
             effective_limits=runtime.effective_limits,
@@ -682,6 +929,10 @@ class _AuthorizeNode(_NodeBase):
             adapter_type=capabilities.adapter_type,
             source_id=ir.source_id,
             operation="select",
+            ir_fingerprint=ir.fingerprint,
+            view_fingerprint=view_fingerprint,
+            bundle_fingerprint=bundle_fingerprint,
+            capability_ids=capabilities.features,
             filter_fingerprints=ir.filter_fingerprints(),
             tenant_scope_fingerprint=scope_fingerprint,
             isolation_profile=isolation_profile,
@@ -729,6 +980,28 @@ class _ExecuteNode(_NodeBase):
         validated = self._channel["validated"]
         validation_context = self._channel["validation_context"]
         authorization = self._channel["authorization"]
+        guard_reasons = verify_pre_execution_guard(
+            context=self._channel["compilation_context"],
+            evidence=self._channel["compiler_result"].evidence,
+            guard=self._channel["artifact_guard"],
+            authorization=authorization,
+            now=runtime._now(),
+        )
+        if guard_reasons:
+            return StageResult(
+                stage=self.stage,
+                status=RuntimeOutcomeStatus.REJECTED,
+                outcome=_rejected(
+                    request,
+                    ErrorRecord(
+                        code=ErrorCode.AUTHORIZATION_REJECTED,
+                        category=ErrorCategory.GOVERNANCE,
+                        message="execution was denied by the pre-execution guard",
+                        details={"reasons": "; ".join(guard_reasons)},
+                        retryable=False,
+                    ),
+                ),
+            )
         limits = authorization.effective_limits
         bounded = validation_context.model_copy(
             update={
@@ -810,6 +1083,34 @@ class _ProtectNode(_NodeBase):
                 ),
             )
         self._channel["result"] = result
+        result_fingerprint = result.fingerprint
+        if result_fingerprint is None:
+            raise ResultProtectionError(
+                "protected result carries no fingerprint",
+                details={"result_id": result.result_id},
+            )
+        lineage = ResultLineageEvidence(
+            result_fingerprint=result_fingerprint,
+            artifact_fingerprint=self._channel["artifact_guard"].artifact_fingerprint,
+            guard_fingerprint=self._channel["artifact_guard"].fingerprint,
+            ir_fingerprint=ir.fingerprint,
+            view_fingerprint=(
+                runtime.view.view_fingerprint if runtime.view.view_bound else None
+            ),
+            bundle_fingerprint=(
+                runtime.projection.bundle_fingerprint
+                if runtime.projection is not None
+                else None
+            ),
+            policy_fingerprint=runtime.policy_scope.policy_fingerprint,
+            authorization_id=authorization.authorization_id,
+            adapter_type=runtime.adapter.capabilities().adapter_type,
+            compiler_identity=self._channel["compiler_result"].evidence.compiler_identity,
+            compiler_version=self._channel["compiler_result"].evidence.compiler_version,
+        )
+        lineage_fingerprint = result_lineage_fingerprint(lineage)
+        self._channel["result_lineage"] = lineage
+        self._channel["result_lineage_fingerprint"] = lineage_fingerprint
         self._channel["outcome"] = _outcome(
             request,
             status=OutcomeStatus.SUCCEEDED,
@@ -821,6 +1122,7 @@ class _ProtectNode(_NodeBase):
             stage=self.stage,
             status=RuntimeOutcomeStatus.SUCCEEDED,
             next_stage=WorkflowStage.PERSIST,
+            details={"lineage_fingerprint": lineage_fingerprint},
         )
 
 
@@ -877,6 +1179,8 @@ _NODES: dict[WorkflowStage, type[_NodeBase]] = {
     WorkflowStage.INTENT: _IntentNode,
     WorkflowStage.PLAN: _PlanNode,
     WorkflowStage.VALIDATE: _ValidateNode,
+    WorkflowStage.COMPILE: _CompileNode,
+    WorkflowStage.GUARD: _GuardNode,
     WorkflowStage.GOVERN: _GovernNode,
     WorkflowStage.AUTHORIZE: _AuthorizeNode,
     WorkflowStage.EXECUTE: _ExecuteNode,
@@ -916,7 +1220,7 @@ class DeterministicWorkflowRuntime:
         state_store: StateStore | None = None,
         idempotency_ttl_seconds: float = 86_400.0,
         approval_required: Callable[[SemanticQueryIR], bool] | None = None,
-        ir_compiler: Callable[[SemanticQueryIR], str] | None = None,
+        ir_compiler: IRCompiler | Callable[[SemanticQueryIR], str] | None = None,
         now: Callable[[], datetime] | None = None,
         projection: ResolvedViewProjection | None = None,
     ) -> None:
@@ -933,9 +1237,7 @@ class DeterministicWorkflowRuntime:
         self._state_store = state_store
         self._idempotency_ttl_seconds = idempotency_ttl_seconds
         self._approval_required = approval_required
-        self._ir_compiler = ir_compiler or (
-            lambda ir: compile_ir(ir, binding=self._binding)
-        )
+        self._ir_compiler = _BoundCompiler(ir_compiler or compile_sql)
         self._now_fn = now or _utc_now
         self._closed = False
         if projection is not None:
@@ -1003,12 +1305,14 @@ class DeterministicWorkflowRuntime:
         return self._approval_required
 
     @property
-    def ir_compiler(self) -> Callable[[SemanticQueryIR], str]:
-        """The IR compiler used for artifact parse/validate and execution.
+    def compiler(self) -> IRCompiler:
+        """The bound IR compiler used for artifact compilation.
 
-        Defaults to the SQL compiler; specialization adapters bind their own
-        compiler (for example the structured MQL compiler) so the runtime
-        graph stays framework-neutral.
+        Defaults to the context-based SQL compiler; specialization adapters
+        bind their own compiler (for example the structured MQL compiler)
+        so the runtime graph stays framework-neutral.  Legacy
+        ``Callable[[SemanticQueryIR], str]`` compilers are wrapped and emit
+        the same safe compilation evidence.
         """
         return self._ir_compiler
 
@@ -1572,6 +1876,11 @@ class DeterministicWorkflowRuntime:
                     stage_metadata["view_id"] = self._view.view_id
                     stage_metadata["view_version"] = str(self._view.view_version)
                     stage_metadata["view_fingerprint"] = self._view.view_fingerprint
+            lineage_fingerprint = channel.get("result_lineage_fingerprint")
+            if lineage_fingerprint is not None:
+                if stage_metadata is None:
+                    stage_metadata = {}
+                stage_metadata["lineage_fingerprint"] = lineage_fingerprint
             durable.checkpoint(
                 stage=result.next_stage or stage,
                 compatibility_fingerprints=dict(channel["compat"]),
@@ -1889,46 +2198,6 @@ class DeterministicWorkflowRuntime:
             },
         )
 
-    @staticmethod
-    def _compiler_identity(compiler: Callable[[Any], str]) -> str:
-        """A safe compiler identity: module constant, module name, fallback."""
-        module = inspect.getmodule(compiler)
-        identity = getattr(module, "COMPILER_IDENTITY", None) if module is not None else None
-        if isinstance(identity, str) and _COMPILER_IDENTITY_PATTERN.fullmatch(identity):
-            return identity
-        if module is not None and module.__name__:
-            return re.sub(r"[^A-Za-z0-9_\-\.]", "_", module.__name__)[:128]
-        return "compiler"
-
-    @staticmethod
-    def _compiler_version(compiler: Callable[[Any], str]) -> str:
-        """The module-declared compiler version, defaulted when absent."""
-        module = inspect.getmodule(compiler)
-        version = getattr(module, "COMPILER_VERSION", None) if module is not None else None
-        if isinstance(version, str) and version:
-            return version[:64]
-        return "1.0.0"
-
-    def _build_compiler_evidence(
-        self,
-        ir: SemanticQueryIR,
-        compiler: Callable[[Any], str],
-        validated: ValidatedArtifact,
-    ) -> CompilerArtifactEvidence:
-        """Safe artifact evidence: IR identity, compiler, and artifact.
-
-        The evidence never carries raw SQL/MQL, credentials, native values,
-        or the physical binding - only fingerprints and safe identities.
-        """
-        return CompilerArtifactEvidence(
-            ir_version=ir.ir_version,
-            ir_fingerprint=ir.fingerprint,
-            compiler_identity=self._compiler_identity(compiler),
-            compiler_version=self._compiler_version(compiler),
-            adapter_type=self.adapter.capabilities().adapter_type,
-            artifact_fingerprint=validated.fingerprint,
-        )
-
     def _prepare_turn(self, request: QueryRequest) -> tuple[CurrentTurnContext, dict[str, str]]:
         """Build the trusted current-turn context and base compatibility map."""
         execution = self._execution
@@ -2032,6 +2301,10 @@ class DeterministicWorkflowRuntime:
         binding: PhysicalBinding | None = None,
         tenant_scope_fingerprint: str | None = None,
         isolation_profile: str | None = None,
+        view_fingerprint: str | None = None,
+        bundle_fingerprint: str | None = None,
+        capability_ids: frozenset[str] = frozenset(),
+        artifact_fingerprint: str | None = None,
     ) -> GovernanceFacts:
         resource_ids = {binding.object_id} if binding is not None else {ir.root_entity_id}
         return GovernanceFacts(
@@ -2040,6 +2313,11 @@ class DeterministicWorkflowRuntime:
             resource_ids=frozenset(resource_ids),
             field_ids=ir.field_ids(),
             filter_fingerprints=ir.filter_fingerprints(),
+            ir_fingerprint=ir.fingerprint,
+            view_fingerprint=view_fingerprint,
+            bundle_fingerprint=bundle_fingerprint,
+            capability_ids=capability_ids,
+            artifact_fingerprint=artifact_fingerprint,
             tenant_scope_fingerprint=tenant_scope_fingerprint,
             isolation_profile=isolation_profile,
         )
