@@ -9,6 +9,7 @@ exactly like the P0 fallback - so the engine never fabricates results.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
@@ -155,6 +156,7 @@ class QueryExecutionRunner:
         tenant_context: TenantScopeContext | None = None,
         state_store: StateStore | None = None,
         idempotency_ttl_seconds: float = 86_400.0,
+        plan_compiler: Callable[[SemanticQueryPlan], str] | None = None,
     ) -> None:
         self._adapter = adapter
         self._policy_scope = policy_scope
@@ -168,6 +170,7 @@ class QueryExecutionRunner:
         self._tenant_context = tenant_context
         self._state_store = state_store
         self._idempotency_ttl_seconds = idempotency_ttl_seconds
+        self._plan_compiler = plan_compiler or compile_plan
 
     def is_configured(self) -> bool:
         """Whether the full P1 path is available; otherwise the fallback applies."""
@@ -416,7 +419,7 @@ class QueryExecutionRunner:
             )
 
         try:
-            sql = compile_plan(plan)
+            sql = self._plan_compiler(plan)
             context = ValidationContext(snapshot_fingerprint=plan.lineage.catalog_fingerprint)
             parsed = adapter.parse(sql, context)
             validated = adapter.validate(parsed, context)

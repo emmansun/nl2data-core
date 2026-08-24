@@ -30,6 +30,8 @@ dependencies = [
 sql = ["sqlglot>=25.0,<30"]
 # Optional PostgreSQL conformance profile driver.
 postgres = ["psycopg[binary]>=3.1,<4"]
+# Optional MongoDB profile driver (lazy; never imported by the base package).
+mongodb = ["pymongo>=4.6,<5"]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",

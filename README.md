@@ -301,6 +301,53 @@ cases, and protected result assertions.
 - Relevant suites: `tests/integration/test_fixtures.py` and
   `tests/conformance/test_postgres_conformance.py`.
 
+## MongoDB adapter profile (P2)
+
+The P2 query-execution foundation adds a structured, read-only MongoDB
+specialization behind the same generic `QueryAdapter` lifecycle, with the
+same governed order (plan validation, governance, authorization, adapter
+guard, protected results) as SQL.
+
+- **Optional installation**: `pip install nl2data-core[mongodb]` (PyMongo
+  4.6+). The base package never imports PyMongo; MongoDB models, the
+  validator, and the deterministic fake executor work with no driver, and
+  import-boundary tests enforce that no MongoDB type or dependency enters
+  the public `nl2data` API or the framework-neutral adapter contracts.
+- **Supported operations**: `find`, bounded `aggregate` pipelines
+  (`$match`, `$project`, `$sort`, `$skip`, `$limit`, `$group`, `$count`,
+  `$unwind`), and `count_documents`. Writes, administrative commands,
+  JavaScript, `$where`, regex evaluation, wildcard projections, and
+  unbounded operations are rejected before any driver call.
+- **Safe defaults**: specifications are strict JSON wire forms validated
+  against collection/field/operator/stage allowlists; results are bounded
+  by document, column, byte, and wall-clock limits; supported BSON values
+  are normalized conservatively into scalar `ExecutionResult` rows, and
+  unsupported native values fail with safe structured errors that never
+  expose the raw value. Canonical normalization makes fingerprints stable
+  across runs.
+- **Tenant and governance integration**: MongoDB query facts (collections,
+  fields, operators, stages, result shape, tenant obligations) feed the
+  existing governance, tenant-scope, execution-authorization, and result
+  protection gates; pooled profiles require mandatory tenant predicates,
+  and non-pooled profiles require routing evidence, failing closed when
+  the adapter profile cannot enforce them.
+- **Driver/service availability**: the optional PyMongo profile connects
+  lazily and reports `MONGO_UNAVAILABLE` when the driver is missing or the
+  service is unreachable - never a false pass. Real-service conformance is
+  skipped (`skipped`/`unavailable` outcomes) unless both exist; the
+  deterministic fake executor covers the same conformance and
+  SQL/Mongo equivalence cases without any service.
+- **Deferred capabilities**: `$lookup`/cross-collection joins, Atlas
+  Search/vector stages, map-reduce, change streams, writes, explain-based
+  cost estimation, and native BSON identifier/date forms beyond the
+  normalized scalar set are out of scope for the first profile.
+- Relevant suites: `tests/unit/test_mongodb_specs.py`,
+  `tests/contract/test_mongodb_adapter.py`,
+  `tests/security/test_mongodb_security.py`,
+  `tests/conformance/test_mongodb_conformance.py`,
+  `tests/integration/test_mongodb_governance.py`, and
+  `tests/integration/test_mongodb_real.py` (optional service).
+
 ## Development
 
 ```bash

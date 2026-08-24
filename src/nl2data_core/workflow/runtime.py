@@ -526,7 +526,7 @@ class _ValidateNode(_NodeBase):
                 ),
             )
         try:
-            sql = compile_plan(plan)
+            sql = runtime.plan_compiler(plan)
             validation_context = ValidationContext(
                 snapshot_fingerprint=plan.lineage.catalog_fingerprint
             )
@@ -882,6 +882,7 @@ class DeterministicWorkflowRuntime:
         state_store: StateStore | None = None,
         idempotency_ttl_seconds: float = 86_400.0,
         approval_required: Callable[[SemanticQueryPlan], bool] | None = None,
+        plan_compiler: Callable[[SemanticQueryPlan], str] | None = None,
         now: Callable[[], datetime] | None = None,
     ) -> None:
         self._provider = provider
@@ -897,6 +898,7 @@ class DeterministicWorkflowRuntime:
         self._state_store = state_store
         self._idempotency_ttl_seconds = idempotency_ttl_seconds
         self._approval_required = approval_required
+        self._plan_compiler = plan_compiler or compile_plan
         self._now_fn = now or _utc_now
 
     # -- bound components ---------------------------------------------------
@@ -945,6 +947,16 @@ class DeterministicWorkflowRuntime:
     def approval_required(self) -> Callable[[SemanticQueryPlan], bool] | None:
         """The bounded approval-required hook, if any."""
         return self._approval_required
+
+    @property
+    def plan_compiler(self) -> Callable[[SemanticQueryPlan], str]:
+        """The plan compiler used for artifact parse/validate and execution.
+
+        Defaults to the SQL compiler; specialization adapters bind their own
+        compiler (for example the structured MQL compiler) so the runtime
+        graph stays framework-neutral.
+        """
+        return self._plan_compiler
 
     @property
     def tenant_context(self) -> TenantScopeContext | None:

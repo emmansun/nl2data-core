@@ -1,4 +1,4 @@
-## ADDED Requirements
+## MODIFIED Requirements
 
 ### Requirement: Single canonical QueryAdapter Protocol
 The core SHALL define one generic async-first `QueryAdapter` Protocol with async metadata, generation, cost, execution, and close methods plus synchronous side-effect-free parse and validate methods. SQL and MongoDB SHALL implement this contract only as specialization packages.

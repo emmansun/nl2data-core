@@ -122,3 +122,32 @@ class TestAiProviderBoundary:
         assert response.content == {"intent": {"source_id": "sales"}}
         assert provider.closed is False
         await provider.close()
+
+
+class TestMongoImportBoundary:
+    def test_importing_the_mongodb_package_loads_no_pymongo(self) -> None:
+        import nl2data_core.adapters.mongodb  # noqa: F401
+        import nl2data_core.adapters.mongodb.adapter  # noqa: F401
+        import nl2data_core.adapters.mongodb.execution  # noqa: F401
+        import nl2data_core.adapters.mongodb.pymongo_executor  # noqa: F401
+
+        loaded = {name.split(".")[0] for name in sys.modules}
+        assert "pymongo" not in loaded, "pymongo loaded with the mongodb package"
+
+    def test_no_mongo_types_enter_public_contracts(self) -> None:
+        """MongoDB is a specialization: no Mongo type name may appear in the
+        public models or the framework-neutral adapter contract modules.
+        """
+        import nl2data.models
+        import nl2data_core.adapters.models
+        import nl2data_core.adapters.protocol
+
+        public_modules = (
+            nl2data.models,
+            nl2data_core.adapters.models,
+            nl2data_core.adapters.protocol,
+        )
+        for module in public_modules:
+            names = [name for name in dir(module) if not name.startswith("_")]
+            leaked = [name for name in names if "mongo" in name.lower()]
+            assert leaked == [], f"mongo types leaked into {module.__name__}: {leaked}"

@@ -1,8 +1,8 @@
-"""Controlled SQL fixtures for repeatable evaluation and conformance.
+"""Controlled SQL and MongoDB fixtures for repeatable evaluation.
 
-Exposes the shared deterministic data plus the SQLite (default) and
-PostgreSQL (optional) lifecycle profiles.  The PostgreSQL driver is loaded
-lazily, so importing this package never requires optional providers.
+Exposes the shared deterministic data plus the SQLite (default), PostgreSQL
+(optional), and MongoDB fake-driver lifecycle profiles.  Optional drivers
+are loaded lazily, so importing this package never requires them.
 """
 
 from __future__ import annotations
@@ -12,11 +12,16 @@ from nl2data_core.fixtures.data import (
     EXPECTED_COUNTS,
     FIXTURE_SETUP_FINGERPRINT,
     FIXTURE_SPEC,
+    MONGO_FIXTURE_SETUP_FINGERPRINT,
+    MONGO_RESULT_ASSERTIONS,
+    MONGO_SCHEMA,
+    MONGO_SEED,
     POLICY_CASES,
     POSTGRES_FIXTURE_SPEC,
     RESULT_ASSERTIONS,
     SCHEMA,
     SEED,
+    MongoResultAssertion,
     PolicyCase,
     ResultAssertion,
     make_fixture_spec,
@@ -31,6 +36,7 @@ from nl2data_core.fixtures.models import (
     ResetStrategy,
     TableCount,
 )
+from nl2data_core.fixtures.mongo import MongoFixtureProfile
 from nl2data_core.fixtures.postgres import PostgresFixtureProfile
 from nl2data_core.fixtures.sqlite import SQLiteFixtureProfile
 
@@ -40,6 +46,10 @@ __all__ = [
     "FIXTURE_SCHEMA_VERSION",
     "FIXTURE_SETUP_FINGERPRINT",
     "FIXTURE_SPEC",
+    "MONGO_FIXTURE_SETUP_FINGERPRINT",
+    "MONGO_RESULT_ASSERTIONS",
+    "MONGO_SCHEMA",
+    "MONGO_SEED",
     "POLICY_CASES",
     "POSTGRES_FIXTURE_SPEC",
     "RESULT_ASSERTIONS",
@@ -50,6 +60,8 @@ __all__ = [
     "FixtureSpec",
     "FixtureUnavailableError",
     "FixtureVerificationError",
+    "MongoFixtureProfile",
+    "MongoResultAssertion",
     "PolicyCase",
     "PostgresFixtureProfile",
     "ResetStrategy",
