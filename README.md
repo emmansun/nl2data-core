@@ -349,6 +349,62 @@ results:
   retention, deletion, compaction, stateless fallback, and bounded recall,
   emitting protected evidence and reports with no raw material.
 
+## Semantic View resolution boundary (P2)
+
+The P2 semantic-view boundary lets hosts bind query execution to an immutable,
+versioned Semantic View (internal `nl2data_core.views`) instead of an unscoped
+authorized-view shape:
+
+- **Definitions and descriptors**: `SemanticViewDefinition` binds a bounded
+  `SemanticDescriptor` (entities, fields, relationships, operations, result
+  shapes) to trusted context references: allowed purposes, bound tenant-scope
+  and principal-authorization fingerprints, bound policy fingerprint, required
+  adapter capabilities and feature flags, and a model version. Every model is
+  frozen with forbidden extra fields, collection and text limits are enforced
+  at construction, and fingerprints are canonical so equivalent inputs with
+  different mapping insertion orders produce identical identities.
+- **Fail-closed resolution**: `ViewRegistry.resolve(view_id, ResolutionContext)`
+  applies tenant scope (present/active/matching), principal authorization,
+  purpose, policy fingerprint, model/catalog version, adapter capabilities,
+  and feature flags before projecting any member. Missing, inactive,
+  mismatched, stale, or unsupported inputs yield structured `denied`/
+  `unavailable` outcomes - never partial members. Client hints are
+  non-authoritative routing metadata and can never establish access.
+- **Authorized projections**: a resolved projection exposes only permitted
+  entities, fields, operations, relationships, and safe descriptions. Its
+  fingerprint covers every security dimension (view identity/version,
+  model/catalog, tenant scope, principal authorization, purpose, policy,
+  adapter capabilities, feature flags), so a change in any trusted input
+  invalidates every previously recorded projection, IR reference, and
+  workflow checkpoint.
+- **IR binding and validation**: IR produced under a resolved view carries an
+  `IRViewReference` (view id/version/fingerprint) plus provenance, and
+  validation re-checks the reference and every referenced member against the
+  current projection - excluded sources, entities, fields, operations,
+  aggregations, and result shapes fail closed with structured issues before
+  compilation.
+- **AI context assembly**: model-provider context is assembled only from the
+  authorized projection; physical bindings, credentials, restricted members,
+  and hidden policy details never enter the provider payload.
+- **Workflow evidence**: view-bound executions record view id/version/
+  fingerprint in stage-checkpoint metadata and a `view` compatibility
+  fingerprint in checkpoint state; resuming under a different resolved view is
+  rejected with `STALE_CHECKPOINT` before any adapter execution, and a stored
+  IR whose derivation changed is refused at the execute gate.
+- **Memory revalidation**: recalled references are revalidated against the
+  current resolved-view fingerprint on every turn; a follow-up under a changed
+  view fails closed into clarification before the model provider is invoked.
+- **Legacy compatibility and migration**: when no view registry is configured,
+  existing unbound IR keeps executing exactly as before - no view identity is
+  fabricated. Migration is explicit: configure a registry, resolve views from
+  trusted context, and bind projections to the runtime; new IR-producing paths
+  must carry a view reference once a registry is configured. Rollback is
+  symmetric: unbind the projection and the unbound-IR path remains.
+- Relevant suites: `tests/unit/test_semantic_views.py`,
+  `tests/contract/test_semantic_view_resolution.py`,
+  `tests/security/test_semantic_view_security.py`, and
+  `tests/integration/test_semantic_view_workflow.py`.
+
 ## Governed workflow runtime (P2)
 
 The P2.5 governed workflow runtime (internal `nl2data_core.workflow`) owns

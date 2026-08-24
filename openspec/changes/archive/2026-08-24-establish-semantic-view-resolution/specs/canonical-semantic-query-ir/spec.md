@@ -1,6 +1,6 @@
-## Requirements
+## MODIFIED Requirements
 
-### Requirement: Canonical Semantic Query IR remains versioned and backend-neutral
+### Requirement: Canonical Semantic Query IR is versioned and backend-neutral
 The planning layer SHALL define an immutable, versioned `SemanticQueryIR` representing logical selections, filters, grouping, ordering, bounded limits, time context, result shape, view/source references, provenance, and capability requirements without embedding SQL, MQL, credentials, executable code, native objects, or presentation configuration. When a Semantic View registry is configured, the IR SHALL bind to a resolved Semantic View identity and fingerprint; unscoped IR is permitted only through explicit compatibility mode.
 
 #### Scenario: Logical request is representable
@@ -44,36 +44,3 @@ The IR validator SHALL enforce identifier, scalar, collection, operator, aggrega
 #### Scenario: Member outside view is rejected
 - **WHEN** an IR references a field, relationship, operation, or aggregation absent from its resolved Semantic View
 - **THEN** validation fails before compilation and reports only a safe member reference
-
-### Requirement: Legacy plans have no active compatibility contract
-The planning layer SHALL use `SemanticQueryIR` as the sole logical query representation. The active system SHALL NOT define or require a `SemanticQueryPlan` model, `plan_to_ir` translator, or `ir_to_plan` translator. New workflow, compiler, AI, and evaluation integrations SHALL consume validated IR directly.
-
-#### Scenario: IR is the only planning input
-- **WHEN** a planner, workflow, compiler, or evaluation component accepts a logical query
-- **THEN** its contract uses `SemanticQueryIR` and does not construct or translate a legacy plan
-
-#### Scenario: Legacy model is unavailable
-- **WHEN** code attempts to import or instantiate `SemanticQueryPlan` from the active planning package
-- **THEN** the legacy symbol is absent and no compatibility path is invoked
-
-### Requirement: Compiler evidence binds artifacts to IR
-Every deterministic compiler invocation SHALL receive a validated IR plus compilation context and SHALL emit artifact evidence linked to the IR version and fingerprint. Physical bindings SHALL remain in compiler/model context and SHALL not become part of the canonical logical IR.
-
-#### Scenario: Artifact provenance is reconstructable
-- **WHEN** a SQL or MongoDB compiler produces a validated artifact from an IR
-- **THEN** the artifact evidence contains the IR fingerprint, compiler identity/version, adapter capability identity, and artifact fingerprint
-
-#### Scenario: Physical binding stays outside IR
-- **WHEN** a compiler resolves a semantic field to a backend-specific column or document path
-- **THEN** that binding is represented in compilation context/evidence and is absent from the canonical IR payload
-
-### Requirement: Resolved-view references bind IR to an authorized projection
-The IR SHALL carry an optional resolved-view reference (view id, version, and fingerprint) and view provenance when produced under a resolved Semantic View, and IR validation SHALL revalidate the reference and every referenced member against the current projection when a resolved view is bound. When no view registry is configured, unbound IR SHALL remain executable without a fabricated view identity (explicit legacy compatibility).
-
-#### Scenario: Bound IR is revalidated against the current view
-- **WHEN** an IR carries a view reference whose fingerprint or referenced members no longer match the current resolved projection
-- **THEN** validation fails closed with a structured view-binding or member-scope issue before compilation or adapter invocation
-
-#### Scenario: Unbound IR keeps the legacy path
-- **WHEN** no view registry is configured and an IR carries no view reference
-- **THEN** the IR validates and executes exactly as before without fabricating a view identity

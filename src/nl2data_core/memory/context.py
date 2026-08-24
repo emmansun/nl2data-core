@@ -31,6 +31,7 @@ from nl2data_core.memory.models import (
 )
 from nl2data_core.planning.validation import AuthorizedView
 from nl2data_core.tenancy.models import TenantScopeContext
+from nl2data_core.views.projection import ResolvedViewProjection
 
 _IDENTIFIER_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_\-\.]{0,127}$"
 _FINGERPRINT_PATTERN = r"^sha256:[0-9a-f]{64}$"
@@ -45,8 +46,18 @@ def _utc_now() -> datetime:
 
 
 def _view_fingerprint(view: AuthorizedView | None) -> str | None:
+    """The semantic fingerprint of the authorized view for this turn.
+
+    A view-bound turn uses the resolved-view fingerprint so recalled
+    records recorded under a different resolved view are revalidated as
+    stale; an unbound view (legacy compatibility mode) keeps the derived
+    structural fingerprint.
+    """
     if view is None:
         return None
+    if view.view_bound:
+        assert view.view_fingerprint is not None
+        return view.view_fingerprint
     return sha256_fingerprint(
         {
             "source_id": view.source_id,
@@ -328,18 +339,22 @@ def project_recall_context(
     projection: MemoryRecallProjection,
     max_output_tokens: int = 4096,
     now: datetime | None = None,
+    resolved_view: ResolvedViewProjection | None = None,
 ) -> MemoryContextProjection:
     """Project recalled records into the authorized provider context.
 
     Every record is revalidated against the current turn; stale records
     are reported by id and never projected.  Working/session/audit records
-    carry no provider-facing reference and are ignored.
+    carry no provider-facing reference and are ignored.  ``resolved_view``
+    binds context assembly to the resolved projection when one is
+    available.
     """
     model_context = assemble_model_context(
         request=request,
         view=view,
         semantic_references=semantic_references,
         max_output_tokens=max_output_tokens,
+        projection=resolved_view,
     )
     references: list[MemoryReference] = []
     stale_ids: list[str] = []

@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from nl2data.models import QueryRequest
 from nl2data_core.canonical import sha256_fingerprint
 from nl2data_core.planning.validation import AuthorizedView
+from nl2data_core.views.projection import ResolvedViewProjection
 
 _IDENTIFIER_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_\-\.]{0,127}$"
 _FINGERPRINT_PATTERN = r"^sha256:[0-9a-f]{64}$"
@@ -109,14 +110,38 @@ def assemble_model_context(
     view: AuthorizedView,
     semantic_references: dict[str, SemanticReference] | None = None,
     max_output_tokens: int = 4096,
+    projection: ResolvedViewProjection | None = None,
 ) -> AuthorizedModelContext:
     """Assemble the authorized model context for one query request.
 
-    Semantic references are pruned to the authorized view: references for
-    fields outside ``view.field_ids`` are dropped, and no credentials,
-    native clients, raw result sets, unrestricted schema metadata, or
-    hidden policy state are accepted as inputs.
+    When a resolved projection is available the context is assembled from
+    the projection only: references are derived from its permitted members
+    (alias, label, description, data type, and allowed aggregations), so
+    physical metadata, credentials, restricted members, and hidden policy
+    details never enter the provider context.  Without a projection the
+    context falls back to policy-pruned references, dropping any field
+    outside ``view.field_ids``.
     """
+    if projection is not None:
+        references = tuple(
+            SemanticReference(
+                field_id=field.field_id,
+                label=field.alias or field.label,
+                description=field.description,
+                data_type=field.data_type,
+                allowed_aggregations=field.allowed_aggregations,
+            )
+            for entity in projection.entities
+            for field in entity.fields
+        )
+        return AuthorizedModelContext(
+            request_id=request.request_id,
+            source_id=projection.source_id,
+            root_entity_ids=projection.root_entity_ids,
+            semantic_references=references,
+            catalog_fingerprint=projection.catalog_fingerprint,
+            max_output_tokens=max_output_tokens,
+        )
     pruned: list[SemanticReference] = []
     for field_id in sorted(view.field_ids):
         reference = (semantic_references or {}).get(field_id)

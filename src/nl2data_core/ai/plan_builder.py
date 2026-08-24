@@ -19,6 +19,7 @@ from nl2data_core.planning.ir.models import (
     IRProvenance,
     IRResultShape,
     IRSelection,
+    IRViewReference,
     SemanticQueryIR,
 )
 from nl2data_core.planning.ir.validation import validate_ir
@@ -63,6 +64,7 @@ def build_ir_from_intent(
     ir_id: str | None = None,
     catalog_fingerprint: str | None = None,
     policy_view_fingerprint: str | None = None,
+    view_reference: IRViewReference | None = None,
 ) -> SemanticQueryIR:
     """Build the canonical Semantic Query IR for a validated structured intent.
 
@@ -71,7 +73,9 @@ def build_ir_from_intent(
     Groupings, result shape, and required capabilities are derived as pure
     functions of the intent facts; the IR is validated exactly once before
     any compiler sees it.  The IR id defaults to a deterministic value
-    derived from the request id for repeatability.
+    derived from the request id for repeatability.  ``view_reference``
+    binds the IR to a resolved-view identity when one is available and is
+    omitted entirely in the unbound compatibility mode.
     """
     selections = tuple(
         IRSelection(
@@ -124,6 +128,7 @@ def build_ir_from_intent(
             root_entity_id=intent.root_entity_id,
             catalog_fingerprint=catalog_fingerprint,
             policy_view_fingerprint=policy_view_fingerprint,
+            view_reference=view_reference,
         ),
         required_capabilities=_derive_required_capabilities(selections, filters, orderings),
     )

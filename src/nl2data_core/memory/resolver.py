@@ -38,6 +38,7 @@ from nl2data_core.memory.models import (
 )
 from nl2data_core.memory.protocol import MemoryProvider
 from nl2data_core.planning.validation import AuthorizedView
+from nl2data_core.views.projection import ResolvedViewProjection
 
 #: Bounded markers that signal dependence on prior conversation context.
 _FOLLOW_UP_MARKERS = (
@@ -139,6 +140,7 @@ class MultiTurnResolver:
         turn: CurrentTurnContext,
         recall_budget: MemoryRecallBudget | None = None,
         now: datetime | None = None,
+        resolved_view: ResolvedViewProjection | None = None,
     ) -> None:
         self._provider = provider
         self._view = view
@@ -146,6 +148,7 @@ class MultiTurnResolver:
         self._turn = turn
         self._recall_budget = recall_budget
         self._now = now
+        self._resolved_view = resolved_view
 
     def resolve(self, request: QueryRequest) -> MultiTurnResolution:
         """Resolve one request, degrading statelessly when memory is absent."""
@@ -198,6 +201,7 @@ class MultiTurnResolver:
             turn=self._turn,
             projection=projection,
             now=self._now,
+            resolved_view=self._resolved_view,
         )
         if projected.stale_reference_ids:
             if depends:

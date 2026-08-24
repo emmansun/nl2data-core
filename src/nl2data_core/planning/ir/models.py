@@ -287,8 +287,36 @@ class IRResultShape(BaseModel):
         return {"kind": self.kind}
 
 
+class IRViewReference(BaseModel):
+    """Resolved Semantic View reference carried by a view-bound IR.
+
+    The reference is derived from the current authorized projection and is
+    never fabricated: it is only present when a Semantic View registry is
+    configured and the view resolved successfully.  The fingerprint is the
+    resolved-view fingerprint, so any security-dimension change invalidates
+    every previously recorded IR reference.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    view_id: str = Field(pattern=_IDENTIFIER_PATTERN)
+    view_version: int = Field(ge=1, le=1_000_000)
+    view_fingerprint: str = Field(pattern=_FINGERPRINT_PATTERN)
+
+    def canonical_payload(self) -> dict[str, Any]:
+        return {
+            "view_id": self.view_id,
+            "view_version": self.view_version,
+            "view_fingerprint": self.view_fingerprint,
+        }
+
+
 class IRProvenance(BaseModel):
-    """View/source provenance of the logical request."""
+    """View/source provenance of the logical request.
+
+    ``view_reference`` is present only for view-bound IR; unbound IR keeps
+    the legacy compatibility shape and never fabricates a view identity.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -296,14 +324,18 @@ class IRProvenance(BaseModel):
     root_entity_id: str = Field(pattern=_IDENTIFIER_PATTERN)
     catalog_fingerprint: str | None = Field(default=None, pattern=_FINGERPRINT_PATTERN)
     policy_view_fingerprint: str | None = Field(default=None, pattern=_FINGERPRINT_PATTERN)
+    view_reference: IRViewReference | None = None
 
     def canonical_payload(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "source_id": self.source_id,
             "root_entity_id": self.root_entity_id,
             "catalog_fingerprint": self.catalog_fingerprint,
             "policy_view_fingerprint": self.policy_view_fingerprint,
         }
+        if self.view_reference is not None:
+            payload["view_reference"] = self.view_reference.canonical_payload()
+        return payload
 
 
 class IRExtension(BaseModel):

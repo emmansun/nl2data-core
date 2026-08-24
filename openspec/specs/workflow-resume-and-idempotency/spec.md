@@ -32,3 +32,10 @@ The system SHALL represent ambiguous post-crash recovery using safe status and e
 - **WHEN** a worker terminates after external execution but before terminal state commit
 - **THEN** recovery exposes the checkpoint/evidence state for reconciliation rather than silently replaying or claiming success
 
+### Requirement: Checkpoint compatibility includes resolved-view identity
+The system SHALL record the resolved-view identity and fingerprint in checkpoint compatibility metadata for view-bound workflows and SHALL reject resume when the current resolved view no longer matches, before any adapter execution.
+
+#### Scenario: Stale view checkpoint is rejected
+- **WHEN** a workflow checkpoint was recorded under resolved view v1 and resumes under a differently resolved view v2
+- **THEN** resume is rejected with a structured stale-checkpoint error and the adapter is not invoked
+

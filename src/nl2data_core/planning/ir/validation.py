@@ -23,6 +23,16 @@ _TIME_FIELD_PREFIXES = ("created_at", "updated_at", "occurred_at", "time_")
 #: Operators whose value must be a (non-empty) tuple of scalars.
 _TUPLE_VALUE_OPERATORS = frozenset({"in", "not_in"})
 
+#: IR capability names mapped to the semantic operations they enable, so a
+#: bound view can reject operations outside its authorized surface.
+_CAPABILITY_TO_OPERATION = {
+    "aggregation": "aggregate",
+    "grouping": "group",
+    "ordering": "order",
+    "contains": "filter",
+    "list_ops": "filter",
+}
+
 
 class IRValidationIssue(BaseModel):
     """One structured validation issue found in an IR."""
@@ -243,6 +253,8 @@ def validate_ir(
     # -- authorized view ----------------------------------------------------
     if view is not None:
         _validate_view_scope(ir, view, issues)
+        if _view_binding_fingerprint(view) is not None:
+            _validate_view_binding(ir, view, issues)
 
     # -- time boundaries ----------------------------------------------------
     resolved_time_fields: set[str] = set()
@@ -341,3 +353,104 @@ def _validate_view_scope(
                 f"ordering field '{ordering.field_id}' is outside the authorized view",
                 f"orderings.{ordering.ordering_id}",
             )
+
+
+def _view_binding_fingerprint(view: object) -> str | None:
+    """The resolved-view fingerprint a bound view carries, if any.
+
+    An unbound view (legacy compatibility mode) carries no resolved-view
+    identity, so no binding is enforced and none is fabricated.
+    """
+    fingerprint = getattr(view, "view_fingerprint", None)
+    if fingerprint is None:
+        fingerprint = getattr(view, "fingerprint", None)
+    return fingerprint if isinstance(fingerprint, str) else None
+
+
+def _view_allowed_aggregations(view: object, field_id: str) -> frozenset[str] | None:
+    """The aggregations a bound view allows for a field, if restricted.
+
+    Accesses the view structurally (method first, mapping second) so the IR
+    layer stays free of view coupling at module scope.
+    """
+    resolver = getattr(view, "allowed_aggregations_for", None)
+    if callable(resolver):
+        result = resolver(field_id)
+        return frozenset(result) if result is not None else None
+    restrictions = getattr(view, "field_aggregation_restrictions", None)
+    if isinstance(restrictions, dict):
+        result = restrictions.get(field_id)
+        return frozenset(result) if result is not None else None
+    return None
+
+
+def _validate_view_binding(
+    ir: SemanticQueryIR, view: object, issues: list[IRValidationIssue]
+) -> None:
+    """Binding checks against the current resolved view.
+
+    A bound view requires the IR to carry the exact view identity and
+    fingerprint, and every operation, aggregation, and result shape must be
+    within the projection's authorized surface.  A stale, missing, or
+    mismatched reference fails closed before any compiler or adapter work.
+    """
+    reference = ir.provenance.view_reference
+    if reference is None:
+        _append(
+            issues,
+            "missing_view_reference",
+            "IR does not reference the authorized resolved view",
+            "provenance.view_reference",
+        )
+        return
+    view_id = getattr(view, "view_id", None)
+    view_version = getattr(view, "view_version", None)
+    if (
+        reference.view_id != view_id
+        or reference.view_version != view_version
+        or reference.view_fingerprint != _view_binding_fingerprint(view)
+    ):
+        _append(
+            issues,
+            "view_reference_mismatch",
+            "IR view reference does not match the current resolved view",
+            "provenance.view_reference",
+        )
+
+    allowed_operations = getattr(view, "allowed_operations", None)
+    if isinstance(allowed_operations, frozenset):
+        required_operations = sorted(
+            _CAPABILITY_TO_OPERATION[capability]
+            for capability in ir.required_capabilities
+            if capability in _CAPABILITY_TO_OPERATION
+        )
+        for operation in required_operations:
+            if operation not in allowed_operations:
+                _append(
+                    issues,
+                    "operation_out_of_scope",
+                    f"operation '{operation}' is outside the authorized view",
+                    "required_capabilities",
+                )
+
+    for selection in ir.selections:
+        if selection.aggregation == "none":
+            continue
+        allowed = _view_allowed_aggregations(view, selection.field_id)
+        if allowed is not None and selection.aggregation not in allowed:
+            _append(
+                issues,
+                "aggregation_out_of_scope",
+                f"aggregation '{selection.aggregation}' is outside the authorized "
+                f"view for field '{selection.field_id}'",
+                f"selections.{selection.selection_id}",
+            )
+
+    constraints = getattr(view, "result_shape_constraints", None)
+    if constraints and ir.result_shape.kind not in constraints:
+        _append(
+            issues,
+            "result_shape_out_of_scope",
+            f"result shape '{ir.result_shape.kind}' is outside the authorized view",
+            "result_shape.kind",
+        )

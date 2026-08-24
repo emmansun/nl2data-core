@@ -11,7 +11,7 @@ The multi-turn resolver SHALL use recalled memory only to assemble bounded provi
 - **THEN** it may be included in provider-safe context for the next intent resolution
 
 #### Scenario: Stale reference cannot authorize execution
-- **WHEN** a recalled reference has a stale policy, catalog, tenant scope, or artifact fingerprint
+- **WHEN** a recalled reference has a stale policy, catalog, tenant scope, semantic view, or artifact fingerprint
 - **THEN** it is rejected or converted into a bounded clarification and no adapter execution occurs from the stale reference
 
 ### Requirement: Follow-up context is bounded and safe

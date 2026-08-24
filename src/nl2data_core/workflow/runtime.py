@@ -77,12 +77,13 @@ from nl2data_core.memory.resolver import (
     MultiTurnResolver,
     record_query_reference,
 )
-from nl2data_core.planning.ir.models import SemanticQueryIR
+from nl2data_core.planning.ir.models import IRViewReference, SemanticQueryIR
 from nl2data_core.planning.ir.validation import validate_ir
 from nl2data_core.planning.models import PhysicalBinding
 from nl2data_core.planning.validation import AuthorizedView
 from nl2data_core.tenancy.models import TenantScopeContext
 from nl2data_core.tenancy.validation import validate_tenant_scope
+from nl2data_core.views.projection import ResolvedViewProjection
 from nl2data_core.workflow.contract import (
     ApprovalRequiredError,
     RuntimeCancelledError,
@@ -401,6 +402,7 @@ class _MemoryNode(_NodeBase):
             turn=self._channel["turn"],
             recall_budget=runtime.memory_budget,
             now=runtime._now(),
+            resolved_view=runtime.projection,
         ).resolve(context.request)
         if resolution.kind is MultiTurnResolutionKind.CLARIFICATION:
             return StageResult(
@@ -444,6 +446,7 @@ class _IntentNode(_NodeBase):
                 semantic_references=runtime.references,
                 config=runtime.config,
                 min_confidence=runtime.min_confidence,
+                projection=runtime.projection,
             ).resolve(request, provider, context_extra=self._channel.get("context_extra"))
         except Exception as error:
             return StageResult(
@@ -492,6 +495,7 @@ class _PlanNode(_NodeBase):
             ir = build_ir_from_intent(
                 outcome.intent,
                 catalog_fingerprint=runtime.view.catalog_fingerprint,
+                view_reference=runtime._view_reference(),
             )
         except Exception as error:
             return StageResult(
@@ -558,9 +562,15 @@ class _ValidateNode(_NodeBase):
             ir, runtime.ir_compiler, validated
         )
         gate_evidence: dict[WorkflowGate, str] = self._channel["gate_evidence"]
-        gate_evidence[WorkflowGate.PLAN_VALIDATION] = sha256_fingerprint(
-            {"ir": ir.fingerprint, "structure": "valid", "view": "valid"}
-        )
+        plan_evidence: dict[str, object] = {
+            "ir": ir.fingerprint,
+            "structure": "valid",
+            "view": "valid",
+        }
+        if runtime.view.view_bound:
+            assert runtime.view.view_fingerprint is not None
+            plan_evidence["view_fingerprint"] = runtime.view.view_fingerprint
+        gate_evidence[WorkflowGate.PLAN_VALIDATION] = sha256_fingerprint(plan_evidence)
         gate_evidence[WorkflowGate.ARTIFACT_VALIDATION] = validated.fingerprint
         return StageResult(
             stage=self.stage,
@@ -908,10 +918,11 @@ class DeterministicWorkflowRuntime:
         approval_required: Callable[[SemanticQueryIR], bool] | None = None,
         ir_compiler: Callable[[SemanticQueryIR], str] | None = None,
         now: Callable[[], datetime] | None = None,
+        projection: ResolvedViewProjection | None = None,
     ) -> None:
         self._provider = provider
         self._execution = execution
-        self._references = dict(semantic_references or {})
+        self._projection = projection
         self._binding = binding
         self._config = config or ModelConfig()
         self._min_confidence = min_confidence
@@ -927,6 +938,22 @@ class DeterministicWorkflowRuntime:
         )
         self._now_fn = now or _utc_now
         self._closed = False
+        if projection is not None:
+            self._view: AuthorizedView | None = AuthorizedView.from_projection(projection)
+            self._references = {
+                field.field_id: SemanticReference(
+                    field_id=field.field_id,
+                    label=field.alias or field.label,
+                    description=field.description,
+                    data_type=field.data_type,
+                    allowed_aggregations=field.allowed_aggregations,
+                )
+                for entity in projection.entities
+                for field in entity.fields
+            }
+        else:
+            self._view = execution.view if execution is not None else None
+            self._references = dict(semantic_references or {})
 
     # -- bound components ---------------------------------------------------
 
@@ -1002,10 +1029,18 @@ class DeterministicWorkflowRuntime:
 
     @property
     def view(self) -> AuthorizedView:
-        """The authorized view of the governed path (configured only)."""
-        execution = self._execution
-        assert execution is not None and execution.view is not None
-        return execution.view
+        """The authorized view of the governed path (configured only).
+
+        When a resolved-view projection is bound, the view is derived from
+        the projection; otherwise it is the execution's configured view.
+        """
+        assert self._view is not None
+        return self._view
+
+    @property
+    def projection(self) -> ResolvedViewProjection | None:
+        """The resolved-view projection bound to the governed path, if any."""
+        return self._projection
 
     @property
     def policy_scope(self) -> PolicyScope:
@@ -1530,6 +1565,13 @@ class DeterministicWorkflowRuntime:
                     "ir_version": str(ir.ir_version),
                     "ir_fingerprint": ir.fingerprint,
                 }
+                if self._view is not None and self._view.view_bound:
+                    assert self._view.view_id is not None
+                    assert self._view.view_version is not None
+                    assert self._view.view_fingerprint is not None
+                    stage_metadata["view_id"] = self._view.view_id
+                    stage_metadata["view_version"] = str(self._view.view_version)
+                    stage_metadata["view_fingerprint"] = self._view.view_fingerprint
             durable.checkpoint(
                 stage=result.next_stage or stage,
                 compatibility_fingerprints=dict(channel["compat"]),
@@ -1891,7 +1933,7 @@ class DeterministicWorkflowRuntime:
         """Build the trusted current-turn context and base compatibility map."""
         execution = self._execution
         assert execution is not None
-        view = execution.view
+        view = self._view
         assert view is not None
         context = request.context
         conversation_id = (
@@ -1923,10 +1965,51 @@ class DeterministicWorkflowRuntime:
             "policy": policy_scope.policy_fingerprint,
             "semantic": semantic_view_fingerprint,
         }
+        if view.view_bound:
+            compat["view"] = self._view_compat_fingerprint()
         catalog_fingerprint = view.catalog_fingerprint
         if catalog_fingerprint is not None:
             compat["catalog"] = catalog_fingerprint
         return turn, compat
+
+    def _view_reference(self) -> IRViewReference | None:
+        """The resolved-view reference binding every produced IR, if bound.
+
+        An unbound view (legacy compatibility mode) carries no resolved-view
+        identity, so no reference is fabricated and existing unbound IR
+        keeps executing unchanged.
+        """
+        view = self._view
+        if view is None or not view.view_bound:
+            return None
+        assert view.view_id is not None
+        assert view.view_version is not None
+        assert view.view_fingerprint is not None
+        return IRViewReference(
+            view_id=view.view_id,
+            view_version=view.view_version,
+            view_fingerprint=view.view_fingerprint,
+        )
+
+    def _view_compat_fingerprint(self) -> str:
+        """The checkpoint compatibility fingerprint of the bound resolved view.
+
+        The identity and fingerprint of the resolved view participate in
+        resume validation, so a checkpoint recorded under a stale view is
+        rejected before any adapter execution.
+        """
+        view = self._view
+        assert view is not None and view.view_bound
+        assert view.view_id is not None
+        assert view.view_version is not None
+        assert view.view_fingerprint is not None
+        return sha256_fingerprint(
+            {
+                "view_id": view.view_id,
+                "view_version": view.view_version,
+                "view_fingerprint": view.view_fingerprint,
+            }
+        )
 
     def _scope_fingerprint(self) -> str | None:
         if self._execution is None or self._execution.tenant_context is None:

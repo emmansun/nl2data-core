@@ -26,6 +26,7 @@ from nl2data_core.memory.models import MemoryRecallBudget
 from nl2data_core.memory.protocol import MemoryProvider
 from nl2data_core.planning.ir.models import SemanticQueryIR
 from nl2data_core.planning.models import PhysicalBinding
+from nl2data_core.views.projection import ResolvedViewProjection
 from nl2data_core.workflow.contract import WorkflowCancellation
 from nl2data_core.workflow.models import WorkflowBudget, WorkflowState
 from nl2data_core.workflow.runner import QueryExecutionRunner
@@ -61,6 +62,7 @@ class AIWorkflowRunner:
         idempotency_ttl_seconds: float = 86_400.0,
         approval_required: Callable[[SemanticQueryIR], bool] | None = None,
         now: Callable[[], datetime] | None = None,
+        projection: ResolvedViewProjection | None = None,
     ) -> None:
         self._execution = execution
         self._runtime = DeterministicWorkflowRuntime(
@@ -78,6 +80,7 @@ class AIWorkflowRunner:
             idempotency_ttl_seconds=idempotency_ttl_seconds,
             approval_required=approval_required,
             now=now,
+            projection=projection,
         )
 
     @property

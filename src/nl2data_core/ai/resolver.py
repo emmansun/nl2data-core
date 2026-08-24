@@ -43,6 +43,7 @@ from nl2data_core.ai.models import (
 from nl2data_core.ai.protocol import ModelProvider
 from nl2data_core.canonical import canonical_json, sha256_fingerprint
 from nl2data_core.planning.validation import AuthorizedView
+from nl2data_core.views.projection import ResolvedViewProjection
 
 #: Top-level fields a provider may emit in the structured output envelope.
 _ALLOWED_OUTPUT_FIELDS = frozenset({"intent", "clarification", "alternatives"})
@@ -155,9 +156,26 @@ class IntentResolver:
         semantic_references: dict[str, SemanticReference] | None = None,
         config: ModelConfig | None = None,
         min_confidence: float = 0.6,
+        projection: ResolvedViewProjection | None = None,
     ) -> None:
         self._view = view
-        self._references = dict(semantic_references or {})
+        self._projection = projection
+        if projection is not None:
+            self._references = {
+                field.field_id: SemanticReference(
+                    field_id=field.field_id,
+                    label=field.alias or field.label,
+                    description=field.description,
+                    data_type=field.data_type,
+                    allowed_aggregations=field.allowed_aggregations,
+                )
+                for entity in projection.entities
+                for field in entity.fields
+            }
+            self._field_ids = projection.field_ids
+        else:
+            self._references = dict(semantic_references or {})
+            self._field_ids = view.field_ids
         self._config = config or ModelConfig()
         self._min_confidence = min_confidence
 
@@ -187,6 +205,7 @@ class IntentResolver:
             view=self._view,
             semantic_references=self._references,
             max_output_tokens=bound_tokens,
+            projection=self._projection,
         )
         outcome = await self._invoke_with_budget(
             request, provider, context, bound_tokens, context_extra=context_extra
@@ -369,7 +388,7 @@ class IntentResolver:
                 details={"root_entity_id": intent.root_entity_id},
             )
         for field_id in sorted(intent.field_ids()):
-            if field_id not in self._view.field_ids:
+            if field_id not in self._field_ids:
                 return self._reject(
                     ModelErrorCode.UNSAFE_OUTPUT,
                     "intent references a field outside the authorized view",

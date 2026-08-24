@@ -3,19 +3,15 @@
 Define the versioned workflow state, transition, budget, event, and replaceable state-store contracts.
 ## Requirements
 ### Requirement: Versioned workflow state
-The workflow foundation SHALL represent a workflow instance with a versioned immutable state containing request identity, workflow identity, status, current stage identity, attempt counters, safe evidence references, optional tenant scope fingerprint, and checkpoint compatibility fingerprints. Compatibility fingerprints SHALL include the canonical Semantic Query IR version/fingerprint when a workflow has a planned query; legacy Semantic Query Plan identities SHALL not be persisted or accepted. Durable stores SHALL persist only the safe representation.
+The workflow foundation SHALL represent a workflow instance with a versioned immutable state containing request identity, workflow identity, status, current stage identity, attempt counters, safe evidence references, optional tenant scope fingerprint, and checkpoint compatibility fingerprints. Compatibility fingerprints SHALL include the canonical Semantic Query IR version/fingerprint and, when view-bound, the resolved Semantic View identity/fingerprint. Durable stores SHALL persist only the safe representation.
 
 #### Scenario: State snapshot is serializable
 - **WHEN** a workflow state is created with valid identifiers, stage, and status
-- **THEN** it can be serialized without raw prompts, raw queries, credentials, provider objects, raw result records, SQL/MQL, physical driver values, or legacy plan objects
+- **THEN** it can be serialized without raw prompts, raw queries, credentials, provider objects, raw result records, SQL/MQL, physical driver values, or hidden semantic metadata
 
-#### Scenario: IR compatibility is checked on resume
-- **WHEN** a persisted workflow checkpoint references a Semantic Query IR version or fingerprint that is not compatible with the current runtime
+#### Scenario: IR and view compatibility is checked on resume
+- **WHEN** a persisted workflow checkpoint references a Semantic Query IR or resolved Semantic View version/fingerprint that is not compatible with the current runtime
 - **THEN** resume is rejected as stale or incompatible rather than executing the checkpoint under changed semantics
-
-#### Scenario: Legacy plan checkpoint is rejected
-- **WHEN** a checkpoint contains a legacy Semantic Query Plan identity without canonical IR evidence
-- **THEN** resume is rejected as incompatible and no adapter work starts
 
 ### Requirement: Valid transitions are enforced
 The workflow foundation SHALL define allowed status and stage transitions and SHALL reject transitions that bypass mandatory runtime gates or move from terminal states. Durable compare-and-set updates SHALL preserve these rules.
@@ -35,6 +31,6 @@ Workflow events SHALL record transition/stage identity and safe metadata, and wo
 P0 SHALL provide an in-memory state-store implementation and P2 SHALL provide a durable SQLite implementation behind a replaceable protocol; both SHALL support runtime checkpoint identity and tenant-scoped lookup.
 
 #### Scenario: Runtime checkpoint can be resumed safely
-- **WHEN** a matching tenant and compatible checkpoint are loaded
+- **WHEN** a matching tenant, compatible Semantic Query IR, and compatible resolved Semantic View checkpoint is loaded
 - **THEN** the runtime resumes from the persisted stage without exposing raw checkpoint content
 
