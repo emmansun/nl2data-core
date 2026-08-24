@@ -22,6 +22,25 @@ DOCUMENTED_SYMBOLS = [
     "QueryOutcome",
     "QueryRequest",
     "QueryResult",
+    "CancellationRequest",
+    "CancellationResult",
+    "CancellationStatus",
+    "CompositionProfile",
+    "FacadeCapabilities",
+    "FacadePort",
+    "MemoryProviderPort",
+    "ModelProviderPort",
+    "NL2Data",
+    "QueryAdapterPort",
+    "SyncUsageError",
+    "TelemetryPort",
+    "WorkflowEvent",
+    "WorkflowHandle",
+    "WorkflowRuntimePort",
+    "WorkflowStage",
+    "WorkflowStatus",
+    "create_facade",
+    "load_config",
 ]
 
 OPTIONAL_PROVIDER_MODULES = [
@@ -61,7 +80,17 @@ class TestPublicImportSurface:
 
         # nl2data_core is an implementation detail; public models do not
         # leak internal classes through their annotations.
-        for symbol in ("QueryRequest", "QueryOutcome", "QueryResult", "ErrorRecord"):
+        for symbol in (
+            "QueryRequest",
+            "QueryOutcome",
+            "QueryResult",
+            "ErrorRecord",
+            "WorkflowHandle",
+            "WorkflowEvent",
+            "CancellationRequest",
+            "CancellationResult",
+            "FacadeCapabilities",
+        ):
             annotation_src = getattr(__import__("nl2data").models, symbol).model_fields
             for field in annotation_src.values():
                 assert "nl2data_core" not in str(field.annotation)

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -30,6 +31,9 @@ from nl2data.errors import (
     as_error_record,
 )
 from nl2data.models import (
+    CancellationRequest,
+    CancellationResult,
+    CancellationStatus,
     OutcomeStatus,
     QueryClarification,
     QueryClarificationOption,
@@ -900,6 +904,7 @@ class DeterministicWorkflowRuntime:
         self._approval_required = approval_required
         self._plan_compiler = plan_compiler or compile_plan
         self._now_fn = now or _utc_now
+        self._closed = False
 
     # -- bound components ---------------------------------------------------
 
@@ -1066,10 +1071,100 @@ class DeterministicWorkflowRuntime:
 
     async def close(self) -> None:
         """Release the provider and the governed execution (idempotent)."""
-        if self._provider is not None:
-            await self._provider.close()
-        if self._execution is not None:
-            await self._execution.close()
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            if self._provider is not None:
+                await self._provider.close()
+        finally:
+            try:
+                if self._execution is not None:
+                    await self._execution.close()
+            finally:
+                try:
+                    await self._close_optional(self._memory)
+                finally:
+                    await self._close_optional(self._state_store)
+
+    @staticmethod
+    async def _close_optional(resource: object | None) -> None:
+        """Close an optional synchronous or asynchronous resource once."""
+        if resource is None:
+            return
+        close = getattr(resource, "close", None)
+        if not callable(close):
+            return
+        result = close()
+        if inspect.isawaitable(result):
+            await result
+
+    @property
+    def state_store(self) -> StateStore | None:
+        """The bound durable state store, if any."""
+        return self._state_store
+
+    def get_workflow(
+        self, workflow_id: str, *, tenant_scope_fingerprint: str | None = None
+    ) -> WorkflowState | None:
+        """Return the stored workflow state or ``None`` when not durable.
+
+        State is only observable when a durable state store is configured;
+        without one the runtime reports ``None`` instead of fabricating
+        state.
+        """
+        if self._state_store is None:
+            return None
+        return self._state_store.get(
+            workflow_id, tenant_scope_fingerprint=tenant_scope_fingerprint
+        )
+
+    def cancel(self, request: CancellationRequest) -> CancellationResult:
+        """Request cooperative cancellation for a stored non-terminal workflow.
+
+        The cancellation flag is persisted through the compare-and-set
+        checkpoint path, so a later resume fails fast with the public
+        cancelled outcome before any adapter work.  Without a durable
+        store, or for an unknown or already-terminal workflow, no
+        cancellation is recorded and the stable result reports why.
+        """
+        store = self._state_store
+        if store is None:
+            return CancellationResult(
+                status=CancellationStatus.NOT_FOUND,
+                workflow_id=request.workflow_id,
+                reason=request.reason,
+                occurred_at=self._now(),
+            )
+        state = store.get(
+            request.workflow_id, tenant_scope_fingerprint=request.tenant_scope_fingerprint
+        )
+        if state is None:
+            return CancellationResult(
+                status=CancellationStatus.NOT_FOUND,
+                workflow_id=request.workflow_id,
+                reason=request.reason,
+                occurred_at=self._now(),
+            )
+        if state.status in TERMINAL_STATUSES:
+            return CancellationResult(
+                status=CancellationStatus.ALREADY_TERMINAL,
+                workflow_id=request.workflow_id,
+                reason=request.reason,
+                occurred_at=self._now(),
+            )
+        _DurableBinding(
+            store=store,
+            workflow_id=request.workflow_id,
+            state=state,
+            scope_fingerprint=request.tenant_scope_fingerprint,
+        ).mark_cancelled()
+        return CancellationResult(
+            status=CancellationStatus.CANCELLED,
+            workflow_id=request.workflow_id,
+            reason=request.reason,
+            occurred_at=self._now(),
+        )
 
     # -- graph execution ----------------------------------------------------
 

@@ -82,6 +82,111 @@ during drain/close are rejected with structured `LifecycleError`s, and the
 engine lifecycle is explicit: `created → initializing → ready → draining →
 closed`.
 
+## Public application facade (P2.7)
+
+The P2.7 facade makes the library embeddable: applications compose and run
+the governed runtime through one public entry point (:class:`NL2Data`) and a
+typed composition profile, never through internal ``nl2data_core`` modules.
+
+- **Composition**: :class:`CompositionProfile` binds either a pre-built
+  transport-neutral :class:`WorkflowRuntimePort` or the deterministic
+  composition parts (AI provider, Memory, query adapter, tenant context,
+  governance policy scope, authorized view, plan resolver, state store,
+  telemetry). An empty profile yields the safe ``NOT_CONFIGURED`` fallback
+  and never loads optional backends.
+- **Lifecycle**: ``created -> initializing -> ready -> draining -> closed``.
+  ``initialize()`` is the earliest point optional modules load; constructing
+  a facade imports no database, LLM, HTTP, or telemetry backend.
+- **Async is canonical**: ``await facade.aquery(request)`` returns only
+  protected :class:`QueryOutcome` values. Unexpected runtime failures map
+  to a safe failed outcome; internal details never cross the boundary.
+- **Sync convenience**: ``facade.query(request)`` runs ``aquery`` only when
+  no event loop is active in the current thread. Inside an active loop it
+  raises the stable :class:`SyncUsageError` (``ASYNC_REQUIRED``) instead of
+  nesting or blocking the loop.
+- **Workflow handles**: ``facade.get_workflow(workflow_id)`` returns a
+  bounded :class:`WorkflowHandle` (status, stage, cancellation flag,
+  sha256 evidence fingerprints, bounded event history) or ``None``. Handles
+  exist only when a durable state store is configured; without one the
+  facade reports absence instead of fabricating state.
+- **Cancellation**: ``facade.cancel(CancellationRequest(...))`` persists a
+  cooperative cancellation flag through the state store (``CANCELLED``), or
+  reports ``ALREADY_TERMINAL``/``NOT_FOUND``. A later resume fails fast
+  with ``WORKFLOW_CANCELLED`` before any adapter work.
+- **Capabilities and health**: ``facade.capabilities()`` returns an
+  immutable :class:`FacadeCapabilities` snapshot (configured, runtime,
+  provider, adapter, memory/tenant/durable flags, bounded features);
+  ``facade.health()`` observes the lifecycle.
+- **Idempotent close**: ``drain()`` and ``close()`` are idempotent;
+  ``close()`` releases provider, adapter, Memory, and state-store resources
+  exactly once.
+
+### Embedded usage
+
+```python
+import asyncio
+
+from nl2data import (
+    CancellationRequest,
+    CompositionProfile,
+    NL2Data,
+    OutcomeStatus,
+    QueryRequest,
+)
+
+# Bind a pre-built runtime port, or the deterministic composition parts:
+# adapter, policy_scope, view, plan_resolver, provider, state_store,
+# tenant_context, ... (all optional)
+composition = CompositionProfile()
+
+
+async def main() -> None:
+    facade = NL2Data(composition=composition)  # or create_facade(...)
+    await facade.initialize()
+
+    outcome = await facade.aquery(
+        QueryRequest(request_id="req-1", prompt="How many orders yesterday?")
+    )
+    assert outcome.status == OutcomeStatus.SUCCEEDED
+
+    if outcome.workflow_id is not None:
+        handle = facade.get_workflow(outcome.workflow_id)
+        facade.cancel(CancellationRequest(workflow_id=outcome.workflow_id))
+
+    await facade.close()
+
+
+asyncio.run(main())
+```
+
+### Deprecation guidance for `nl2data_core` imports
+
+``nl2data_core`` remains internal: it is not removed, but direct application
+imports from it are deprecated. New code must import only ``nl2data``.
+Existing applications that import ``nl2data_core`` today should migrate
+through the facade:
+
+- Replace ``NL2DataEngine`` usage with ``NL2Data``/``create_facade`` where
+  possible (``NL2DataEngine`` stays for source compatibility).
+- Move composition inputs into ``CompositionProfile`` instead of
+  constructing internal runners, adapters, stores, or tenant contexts at
+  the application boundary.
+- Configuration still loads through the public ``load_config``; the typed
+  configuration model remains internal until a public configuration API
+  ships.
+
+### Future `nl2data_http` hosting boundary
+
+A later ``nl2data_http`` package (out of scope here) may host the library
+behind HTTP. The boundary is already fixed: it will program against the
+transport-neutral :class:`FacadePort` (async query, sync convenience,
+workflow lookup, cancellation, capabilities, health, drain, close) and the
+public models (query request/outcome, workflow handles, cancellation
+results, capability snapshots) without importing internal types. The core
+adds no HTTP dependency and never loads ``fastapi``, ``flask``, or
+``starlette``; transport hosts remain optional packages outside
+``nl2data`` and ``nl2data_core``.
+
 ## AI runtime boundary (P2)
 
 The P2 AI runtime boundary keeps model providers optional and lazy, mirroring

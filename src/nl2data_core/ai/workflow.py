@@ -13,14 +13,20 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from datetime import datetime
 
-from nl2data.models import QueryOutcome, QueryRequest
+from nl2data.models import (
+    CancellationRequest,
+    CancellationResult,
+    QueryOutcome,
+    QueryRequest,
+)
 from nl2data_core.ai.config import ModelConfig
 from nl2data_core.ai.context import SemanticReference
 from nl2data_core.ai.protocol import ModelProvider
 from nl2data_core.memory.models import MemoryRecallBudget
 from nl2data_core.memory.protocol import MemoryProvider
 from nl2data_core.planning.models import PhysicalBinding, SemanticQueryPlan
-from nl2data_core.workflow.models import WorkflowBudget
+from nl2data_core.workflow.contract import WorkflowCancellation
+from nl2data_core.workflow.models import WorkflowBudget, WorkflowState
 from nl2data_core.workflow.runner import QueryExecutionRunner
 from nl2data_core.workflow.runtime import DeterministicWorkflowRuntime
 from nl2data_core.workflow.store import StateStore
@@ -87,11 +93,33 @@ class AIWorkflowRunner:
         """Whether the full AI path is available; otherwise fallbacks apply."""
         return self._runtime.is_configured()
 
-    async def execute(self, request: QueryRequest) -> QueryOutcome:
-        """Resolve one request through the AI path or the P1 fallback."""
+    async def execute(
+        self,
+        request: QueryRequest,
+        *,
+        cancellation: WorkflowCancellation | None = None,
+    ) -> QueryOutcome:
+        """Resolve one request through the AI path or the P1 fallback.
+
+        Cooperative cancellation is forwarded to the deterministic runtime;
+        the P1 structured-plan fallback path has no cancellation hook and
+        ignores the signal.
+        """
         if self._runtime.provider is None:
             return await self._execution.execute(request)
-        return await self._runtime.execute(request)
+        return await self._runtime.execute(request, cancellation=cancellation)
+
+    def get_workflow(
+        self, workflow_id: str, *, tenant_scope_fingerprint: str | None = None
+    ) -> WorkflowState | None:
+        """Return the stored workflow state or ``None`` when not durable."""
+        return self._runtime.get_workflow(
+            workflow_id, tenant_scope_fingerprint=tenant_scope_fingerprint
+        )
+
+    def cancel(self, request: CancellationRequest) -> CancellationResult:
+        """Request cooperative cancellation through the deterministic runtime."""
+        return self._runtime.cancel(request)
 
     async def close(self) -> None:
         """Release the provider and the governed execution (idempotent)."""

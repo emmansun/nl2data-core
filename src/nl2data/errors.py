@@ -72,6 +72,7 @@ class ErrorCode(StrEnum):
     APPROVAL_REQUIRED = "APPROVAL_REQUIRED"
     STALE_CHECKPOINT = "STALE_CHECKPOINT"
     WORKFLOW_RECOVERABLE = "WORKFLOW_RECOVERABLE"
+    ASYNC_REQUIRED = "ASYNC_REQUIRED"
     INTERNAL_ERROR = "INTERNAL_ERROR"
 
 
@@ -172,3 +173,22 @@ def as_error_record(error: BaseException) -> ErrorRecord:
         retryable=False,
         details={"cause_type": type(error).__name__},
     )
+
+
+class SyncUsageError(NL2DataError):
+    """Raised when a sync convenience method is used inside an active event loop.
+
+    Async applications must call the canonical async operation instead;
+    this error is stable, non-retryable, and safe to serialize.  It is
+    intentionally never raised outside an active loop, where the sync
+    convenience runs normally.
+    """
+
+    def __init__(self, message: str, *, details: dict[str, Any] | None = None) -> None:
+        super().__init__(
+            ErrorCategory.VALIDATION,
+            ErrorCode.ASYNC_REQUIRED,
+            message,
+            retryable=False,
+            details=details,
+        )
