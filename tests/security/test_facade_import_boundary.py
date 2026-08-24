@@ -36,6 +36,7 @@ OPTIONAL_BACKENDS = [
     "prometheus_client",
     "boto3",
     "grpc",
+    "redis",
 ]
 
 #: Modules that form the public boundary surface (scanned statically).

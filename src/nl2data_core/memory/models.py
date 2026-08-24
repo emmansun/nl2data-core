@@ -407,11 +407,20 @@ class MemoryRecord(BaseModel):
         return self.expires_at <= (now or _utc_now())
 
     def canonical_payload(self) -> dict[str, Any]:
-        """Order-independent payload covering every record field."""
+        """Order-independent payload covering every record field.
+
+        ``field_ids`` is sorted so equal records fingerprint identically
+        no matter how their set was constructed (set literal, JSON
+        round-trip, or a different process hash seed).
+        """
+        payload_dump = self.payload.model_dump(mode="json")
+        reference = payload_dump.get("reference")
+        if isinstance(reference, dict) and isinstance(reference.get("field_ids"), list):
+            reference["field_ids"] = sorted(reference["field_ids"])
         return {
             "record_id": self.record_id,
             "scope_fingerprint": self.scope.fingerprint,
-            "payload": self.payload.model_dump(mode="json"),
+            "payload": payload_dump,
             "created_at": self.created_at.isoformat(),
             "ttl_seconds": self.ttl_seconds,
             "expires_at": self.expires_at.isoformat() if self.expires_at is not None else None,

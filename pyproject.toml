@@ -32,6 +32,8 @@ sql = ["sqlglot>=25.0,<30"]
 postgres = ["psycopg[binary]>=3.1,<4"]
 # Optional MongoDB profile driver (lazy; never imported by the base package).
 mongodb = ["pymongo>=4.6,<5"]
+# Optional Redis shared memory backend driver (lazy; never imported by the base package).
+redis = ["redis>=5.0,<7"]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",

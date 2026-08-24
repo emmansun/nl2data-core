@@ -22,6 +22,7 @@ SRC_ROOT = Path(__file__).resolve().parents[2] / "src"
 FORBIDDEN_IMPORTS = [
     "sqlalchemy",
     "pymongo",
+    "redis",
     "psycopg",
     "psycopg2",
     "asyncpg",
@@ -151,3 +152,29 @@ class TestMongoImportBoundary:
             names = [name for name in dir(module) if not name.startswith("_")]
             leaked = [name for name in names if "mongo" in name.lower()]
             assert leaked == [], f"mongo types leaked into {module.__name__}: {leaked}"
+
+
+class TestRedisImportBoundary:
+    def test_importing_the_memory_package_loads_no_redis(self) -> None:
+        import nl2data_core.memory  # noqa: F401
+        import nl2data_core.memory.fake_redis  # noqa: F401
+        import nl2data_core.memory.redis_client  # noqa: F401
+        import nl2data_core.memory.redis_config  # noqa: F401
+        import nl2data_core.memory.redis_provider  # noqa: F401
+        import nl2data_core.memory.redis_serialization  # noqa: F401
+
+        loaded = {name.split(".")[0] for name in sys.modules}
+        assert "redis" not in loaded, "redis loaded with the memory package"
+
+    def test_no_redis_types_enter_public_contracts(self) -> None:
+        """Redis is a specialization: no Redis type name may appear in the
+        public models or the public composition profile.
+        """
+        import nl2data.composition
+        import nl2data.models
+
+        public_modules = (nl2data.models, nl2data.composition)
+        for module in public_modules:
+            names = [name for name in dir(module) if not name.startswith("_")]
+            leaked = [name for name in names if "redis" in name.lower()]
+            assert leaked == [], f"redis types leaked into {module.__name__}: {leaked}"

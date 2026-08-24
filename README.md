@@ -316,9 +316,30 @@ results:
   expiry. Stale or out-of-scope references fail closed into clarification,
   and a dependent follow-up never executes a recalled plan directly.
 - Memory is context only. Raw result caching is unsupported: no path stores
-  or replays query results or rows, and durable or service-backed (for
-  example Redis) providers remain future work behind the replaceable
-  protocol.
+  or replays query results or rows.
+- An optional Redis-backed provider (`nl2data_core.memory.RedisMemoryProvider`,
+  install the `redis` extra) implements the same protocol against a shared
+  Redis service so separate workers and Pods observe one bounded context.
+  It stores only the same safe serialization envelopes, keeps record ids
+  atomic through a namespaced registry, and revalidates every recalled
+  record - so a stale or foreign index member can never authorize a record.
+- **Redis configuration**: hosts own the connection url (never stored in
+  configuration models) and the namespace - one unique namespace per
+  application/environment, since providers never share or assume ownership
+  of keys outside it. `RedisMemoryConfig` validates the namespace pattern
+  and bounds TTL, capacity, recall candidates/batches, compaction batches,
+  expired-id retention, and connect/command timeouts before any
+  connection is made.
+- **TTL behavior**: records expire by their own `ttl_seconds`; an explicitly
+  expired record id stays reserved for `expired_id_retention_seconds`
+  before it may be reused. Availability is a bounded ping; on any failure
+  operations raise normalized `MEMORY_UNAVAILABLE` errors and the workflow
+  degrades statelessly to the P2.1 path - Memory is never required for
+  query execution.
+- Memory provides no workflow execution fencing: shared storage does not
+  serialize or fence workflow runs. Execution ordering, cancellation, and
+  idempotency remain owned by the workflow runtime and durable state
+  store, exactly as with the in-memory provider.
 - When Memory is unavailable the workflow degrades statelessly to the P2.1
   path; memory injection into `AIWorkflowRunner` is opt-in and keeps the
   governed boundary - validation, authorization, and plan checks still run
