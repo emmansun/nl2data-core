@@ -55,7 +55,7 @@ def _can_compose_executable(profile: CompositionProfile) -> bool:
     """Whether the profile can produce an executable runtime.
 
     Mirrors the governed execution condition without importing heavy
-    modules: both the P1 structured-plan and P2 AI paths require the full
+    modules: both the P1 structured-IR and P2 AI paths require the full
     adapter, policy scope, authorized view, and plan resolver set.  A model
     provider alone cannot execute safely and must use the not-configured
     fallback.
@@ -83,10 +83,11 @@ def _build_deterministic_runtime(profile: CompositionProfile) -> Any | None:
         policy_scope=profile.policy_scope,
         view=profile.view,
         plan_resolver=profile.plan_resolver,
+        binding=profile.binding,
         tenant_context=profile.tenant_context,
         state_store=profile.state_store,
         idempotency_ttl_seconds=profile.idempotency_ttl_seconds,
-        plan_compiler=profile.plan_compiler,
+        ir_compiler=profile.plan_compiler,
     )
     if profile.provider is None and not execution.is_configured():
         return None

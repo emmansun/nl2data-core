@@ -166,7 +166,7 @@ class CompositionProfile(BaseModel):
     policy_scope: Any = None
     #: Authorized semantic view (opaque internal type).
     view: Any = None
-    #: Physical binding used for plan compilation (opaque internal type).
+    #: Physical binding used for IR compilation (opaque internal type).
     binding: Any = None
     #: Model invocation configuration (opaque internal type).
     config: Any = None
@@ -180,7 +180,7 @@ class CompositionProfile(BaseModel):
     memory_budget: Any = None
     #: Workflow attempt/event/duration budgets (opaque internal type).
     budget: Any = None
-    #: Approval-required hook over compiled plans (opaque internal callable).
+    #: Approval-required hook over compiled IRs (opaque internal callable).
     approval_required: Any = None
     #: Plan compiler for artifact parse/validate and execution (opaque callable).
     plan_compiler: Any = None

@@ -130,6 +130,10 @@ def _check_scalar(value: Any) -> None:
 
 def _check_json_value(value: Any, path: str) -> None:
     """Reject anything that cannot cross a JSON wire boundary."""
+    if isinstance(value, str) and _EXECUTABLE_TEXT.search(value):
+        raise ValueError(f"{path} contains executable payload material")
+    if isinstance(value, float) and not isfinite(value):
+        raise ValueError(f"{path} contains a non-finite floating-point value")
     if isinstance(value, SCALAR_TYPES):
         return
     if isinstance(value, Mapping):
@@ -148,8 +152,6 @@ def _check_json_value(value: Any, path: str) -> None:
         for index, item in enumerate(value):
             _check_json_value(item, f"{path}[{index}]")
         return
-    if isinstance(value, str) and _EXECUTABLE_TEXT.search(value):
-        raise ValueError(f"{path} contains executable payload material")
     raise ValueError(f"{path} contains a non-JSON-compatible value ({type(value).__name__})")
 
 

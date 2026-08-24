@@ -12,15 +12,7 @@ identity across backends stays provable.
 
 from __future__ import annotations
 
-from nl2data_core.planning.models import (
-    ColumnBinding,
-    PhysicalBinding,
-    PlanLineage,
-    SemanticFilter,
-    SemanticOrdering,
-    SemanticQueryPlan,
-    SemanticSelection,
-)
+from nl2data_core.planning.models import ColumnBinding, PhysicalBinding
 
 from .models import (
     IRExtension,
@@ -127,51 +119,18 @@ def golden_ir() -> SemanticQueryIR:
     )
 
 
-def golden_plan() -> SemanticQueryPlan:
-    """The legacy plan equivalent of :func:`golden_ir` with a physical binding.
+def golden_binding() -> PhysicalBinding:
+    """The frozen physical binding used to compile the golden IR.
 
-    Used by the compiler compatibility tests: SQL and MongoDB must compile
-    the plan and the IR to logically identical physical artifacts.
+    Maps the golden IR's semantic fields onto the ``orders_table`` SQLite
+    object; shared by SQL and MongoDB compiler tests.
     """
-    return SemanticQueryPlan(
-        plan_id="plan-golden-001",
-        source_id=GOLDEN_SOURCE_ID,
-        root_entity_id=GOLDEN_ROOT_ENTITY_ID,
-        selections=(
-            SemanticSelection(selection_id="s1", field_id="region", alias=None, aggregation="none"),
-            SemanticSelection(
-                selection_id="s2",
-                field_id="total_amount",
-                alias="order_value",
-                aggregation="sum",
-            ),
-        ),
-        filters=(
-            SemanticFilter(filter_id="f1", field_id="status", operator="eq", value="shipped"),
-            SemanticFilter(
-                filter_id="f2",
-                field_id="region",
-                operator="in",
-                value=("north", "south"),
-            ),
-        ),
-        orderings=(
-            SemanticOrdering(ordering_id="o1", field_id="total_amount", direction="desc"),
-        ),
-        limit=100,
-        lineage=PlanLineage(
-            source_id=GOLDEN_SOURCE_ID,
-            root_entity_id=GOLDEN_ROOT_ENTITY_ID,
-            catalog_fingerprint=GOLDEN_CATALOG_FINGERPRINT,
-            policy_view_fingerprint=GOLDEN_POLICY_VIEW_FINGERPRINT,
-        ),
-        binding=PhysicalBinding(
-            object_id="orders_table",
-            dialect="sqlite",
-            column_bindings=(
-                ColumnBinding(field_id="region", physical_name="region"),
-                ColumnBinding(field_id="total_amount", physical_name="total_amount"),
-                ColumnBinding(field_id="status", physical_name="status"),
-            ),
+    return PhysicalBinding(
+        object_id="orders_table",
+        dialect="sqlite",
+        column_bindings=(
+            ColumnBinding(field_id="region", physical_name="region"),
+            ColumnBinding(field_id="total_amount", physical_name="total_amount"),
+            ColumnBinding(field_id="status", physical_name="status"),
         ),
     )

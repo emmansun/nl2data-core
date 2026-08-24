@@ -15,15 +15,14 @@ from pathlib import Path
 from nl2data import ErrorCode, OutcomeStatus, QueryContext, QueryRequest
 from nl2data.errors import ErrorCategory, NL2DataError
 from nl2data_core.adapters.sql.adapter import SqlQueryAdapter
-from nl2data_core.adapters.sql.compile import compile_ir, compile_plan
+from nl2data_core.adapters.sql.compile import compile_ir
 from nl2data_core.ai.context import SemanticReference
 from nl2data_core.ai.fake import FakeModelProvider
 from nl2data_core.ai.models import StructuredIntent
-from nl2data_core.ai.plan_builder import build_plan_from_intent
+from nl2data_core.ai.plan_builder import build_ir_from_intent
 from nl2data_core.canonical import sha256_fingerprint
 from nl2data_core.fixtures import SQLiteFixtureProfile
 from nl2data_core.governance.models import PolicyScope
-from nl2data_core.planning.ir.compat import plan_to_ir
 from nl2data_core.planning.models import ColumnBinding, PhysicalBinding
 from nl2data_core.planning.validation import AuthorizedView
 from nl2data_core.workflow.models import (
@@ -113,17 +112,6 @@ class CountingIRCompiler:
     def __call__(self, ir):
         self.calls += 1
         return compile_ir(ir, binding=self._binding)
-
-
-class CountingPlanCompiler:
-    """Legacy plan compiler wrapper counting invocations."""
-
-    def __init__(self) -> None:
-        self.calls = 0
-
-    def __call__(self, plan):
-        self.calls += 1
-        return compile_plan(plan)
 
 
 def make_policy_scope(**overrides) -> PolicyScope:
@@ -230,8 +218,7 @@ def expected_ir(request_id: str):
             "request_id": request_id,
         }
     )
-    plan = build_plan_from_intent(intent, binding=BINDING, catalog_fingerprint=None)
-    return plan_to_ir(plan)
+    return build_ir_from_intent(intent, catalog_fingerprint=None)
 
 
 def ir_event(workflow_id: str, ir_version: str, ir_fingerprint: str) -> WorkflowEvent:
@@ -315,17 +302,6 @@ class TestCompilerSelection:
             ir_compiler=compiler,
         )
         outcome = await runtime.execute(request("req-ir-c", "wf-ir-c"))
-        assert outcome.status == OutcomeStatus.SUCCEEDED
-        assert compiler.calls == 1
-
-    async def test_plan_compiler_fallback_without_ir_compiler(self, tmp_path: Path) -> None:
-        compiler = CountingPlanCompiler()
-        runtime = make_runtime(
-            tmp_path,
-            execution=make_execution(tmp_path, adapter=make_adapter(tmp_path)),
-            plan_compiler=compiler,
-        )
-        outcome = await runtime.execute(request("req-pc", "wf-pc"))
         assert outcome.status == OutcomeStatus.SUCCEEDED
         assert compiler.calls == 1
 

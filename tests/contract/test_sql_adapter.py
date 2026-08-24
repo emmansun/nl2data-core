@@ -17,19 +17,20 @@ from nl2data.errors import ErrorCategory, ErrorCode, NL2DataError
 from nl2data_core.adapters.models import ValidationContext
 from nl2data_core.adapters.protocol import QueryAdapter
 from nl2data_core.adapters.sql.adapter import SqlQueryAdapter
-from nl2data_core.adapters.sql.compile import compile_plan
+from nl2data_core.adapters.sql.compile import compile_ir
 from nl2data_core.adapters.sql.execution import SQLExecutionError, execute_sql
 from nl2data_core.adapters.sql.guard import SQLGuardError
 from nl2data_core.adapters.sql.parsing import SQLParseError
-from nl2data_core.planning.models import (
-    ColumnBinding,
-    PhysicalBinding,
-    PlanLineage,
-    SemanticFilter,
-    SemanticOrdering,
-    SemanticQueryPlan,
-    SemanticSelection,
+from nl2data_core.planning.ir.models import (
+    IRFilter,
+    IRGrouping,
+    IROrdering,
+    IRProvenance,
+    IRResultShape,
+    IRSelection,
+    SemanticQueryIR,
 )
+from nl2data_core.planning.models import ColumnBinding, PhysicalBinding
 
 DIGEST = "sha256:" + "ab" * 32
 CTX = ValidationContext()
@@ -69,35 +70,40 @@ def make_adapter(tmp_path: Path, **overrides) -> SqlQueryAdapter:
     return SqlQueryAdapter(**values)
 
 
-def make_plan(**overrides) -> SemanticQueryPlan:
+def make_binding(**overrides) -> PhysicalBinding:
     values = {
-        "plan_id": "plan-1",
-        "source_id": "sales",
-        "root_entity_id": "order",
-        "selections": (
-            SemanticSelection(selection_id="s1", field_id="order_id", alias="oid"),
-            SemanticSelection(selection_id="s2", field_id="amount", alias="amt"),
-        ),
-        "filters": (
-            SemanticFilter(filter_id="f1", field_id="region", operator="eq", value="emea"),
-        ),
-        "orderings": (SemanticOrdering(ordering_id="o1", field_id="order_id", direction="desc"),),
-        "limit": 10,
-        "lineage": PlanLineage(source_id="sales", root_entity_id="order"),
-        "binding": PhysicalBinding(
-            object_id="orders",
-            dialect="sqlite",
-            column_bindings=(
-                ColumnBinding(field_id="order_id", physical_name="order_id"),
-                ColumnBinding(field_id="amount", physical_name="amount"),
-                ColumnBinding(field_id="region", physical_name="region"),
-                ColumnBinding(field_id="status", physical_name="status"),
-                ColumnBinding(field_id="created_at", physical_name="created_at"),
-            ),
+        "object_id": "orders",
+        "dialect": "sqlite",
+        "column_bindings": (
+            ColumnBinding(field_id="order_id", physical_name="order_id"),
+            ColumnBinding(field_id="amount", physical_name="amount"),
+            ColumnBinding(field_id="region", physical_name="region"),
+            ColumnBinding(field_id="status", physical_name="status"),
+            ColumnBinding(field_id="created_at", physical_name="created_at"),
         ),
     }
     values.update(overrides)
-    return SemanticQueryPlan(**values)
+    return PhysicalBinding(**values)
+
+
+def make_ir(**overrides) -> SemanticQueryIR:
+    values = {
+        "ir_id": "ir-1",
+        "source_id": "sales",
+        "root_entity_id": "order",
+        "selections": (
+            IRSelection(selection_id="s1", field_id="order_id", alias="oid"),
+            IRSelection(selection_id="s2", field_id="amount", alias="amt"),
+        ),
+        "filters": (
+            IRFilter(filter_id="f1", field_id="region", operator="eq", value="emea"),
+        ),
+        "orderings": (IROrdering(ordering_id="o1", field_id="order_id", direction="desc"),),
+        "limit": 10,
+        "provenance": IRProvenance(source_id="sales", root_entity_id="order"),
+    }
+    values.update(overrides)
+    return SemanticQueryIR(**values)
 
 
 class TestProtocolConformance:
@@ -266,48 +272,53 @@ class TestExecution:
 
 class TestCompilation:
     def test_compiles_select_filter_order_limit(self) -> None:
-        sql = compile_plan(make_plan())
+        sql = compile_ir(make_ir(), binding=make_binding())
         assert sql.startswith("SELECT order_id AS oid, amount AS amt FROM orders")
         assert "WHERE region = 'emea'" in sql
         assert "ORDER BY order_id DESC" in sql
         assert "LIMIT 10" in sql
 
     def test_compiles_grouping(self) -> None:
-        plan = make_plan(
+        ir = make_ir(
             selections=(
-                SemanticSelection(
+                IRSelection(
                     selection_id="s1", field_id="region", aggregation="none", alias="region"
                 ),
-                SemanticSelection(
+                IRSelection(
                     selection_id="s2", field_id="amount", aggregation="count", alias="cnt"
                 ),
             ),
+            groupings=(IRGrouping(grouping_id="g1", field_id="region"),),
+            result_shape=IRResultShape(kind="grouped_rows"),
         )
-        sql = compile_plan(plan)
+        sql = compile_ir(ir, binding=make_binding())
         assert "COUNT(amount) AS cnt" in sql
         assert "GROUP BY region" in sql
 
     def test_compiles_in_and_contains_filters(self) -> None:
-        plan = make_plan(
+        ir = make_ir(
             filters=(
-                SemanticFilter(
+                IRFilter(
                     filter_id="f1", field_id="region", operator="in", value=("emea", "apac")
                 ),
-                SemanticFilter(filter_id="f2", field_id="region", operator="contains", value="em"),
+                IRFilter(filter_id="f2", field_id="region", operator="contains", value="em"),
             ),
         )
-        sql = compile_plan(plan)
+        sql = compile_ir(ir, binding=make_binding())
         assert "region IN ('emea', 'apac')" in sql
         assert "LIKE '%em%'" in sql
 
     def test_compilation_uses_physical_bindings_for_filters_and_ordering(self) -> None:
-        plan = make_plan(
+        ir = make_ir(
             filters=(
-                SemanticFilter(filter_id="f1", field_id="sem_region", operator="eq", value="emea"),
+                IRFilter(filter_id="f1", field_id="sem_region", operator="eq", value="emea"),
             ),
             orderings=(
-                SemanticOrdering(ordering_id="o1", field_id="sem_amount", direction="desc"),
+                IROrdering(ordering_id="o1", field_id="sem_amount", direction="desc"),
             ),
+        )
+        sql = compile_ir(
+            ir,
             binding=PhysicalBinding(
                 object_id="orders",
                 dialect="sqlite",
@@ -319,24 +330,25 @@ class TestCompilation:
                 ),
             ),
         )
-        sql = compile_plan(plan)
         assert "WHERE region = 'emea'" in sql
         assert "ORDER BY amount DESC" in sql
 
     def test_unbound_filter_and_ordering_are_rejected(self) -> None:
         with pytest.raises(NL2DataError):
-            compile_plan(
-                make_plan(
+            compile_ir(
+                make_ir(
                     filters=(
-                        SemanticFilter(
+                        IRFilter(
                             filter_id="f1", field_id="unknown", operator="eq", value=1
                         ),
                     )
-                )
+                ),
+                binding=make_binding(),
             )
         with pytest.raises(NL2DataError):
-            compile_plan(
-                make_plan(orderings=(SemanticOrdering(ordering_id="o1", field_id="unknown"),))
+            compile_ir(
+                make_ir(orderings=(IROrdering(ordering_id="o1", field_id="unknown"),)),
+                binding=make_binding(),
             )
 
     def test_result_byte_bound_is_enforced(self, tmp_path: Path) -> None:
@@ -350,13 +362,13 @@ class TestCompilation:
 
     def test_compile_requires_binding_and_limit(self) -> None:
         with pytest.raises(NL2DataError):
-            compile_plan(make_plan(binding=None))
+            compile_ir(make_ir(), binding=None)
         with pytest.raises(NL2DataError):
-            compile_plan(make_plan(limit=None))
+            compile_ir(make_ir(limit=None), binding=make_binding())
 
     def test_compiled_sql_executes_against_fixture(self, tmp_path: Path) -> None:
         adapter = make_adapter(tmp_path)
-        sql = compile_plan(make_plan())
+        sql = compile_ir(make_ir(), binding=make_binding())
         validated = adapter.validate(adapter.parse(sql, CTX), CTX)
         result = asyncio.run(adapter.execute(validated, CTX))
         assert result.row_count == 3  # emea rows: (4, 3, 1) desc

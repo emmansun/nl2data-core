@@ -15,7 +15,7 @@ import pytest
 
 from nl2data_core.adapters.models import AdapterLimits, ValidationContext
 from nl2data_core.adapters.mongodb.adapter import MongoQueryAdapter
-from nl2data_core.adapters.mongodb.compile import compile_mongo_plan
+from nl2data_core.adapters.mongodb.compile import compile_mongo_ir
 from nl2data_core.adapters.mongodb.fake import FakeMongoExecutor
 from nl2data_core.adapters.mongodb.models import (
     MongoAdapterConfig,
@@ -24,15 +24,14 @@ from nl2data_core.adapters.mongodb.models import (
 )
 from nl2data_core.adapters.mongodb.pymongo_executor import PyMongoExecutor
 from nl2data_core.fixtures import MONGO_RESULT_ASSERTIONS, MONGO_SEED
-from nl2data_core.planning.models import (
-    ColumnBinding,
-    PhysicalBinding,
-    PlanLineage,
-    SemanticFilter,
-    SemanticOrdering,
-    SemanticQueryPlan,
-    SemanticSelection,
+from nl2data_core.planning.ir.models import (
+    IRFilter,
+    IROrdering,
+    IRProvenance,
+    IRSelection,
+    SemanticQueryIR,
 )
+from nl2data_core.planning.models import ColumnBinding, PhysicalBinding
 
 #: Service location; override with NL2DATA_MONGO_URI for CI/dev services.
 MONGO_URI = os.environ.get("NL2DATA_MONGO_URI", "mongodb://127.0.0.1:27017")
@@ -163,14 +162,14 @@ class TestRealMongoProfile:
             real.close()
             _cleanup(client)
 
-    async def test_plan_compiles_and_executes_when_available(self) -> None:
-        """An aliased mongo-bound plan compiles and returns shared rows."""
+    async def test_ir_compiles_and_executes_when_available(self) -> None:
+        """An aliased mongo-bound IR compiles and returns shared rows."""
         client = _require_service()
         _provision(client)
         executor = PyMongoExecutor(MONGO_URI, MONGO_DATABASE)
         adapter = make_adapter(executor)
         try:
-            wire = compile_mongo_plan(_make_plan())
+            wire = compile_mongo_ir(_make_ir(), binding=_make_binding())
             validated = adapter.validate(adapter.parse(wire, CTX), CTX)
             execution = await adapter.execute(
                 validated,
@@ -188,29 +187,32 @@ class TestRealMongoProfile:
             _cleanup(client)
 
 
-def _make_plan() -> SemanticQueryPlan:
-    return SemanticQueryPlan(
-        plan_id="real-mongo-plan",
+def _make_binding() -> PhysicalBinding:
+    return PhysicalBinding(
+        object_id="orders",
+        dialect="mongo",
+        column_bindings=tuple(
+            ColumnBinding(field_id=field, physical_name=field)
+            for field in ALLOWED_FIELDS
+        ),
+    )
+
+
+def _make_ir() -> SemanticQueryIR:
+    return SemanticQueryIR(
+        ir_id="real-mongo-ir",
         source_id="sales",
         root_entity_id="order",
         selections=(
-            SemanticSelection(selection_id="s1", field_id="order_id", alias="oid"),
-            SemanticSelection(selection_id="s2", field_id="amount", alias="amt"),
+            IRSelection(selection_id="s1", field_id="order_id", alias="oid"),
+            IRSelection(selection_id="s2", field_id="amount", alias="amt"),
         ),
         filters=(
-            SemanticFilter(filter_id="f1", field_id="region", operator="eq", value="emea"),
+            IRFilter(filter_id="f1", field_id="region", operator="eq", value="emea"),
         ),
         orderings=(
-            SemanticOrdering(ordering_id="o1", field_id="amount", direction="desc"),
+            IROrdering(ordering_id="o1", field_id="amount", direction="desc"),
         ),
         limit=3,
-        lineage=PlanLineage(source_id="sales", root_entity_id="order"),
-        binding=PhysicalBinding(
-            object_id="orders",
-            dialect="mongo",
-            column_bindings=tuple(
-                ColumnBinding(field_id=field, physical_name=field)
-                for field in ALLOWED_FIELDS
-            ),
-        ),
+        provenance=IRProvenance(source_id="sales", root_entity_id="order"),
     )

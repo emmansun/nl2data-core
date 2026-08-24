@@ -76,7 +76,7 @@ STAGE_ORDER: tuple[WorkflowStage, ...] = (
 )
 
 #: Mandatory gates per stage.  Adapter execution requires current tenant,
-#: plan validation, governance, artifact validation, authorization, and
+#: IR validation, governance, artifact validation, authorization, and
 #: deadline evidence; later stages re-check the artifact and authorization.
 REQUIRED_GATES: dict[WorkflowStage, frozenset[WorkflowGate]] = {
     WorkflowStage.EXECUTE: frozenset(
@@ -305,7 +305,7 @@ class RuntimeRecoverableError(NL2DataError):
 
 
 class ApprovalRequiredError(NL2DataError):
-    """The plan requires human approval before adapter execution."""
+    """The IR requires human approval before adapter execution."""
 
     def __init__(self, message: str, *, details: dict[str, Any] | None = None) -> None:
         super().__init__(

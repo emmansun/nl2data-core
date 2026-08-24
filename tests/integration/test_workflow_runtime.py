@@ -410,10 +410,10 @@ class TestRejectedBranches:
 
     async def test_approval_required_branch_stops_before_adapter(self, tmp_path: Path) -> None:
         adapter = CountingAdapter(make_adapter(tmp_path))
-        seen_plans: list[str] = []
+        seen_irs: list[str] = []
 
-        def approval_required(plan) -> bool:
-            seen_plans.append(plan.plan_id)
+        def approval_required(ir) -> bool:
+            seen_irs.append(ir.ir_id)
             return True
 
         runtime = make_runtime(
@@ -425,7 +425,7 @@ class TestRejectedBranches:
         assert outcome.status == OutcomeStatus.REJECTED
         assert outcome.error is not None
         assert outcome.error.code == ErrorCode.APPROVAL_REQUIRED
-        assert seen_plans == ["plan-wf-1"]
+        assert seen_irs == ["ir-wf-1"]
         assert adapter.execution_count == 0
 
 

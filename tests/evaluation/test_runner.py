@@ -31,15 +31,14 @@ from nl2data_core.fixtures import FIXTURE_SPEC, SQLiteFixtureProfile
 from nl2data_core.fixtures.base import FixtureProfile
 from nl2data_core.fixtures.models import FixtureSpec, FixtureUnavailableError
 from nl2data_core.governance.models import PolicyScope
-from nl2data_core.planning.models import (
-    ColumnBinding,
-    PhysicalBinding,
-    PlanLineage,
-    SemanticFilter,
-    SemanticOrdering,
-    SemanticQueryPlan,
-    SemanticSelection,
+from nl2data_core.planning.ir.models import (
+    IRFilter,
+    IROrdering,
+    IRProvenance,
+    IRSelection,
+    SemanticQueryIR,
 )
+from nl2data_core.planning.models import ColumnBinding, PhysicalBinding
 from nl2data_core.planning.validation import AuthorizedView
 
 FIELDS = frozenset({"order_id", "customer_id", "amount", "region", "status", "created_at"})
@@ -68,40 +67,46 @@ def make_view(**overrides) -> AuthorizedView:
     return AuthorizedView(**values)
 
 
-def make_plan(**overrides) -> SemanticQueryPlan:
+def make_binding(**overrides) -> PhysicalBinding:
     values = {
-        "plan_id": "plan-1",
-        "source_id": "sales",
-        "root_entity_id": "order",
-        "selections": (
-            SemanticSelection(selection_id="s1", field_id="order_id", alias="oid"),
-            SemanticSelection(selection_id="s2", field_id="amount", alias="amt"),
-        ),
-        "filters": (
-            SemanticFilter(filter_id="f1", field_id="region", operator="eq", value="emea"),
-        ),
-        "orderings": (SemanticOrdering(ordering_id="o1", field_id="amount", direction="desc"),),
-        "limit": 3,
-        "lineage": PlanLineage(source_id="sales", root_entity_id="order"),
-        "binding": PhysicalBinding(
-            object_id="orders",
-            dialect="sqlite",
-            column_bindings=(
-                ColumnBinding(field_id="order_id", physical_name="order_id"),
-                ColumnBinding(field_id="amount", physical_name="amount"),
-                ColumnBinding(field_id="region", physical_name="region"),
-            ),
+        "object_id": "orders",
+        "dialect": "sqlite",
+        "column_bindings": (
+            ColumnBinding(field_id="order_id", physical_name="order_id"),
+            ColumnBinding(field_id="amount", physical_name="amount"),
+            ColumnBinding(field_id="region", physical_name="region"),
         ),
     }
     values.update(overrides)
-    return SemanticQueryPlan(**values)
+    return PhysicalBinding(**values)
+
+
+def make_ir(**overrides) -> SemanticQueryIR:
+    values = {
+        "ir_id": "ir-1",
+        "source_id": "sales",
+        "root_entity_id": "order",
+        "selections": (
+            IRSelection(selection_id="s1", field_id="order_id", alias="oid"),
+            IRSelection(selection_id="s2", field_id="amount", alias="amt"),
+        ),
+        "filters": (
+            IRFilter(filter_id="f1", field_id="region", operator="eq", value="emea"),
+        ),
+        "orderings": (IROrdering(ordering_id="o1", field_id="amount", direction="desc"),),
+        "limit": 3,
+        "provenance": IRProvenance(source_id="sales", root_entity_id="order"),
+    }
+    values.update(overrides)
+    return SemanticQueryIR(**values)
 
 
 def make_case(**overrides) -> EvaluationCase:
     values = {
         "case_id": "case-1",
         "name": "emea top amounts",
-        "plan": make_plan(),
+        "ir": make_ir(),
+        "binding": make_binding(),
         "mandatory_assertions": (
             MandatoryAssertion(
                 assertion_id="a1",
@@ -129,15 +134,15 @@ class StubExecutor:
         self,
         evidence: CaseEvidence | None = None,
         error: BaseException | None = None,
-        plan: SemanticQueryPlan | None = None,
+        ir: SemanticQueryIR | None = None,
     ) -> None:
         self._evidence = evidence
         self._error = error
-        self._plan = plan
+        self._ir = ir
 
     async def execute(
         self,
-        plan: SemanticQueryPlan,
+        ir: SemanticQueryIR,
         fixture: FixtureProfile,
         context: EvaluationRunContext,
     ) -> CaseEvidence:
@@ -146,7 +151,7 @@ class StubExecutor:
         if self._evidence is not None:
             return self._evidence
         return CaseEvidence(
-            plan_fingerprint=(self._plan or plan).fingerprint,
+            ir_fingerprint=(self._ir or ir).fingerprint,
             result_fingerprint="sha256:" + "ab" * 32,
             columns=("oid", "amt"),
             rows=EMEA_TOP3,
@@ -287,7 +292,7 @@ class TestUnavailableOutcome:
 class TestEvidenceRedaction:
     def test_safe_evidence_is_redacted(self) -> None:
         evidence = CaseEvidence(
-            plan_fingerprint="sha256:" + "cd" * 32,
+            ir_fingerprint="sha256:" + "cd" * 32,
             result_fingerprint="sha256:" + "ab" * 32,
             columns=("oid", "amt"),
             rows=((1, 10.0),),
@@ -296,7 +301,7 @@ class TestEvidenceRedaction:
 
     def test_nonscalar_cell_fails_redaction(self) -> None:
         evidence = CaseEvidence(
-            plan_fingerprint="sha256:" + "cd" * 32,
+            ir_fingerprint="sha256:" + "cd" * 32,
             result_fingerprint="sha256:" + "ab" * 32,
             columns=("oid", "amt"),
             rows=((1, {"secret": "x"}),),
@@ -307,7 +312,7 @@ class TestEvidenceRedaction:
         # model_construct bypasses validation so the redaction check itself
         # is exercised on a structurally invalid fingerprint.
         evidence = CaseEvidence.model_construct(
-            plan_fingerprint="plain",
+            ir_fingerprint="plain",
             columns=("oid",),
             rows=((1,),),
         )
@@ -315,7 +320,7 @@ class TestEvidenceRedaction:
 
     async def test_evidence_redacted_assertion_fails_case(self, tmp_path: Path) -> None:
         unsafe = CaseEvidence(
-            plan_fingerprint="sha256:" + "cd" * 32,
+            ir_fingerprint="sha256:" + "cd" * 32,
             result_fingerprint="sha256:" + "ab" * 32,
             columns=("oid",),
             rows=(({"raw": "cursor"},),),
@@ -361,7 +366,9 @@ class TestRepeatableResults:
         def factory() -> SQLiteFixtureProfile:
             return SQLiteFixtureProfile(db_path=tmp_path / "fixture.db")
 
-        executor = SqliteCaseExecutor(policy_scope=make_policy_scope(), view=make_view())
+        executor = SqliteCaseExecutor(
+            policy_scope=make_policy_scope(), view=make_view(), binding=make_binding()
+        )
         runner = EvaluationRunner(
             dataset=make_dataset(),
             run_id="run-1",
@@ -387,7 +394,9 @@ class TestRepeatableResults:
 
     async def test_governance_denial_fails_case(self, tmp_path: Path) -> None:
         scope = make_policy_scope(field_ids=FIELDS - {"amount"})
-        executor = SqliteCaseExecutor(policy_scope=scope, view=make_view())
+        executor = SqliteCaseExecutor(
+            policy_scope=scope, view=make_view(), binding=make_binding()
+        )
         runner = EvaluationRunner(
             dataset=make_dataset(),
             run_id="run-1",
@@ -406,7 +415,7 @@ class TestRepeatableResults:
 class TestMandatoryAssertions:
     def test_result_mismatch_is_independent_failure(self) -> None:
         evidence = CaseEvidence(
-            plan_fingerprint="sha256:" + "cd" * 32,
+            ir_fingerprint="sha256:" + "cd" * 32,
             result_fingerprint="sha256:" + "ab" * 32,
             columns=("oid", "amt"),
             rows=((18, 180.0),),
@@ -425,7 +434,7 @@ class TestMandatoryAssertions:
 
     def test_result_assertion_rejects_unprotected_evidence(self) -> None:
         evidence = CaseEvidence.model_construct(
-            plan_fingerprint="sha256:" + "cd" * 32,
+            ir_fingerprint="sha256:" + "cd" * 32,
             result_fingerprint="sha256:" + "ab" * 32,
             columns=("oid", "amt"),
             rows=((18, {"raw": "cursor"}), (17, 170.0), (16, 160.0)),
@@ -445,7 +454,9 @@ class TestReportOutput:
             dataset=make_dataset(),
             run_id="run-1",
             fixture_factory=factory,
-            case_executor=SqliteCaseExecutor(policy_scope=make_policy_scope(), view=make_view()),
+            case_executor=SqliteCaseExecutor(
+                policy_scope=make_policy_scope(), view=make_view(), binding=make_binding()
+            ),
         )
         report = await runner.run()
         rendered = render_report(report)
@@ -481,7 +492,9 @@ class TestReportOutput:
             dataset=make_dataset(),
             run_id="run-1",
             fixture_factory=factory,
-            case_executor=SqliteCaseExecutor(policy_scope=make_policy_scope(), view=make_view()),
+            case_executor=SqliteCaseExecutor(
+                policy_scope=make_policy_scope(), view=make_view(), binding=make_binding()
+            ),
         )
         report = await runner.run()
         target = tmp_path / "reports" / "report.json"

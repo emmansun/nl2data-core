@@ -8,7 +8,7 @@ The intent resolver SHALL convert a public natural-language request and an autho
 
 #### Scenario: Intent is handed to semantic planning
 - **WHEN** a provider returns a valid intent using authorized semantic references
-- **THEN** the resolver emits a typed intent that can be passed to a Semantic Query Plan builder
+- **THEN** the resolver emits a typed intent that can be passed to a Semantic Query IR builder
 
 #### Scenario: Ambiguity requires clarification
 - **WHEN** the provider cannot select one authorized interpretation with sufficient confidence

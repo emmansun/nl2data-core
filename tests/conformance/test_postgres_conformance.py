@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from nl2data_core.adapters.sql.compile import compile_plan
+from nl2data_core.adapters.sql.compile import compile_ir
 from nl2data_core.adapters.sql.execution import execute_sql
 from nl2data_core.fixtures import (
     FIXTURE_SPEC,
@@ -25,47 +25,51 @@ from nl2data_core.fixtures import (
 )
 from nl2data_core.fixtures.models import FixtureUnavailableError
 from nl2data_core.governance.decisions import PolicyEvaluator
-from nl2data_core.planning.models import (
-    ColumnBinding,
-    PhysicalBinding,
-    PlanLineage,
-    SemanticFilter,
-    SemanticOrdering,
-    SemanticQueryPlan,
-    SemanticSelection,
+from nl2data_core.planning.ir.models import (
+    IRFilter,
+    IROrdering,
+    IRProvenance,
+    IRSelection,
+    SemanticQueryIR,
 )
+from nl2data_core.planning.models import ColumnBinding, PhysicalBinding
 
 FINGERPRINT = re.compile(r"^sha256:[0-9a-f]{64}$")
 EMEA_TOP3 = ((18, 180.0), (17, 170.0), (16, 160.0))
 
 
-def make_plan(**overrides) -> SemanticQueryPlan:
+def make_binding(**overrides) -> PhysicalBinding:
     values = {
-        "plan_id": "conformance-plan",
-        "source_id": "sales",
-        "root_entity_id": "order",
-        "selections": (
-            SemanticSelection(selection_id="s1", field_id="order_id", alias="oid"),
-            SemanticSelection(selection_id="s2", field_id="amount", alias="amt"),
-        ),
-        "filters": (
-            SemanticFilter(filter_id="f1", field_id="region", operator="eq", value="emea"),
-        ),
-        "orderings": (SemanticOrdering(ordering_id="o1", field_id="amount", direction="desc"),),
-        "limit": 3,
-        "lineage": PlanLineage(source_id="sales", root_entity_id="order"),
-        "binding": PhysicalBinding(
-            object_id="orders",
-            dialect="postgres",
-            column_bindings=(
-                ColumnBinding(field_id="order_id", physical_name="order_id"),
-                ColumnBinding(field_id="amount", physical_name="amount"),
-                ColumnBinding(field_id="region", physical_name="region"),
-            ),
+        "object_id": "orders",
+        "dialect": "postgres",
+        "column_bindings": (
+            ColumnBinding(field_id="order_id", physical_name="order_id"),
+            ColumnBinding(field_id="amount", physical_name="amount"),
+            ColumnBinding(field_id="region", physical_name="region"),
         ),
     }
     values.update(overrides)
-    return SemanticQueryPlan(**values)
+    return PhysicalBinding(**values)
+
+
+def make_ir(**overrides) -> SemanticQueryIR:
+    values = {
+        "ir_id": "conformance-ir",
+        "source_id": "sales",
+        "root_entity_id": "order",
+        "selections": (
+            IRSelection(selection_id="s1", field_id="order_id", alias="oid"),
+            IRSelection(selection_id="s2", field_id="amount", alias="amt"),
+        ),
+        "filters": (
+            IRFilter(filter_id="f1", field_id="region", operator="eq", value="emea"),
+        ),
+        "orderings": (IROrdering(ordering_id="o1", field_id="amount", direction="desc"),),
+        "limit": 3,
+        "provenance": IRProvenance(source_id="sales", root_entity_id="order"),
+    }
+    values.update(overrides)
+    return SemanticQueryIR(**values)
 
 
 def _require_postgres_driver() -> None:
@@ -125,13 +129,13 @@ class TestPostgresConformance:
             decision = evaluator.evaluate(case.facts, case.scope)
             assert decision.decision == case.expected, case.name
 
-    def test_plan_compiles_and_executes_when_available(self) -> None:
-        """A postgres-bound plan compiles and returns the shared protected rows."""
+    def test_ir_compiles_and_executes_when_available(self) -> None:
+        """A postgres-bound IR compiles and returns the shared protected rows."""
         _require_postgres_driver()
         profile = PostgresFixtureProfile()
         _require_postgres_service(profile)
         try:
-            sql = compile_plan(make_plan())
+            sql = compile_ir(make_ir(), binding=make_binding())
             result = profile.run_query(sql)
             assert result.columns == ("oid", "amt")
             assert result.rows == EMEA_TOP3

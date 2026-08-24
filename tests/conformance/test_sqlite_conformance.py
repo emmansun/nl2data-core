@@ -19,7 +19,7 @@ import pytest
 from nl2data import ErrorCode, OutcomeStatus, QueryRequest
 from nl2data_core.adapters.models import ValidationContext
 from nl2data_core.adapters.sql.adapter import SqlQueryAdapter
-from nl2data_core.adapters.sql.compile import compile_plan
+from nl2data_core.adapters.sql.compile import compile_ir
 from nl2data_core.adapters.sql.guard import SQLGuardError
 from nl2data_core.evaluation import (
     CaseOutcome,
@@ -40,15 +40,14 @@ from nl2data_core.governance.models import (
     GovernanceFacts,
     PolicyScope,
 )
-from nl2data_core.planning.models import (
-    ColumnBinding,
-    PhysicalBinding,
-    PlanLineage,
-    SemanticFilter,
-    SemanticOrdering,
-    SemanticQueryPlan,
-    SemanticSelection,
+from nl2data_core.planning.ir.models import (
+    IRFilter,
+    IROrdering,
+    IRProvenance,
+    IRSelection,
+    SemanticQueryIR,
 )
+from nl2data_core.planning.models import ColumnBinding, PhysicalBinding
 from nl2data_core.planning.validation import AuthorizedView
 from nl2data_core.workflow.runner import QueryExecutionRunner, StaticPlanResolver
 
@@ -92,40 +91,46 @@ def make_view(**overrides) -> AuthorizedView:
     return AuthorizedView(**values)
 
 
-def make_plan(**overrides) -> SemanticQueryPlan:
+def make_binding(**overrides) -> PhysicalBinding:
     values = {
-        "plan_id": "conformance-plan",
-        "source_id": "sales",
-        "root_entity_id": "order",
-        "selections": (
-            SemanticSelection(selection_id="s1", field_id="order_id", alias="oid"),
-            SemanticSelection(selection_id="s2", field_id="amount", alias="amt"),
-        ),
-        "filters": (
-            SemanticFilter(filter_id="f1", field_id="region", operator="eq", value="emea"),
-        ),
-        "orderings": (SemanticOrdering(ordering_id="o1", field_id="amount", direction="desc"),),
-        "limit": 3,
-        "lineage": PlanLineage(source_id="sales", root_entity_id="order"),
-        "binding": PhysicalBinding(
-            object_id="orders",
-            dialect="sqlite",
-            column_bindings=(
-                ColumnBinding(field_id="order_id", physical_name="order_id"),
-                ColumnBinding(field_id="amount", physical_name="amount"),
-                ColumnBinding(field_id="region", physical_name="region"),
-            ),
+        "object_id": "orders",
+        "dialect": "sqlite",
+        "column_bindings": (
+            ColumnBinding(field_id="order_id", physical_name="order_id"),
+            ColumnBinding(field_id="amount", physical_name="amount"),
+            ColumnBinding(field_id="region", physical_name="region"),
         ),
     }
     values.update(overrides)
-    return SemanticQueryPlan(**values)
+    return PhysicalBinding(**values)
+
+
+def make_ir(**overrides) -> SemanticQueryIR:
+    values = {
+        "ir_id": "conformance-ir",
+        "source_id": "sales",
+        "root_entity_id": "order",
+        "selections": (
+            IRSelection(selection_id="s1", field_id="order_id", alias="oid"),
+            IRSelection(selection_id="s2", field_id="amount", alias="amt"),
+        ),
+        "filters": (
+            IRFilter(filter_id="f1", field_id="region", operator="eq", value="emea"),
+        ),
+        "orderings": (IROrdering(ordering_id="o1", field_id="amount", direction="desc"),),
+        "limit": 3,
+        "provenance": IRProvenance(source_id="sales", root_entity_id="order"),
+    }
+    values.update(overrides)
+    return SemanticQueryIR(**values)
 
 
 def make_case(**overrides) -> EvaluationCase:
     values = {
         "case_id": "conformance-case",
         "name": "emea top amounts",
-        "plan": make_plan(),
+        "ir": make_ir(),
+        "binding": make_binding(),
         "mandatory_assertions": (
             MandatoryAssertion(
                 assertion_id="a-result",
@@ -174,7 +179,8 @@ def make_runner(tmp_path: Path, **overrides) -> QueryExecutionRunner:
         "adapter": make_adapter(tmp_path),
         "policy_scope": make_policy_scope(),
         "view": make_view(),
-        "plan_resolver": StaticPlanResolver(make_plan()),
+        "plan_resolver": StaticPlanResolver(make_ir()),
+        "binding": make_binding(),
     }
     values.update(overrides)
     return QueryExecutionRunner(**values)
@@ -188,21 +194,22 @@ def make_evaluator(tmp_path: Path, **overrides) -> EvaluationRunner:
         "case_executor": SqliteCaseExecutor(
             policy_scope=make_policy_scope(),
             view=make_view(),
+            binding=make_binding(),
         ),
     }
     values.update(overrides)
     return EvaluationRunner(**values)
 
 
-def plan_facts(plan: SemanticQueryPlan) -> GovernanceFacts:
-    """The governance facts the governed path derives from a plan."""
-    assert plan.binding is not None
+def ir_facts(ir: SemanticQueryIR, binding: PhysicalBinding | None) -> GovernanceFacts:
+    """The governance facts the governed path derives from an IR."""
+    resource_ids = {binding.object_id} if binding is not None else {ir.root_entity_id}
     return GovernanceFacts(
-        source_id=plan.source_id,
+        source_id=ir.source_id,
         operation="select",
-        resource_ids=frozenset({plan.binding.object_id}),
-        field_ids=plan.field_ids(),
-        filter_fingerprints=plan.filter_fingerprints(),
+        resource_ids=frozenset(resource_ids),
+        field_ids=ir.field_ids(),
+        filter_fingerprints=ir.filter_fingerprints(),
     )
 
 
@@ -217,30 +224,30 @@ def _assert_no_sensitive_keys(payload: object, path: str = "") -> None:
             _assert_no_sensitive_keys(item, f"{path}[{index}]")
 
 
-class TestPlanFingerprint:
-    """Semantic plans carry canonical, deterministic fingerprints."""
+class TestIRFingerprint:
+    """Semantic IRs carry canonical, deterministic fingerprints."""
 
-    def test_identical_plans_fingerprint_equally(self) -> None:
-        first = make_plan()
-        second = make_plan()
+    def test_identical_irs_fingerprint_equally(self) -> None:
+        first = make_ir()
+        second = make_ir()
         assert first.fingerprint == second.fingerprint
         assert FINGERPRINT.fullmatch(first.fingerprint)
 
-    def test_plan_fingerprint_tracks_semantic_changes(self) -> None:
-        base = make_plan()
-        changed_limit = make_plan(limit=10)
-        changed_selection = make_plan(
-            selections=(SemanticSelection(selection_id="s1", field_id="order_id", alias="oid"),)
+    def test_ir_fingerprint_tracks_semantic_changes(self) -> None:
+        base = make_ir()
+        changed_limit = make_ir(limit=10)
+        changed_selection = make_ir(
+            selections=(IRSelection(selection_id="s1", field_id="order_id", alias="oid"),)
         )
         assert changed_limit.fingerprint != base.fingerprint
         assert changed_selection.fingerprint != base.fingerprint
 
 
 class TestSqlArtifact:
-    """The plan compiles to one bounded SQL artifact with stable fingerprints."""
+    """The IR compiles to one bounded SQL artifact with stable fingerprints."""
 
-    def test_plan_compiles_to_bounded_select(self) -> None:
-        sql = compile_plan(make_plan())
+    def test_ir_compiles_to_bounded_select(self) -> None:
+        sql = compile_ir(make_ir(), binding=make_binding())
         assert sql.strip().upper().startswith("SELECT")
         assert "orders" in sql
         assert "LIMIT 3" in sql.upper()
@@ -249,9 +256,9 @@ class TestSqlArtifact:
     async def test_artifact_lifecycle_is_deterministic(self, tmp_path: Path) -> None:
         fixture = SQLiteFixtureProfile(db_path=tmp_path / "fixture.db")
         fixture.provision()
-        plan = make_plan()
-        context = ValidationContext(snapshot_fingerprint=plan.lineage.catalog_fingerprint)
-        sql = compile_plan(plan)
+        ir = make_ir()
+        context = ValidationContext(snapshot_fingerprint=ir.provenance.catalog_fingerprint)
+        sql = compile_ir(ir, binding=make_binding())
 
         first = make_adapter(tmp_path)
         parsed = first.parse(sql, context)
@@ -287,49 +294,49 @@ class TestGovernanceAuthorization:
 
     def test_default_deny_decision(self) -> None:
         evaluator = PolicyEvaluator()
-        plan = make_plan()
-        allowed = evaluator.evaluate(plan_facts(plan), make_policy_scope())
+        ir = make_ir()
+        allowed = evaluator.evaluate(ir_facts(ir, make_binding()), make_policy_scope())
         assert allowed.decision == GovernanceDecision.ALLOW
 
         denied_scope = make_policy_scope(field_ids=FIELDS - {"amount"})
-        denied = evaluator.evaluate(plan_facts(plan), denied_scope)
+        denied = evaluator.evaluate(ir_facts(ir, make_binding()), denied_scope)
         assert denied.decision == GovernanceDecision.DENY
         assert any("amount" in reason for reason in denied.reasons)
 
     def test_artifact_bound_authorization_verifies(self) -> None:
-        plan = make_plan()
+        ir = make_ir()
         authorization = AuthorizationIssuer().issue(
             policy_scope=make_policy_scope(),
             adapter_type="sql",
             source_id="sales",
             operation="select",
-            artifact_fingerprint=plan.fingerprint,
+            artifact_fingerprint=ir.fingerprint,
             effective_limits=EffectiveLimits(),
-            mandatory_filter_fingerprints=plan.filter_fingerprints(),
+            mandatory_filter_fingerprints=ir.filter_fingerprints(),
         )
         verification = AuthorizationVerifier().verify(
             authorization,
-            artifact_fingerprint=plan.fingerprint,
+            artifact_fingerprint=ir.fingerprint,
             adapter_type="sql",
             source_id="sales",
             operation="select",
-            filter_fingerprints=plan.filter_fingerprints(),
+            filter_fingerprints=ir.filter_fingerprints(),
         )
         assert verification.verified is True
         assert verification.reasons == ()
 
     def test_modified_artifact_is_rejected(self) -> None:
-        plan = make_plan()
+        ir = make_ir()
         authorization = AuthorizationIssuer().issue(
             policy_scope=make_policy_scope(),
             adapter_type="sql",
             source_id="sales",
             operation="select",
-            artifact_fingerprint=plan.fingerprint,
+            artifact_fingerprint=ir.fingerprint,
         )
         verification = AuthorizationVerifier().verify(
             authorization,
-            artifact_fingerprint=make_plan(limit=10).fingerprint,
+            artifact_fingerprint=make_ir(limit=10).fingerprint,
             adapter_type="sql",
             source_id="sales",
             operation="select",
@@ -339,18 +346,18 @@ class TestGovernanceAuthorization:
 
     def test_expired_authorization_is_rejected(self) -> None:
         base = datetime(2026, 1, 15, 12, 0, 0, tzinfo=UTC)
-        plan = make_plan()
+        ir = make_ir()
         authorization = AuthorizationIssuer(clock=lambda: base).issue(
             policy_scope=make_policy_scope(),
             adapter_type="sql",
             source_id="sales",
             operation="select",
-            artifact_fingerprint=plan.fingerprint,
+            artifact_fingerprint=ir.fingerprint,
             ttl_seconds=60.0,
         )
         verification = AuthorizationVerifier(clock=lambda: base + timedelta(minutes=2)).verify(
             authorization,
-            artifact_fingerprint=plan.fingerprint,
+            artifact_fingerprint=ir.fingerprint,
             adapter_type="sql",
             source_id="sales",
             operation="select",
@@ -359,18 +366,18 @@ class TestGovernanceAuthorization:
         assert any("expired" in reason for reason in verification.reasons)
 
     def test_missing_mandatory_filter_is_rejected(self) -> None:
-        plan = make_plan()
+        ir = make_ir()
         authorization = AuthorizationIssuer().issue(
             policy_scope=make_policy_scope(),
             adapter_type="sql",
             source_id="sales",
             operation="select",
-            artifact_fingerprint=plan.fingerprint,
-            mandatory_filter_fingerprints=plan.filter_fingerprints(),
+            artifact_fingerprint=ir.fingerprint,
+            mandatory_filter_fingerprints=ir.filter_fingerprints(),
         )
         verification = AuthorizationVerifier().verify(
             authorization,
-            artifact_fingerprint=plan.fingerprint,
+            artifact_fingerprint=ir.fingerprint,
             adapter_type="sql",
             source_id="sales",
             operation="select",
@@ -426,7 +433,7 @@ class TestEvaluationEvidence:
         assert result.outcome == CaseOutcome.PASS
         assert result.error is None
         assert result.evidence is not None
-        assert result.evidence.plan_fingerprint == make_plan().fingerprint
+        assert result.evidence.ir_fingerprint == make_ir().fingerprint
         assert result.evidence.result_fingerprint is not None
         assert FINGERPRINT.fullmatch(result.evidence.result_fingerprint)
         assert result.evidence.columns == ("oid", "amt")

@@ -1,9 +1,9 @@
 """End-to-end integration tests for the opt-in AI workflow path.
 
 Covers the full path from public QueryRequest through the fake model
-provider, intent validation, Semantic Query Plan handoff, and the
+provider, intent validation, Semantic Query IR handoff, and the
 existing governed execution boundary - plus the preserved P1
-structured-plan and not-configured fallbacks.
+structured-IR and not-configured fallbacks.
 """
 
 from __future__ import annotations
@@ -23,15 +23,14 @@ from nl2data_core.ai.workflow import AIWorkflowRunner
 from nl2data_core.config.loader import load_config
 from nl2data_core.fixtures import SQLiteFixtureProfile
 from nl2data_core.governance.models import PolicyScope
-from nl2data_core.planning.models import (
-    ColumnBinding,
-    PhysicalBinding,
-    PlanLineage,
-    SemanticFilter,
-    SemanticOrdering,
-    SemanticQueryPlan,
-    SemanticSelection,
+from nl2data_core.planning.ir.models import (
+    IRFilter,
+    IROrdering,
+    IRProvenance,
+    IRSelection,
+    SemanticQueryIR,
 )
+from nl2data_core.planning.models import ColumnBinding, PhysicalBinding
 from nl2data_core.planning.validation import AuthorizedView
 from nl2data_core.workflow.durable import IdempotencyStatus
 from nl2data_core.workflow.runner import QueryExecutionRunner, StaticPlanResolver
@@ -122,30 +121,30 @@ def make_execution(tmp_path: Path, **overrides) -> QueryExecutionRunner:
         "policy_scope": make_policy_scope(),
         "view": make_view(),
         "plan_resolver": StaticPlanResolver(None),
+        "binding": BINDING,
     }
     values.update(overrides)
     return QueryExecutionRunner(**values)
 
 
-def make_fixed_plan() -> SemanticQueryPlan:
-    """A P1 structured plan equivalent to the AI intent, with aliases."""
-    return SemanticQueryPlan(
-        plan_id="plan-fallback",
+def make_fixed_ir() -> SemanticQueryIR:
+    """A P1 structured IR equivalent to the AI intent, with aliases."""
+    return SemanticQueryIR(
+        ir_id="ir-fallback",
         source_id="sales",
         root_entity_id="order",
         selections=(
-            SemanticSelection(selection_id="s1", field_id="order_id", alias="oid"),
-            SemanticSelection(selection_id="s2", field_id="amount", alias="amt"),
+            IRSelection(selection_id="s1", field_id="order_id", alias="oid"),
+            IRSelection(selection_id="s2", field_id="amount", alias="amt"),
         ),
         filters=(
-            SemanticFilter(filter_id="f1", field_id="region", operator="eq", value="emea"),
+            IRFilter(filter_id="f1", field_id="region", operator="eq", value="emea"),
         ),
         orderings=(
-            SemanticOrdering(ordering_id="o1", field_id="order_id", direction="desc"),
+            IROrdering(ordering_id="o1", field_id="order_id", direction="desc"),
         ),
         limit=10,
-        lineage=PlanLineage(source_id="sales", root_entity_id="order"),
-        binding=BINDING,
+        provenance=IRProvenance(source_id="sales", root_entity_id="order"),
     )
 
 
@@ -266,12 +265,12 @@ class TestAiRejectedPaths:
 
 
 class TestFallbacks:
-    async def test_without_provider_p1_structured_plan_path_is_preserved(
+    async def test_without_provider_p1_structured_ir_path_is_preserved(
         self, tmp_path: Path
     ) -> None:
         execution = make_execution(
             tmp_path,
-            plan_resolver=StaticPlanResolver(make_fixed_plan()),
+            plan_resolver=StaticPlanResolver(make_fixed_ir()),
         )
         runner = AIWorkflowRunner(provider=None, execution=execution)
         assert runner.is_configured() is False
@@ -337,7 +336,7 @@ class TestFacadeDelegation:
     async def test_facade_forwards_approval_required_hook(self, tmp_path: Path) -> None:
         runner = make_ai_runner(
             tmp_path,
-            approval_required=lambda plan: True,
+            approval_required=lambda ir: True,
         )
         outcome = await runner.execute(request())
         assert outcome.status == OutcomeStatus.REJECTED

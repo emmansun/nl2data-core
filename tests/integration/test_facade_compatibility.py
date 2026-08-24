@@ -31,15 +31,14 @@ from nl2data_core.ai.context import SemanticReference
 from nl2data_core.ai.fake import FakeModelProvider
 from nl2data_core.fixtures import SQLiteFixtureProfile
 from nl2data_core.governance.models import PolicyScope
-from nl2data_core.planning.models import (
-    ColumnBinding,
-    PhysicalBinding,
-    PlanLineage,
-    SemanticFilter,
-    SemanticOrdering,
-    SemanticQueryPlan,
-    SemanticSelection,
+from nl2data_core.planning.ir.models import (
+    IRFilter,
+    IROrdering,
+    IRProvenance,
+    IRSelection,
+    SemanticQueryIR,
 )
+from nl2data_core.planning.models import ColumnBinding, PhysicalBinding
 from nl2data_core.planning.validation import AuthorizedView
 from nl2data_core.tenancy import (
     EntitlementRevision,
@@ -152,25 +151,24 @@ def make_adapter(tmp_path: Path) -> CountingAdapter:
     )
 
 
-def make_fixed_plan() -> SemanticQueryPlan:
-    """A P1 structured plan equivalent to the AI intent, with aliases."""
-    return SemanticQueryPlan(
-        plan_id="plan-fixed",
+def make_fixed_ir() -> SemanticQueryIR:
+    """A P1 structured IR equivalent to the AI intent, with aliases."""
+    return SemanticQueryIR(
+        ir_id="ir-fixed",
         source_id="sales",
         root_entity_id="order",
         selections=(
-            SemanticSelection(selection_id="s1", field_id="order_id", alias="oid"),
-            SemanticSelection(selection_id="s2", field_id="amount", alias="amt"),
+            IRSelection(selection_id="s1", field_id="order_id", alias="oid"),
+            IRSelection(selection_id="s2", field_id="amount", alias="amt"),
         ),
         filters=(
-            SemanticFilter(filter_id="f1", field_id="region", operator="eq", value="emea"),
+            IRFilter(filter_id="f1", field_id="region", operator="eq", value="emea"),
         ),
         orderings=(
-            SemanticOrdering(ordering_id="o1", field_id="order_id", direction="desc"),
+            IROrdering(ordering_id="o1", field_id="order_id", direction="desc"),
         ),
         limit=10,
-        lineage=PlanLineage(source_id="sales", root_entity_id="order"),
-        binding=BINDING,
+        provenance=IRProvenance(source_id="sales", root_entity_id="order"),
     )
 
 
@@ -181,7 +179,8 @@ def make_facade(tmp_path: Path, **overrides) -> NL2Data:
         "adapter": make_adapter(tmp_path),
         "policy_scope": make_policy_scope(),
         "view": make_view(),
-        "plan_resolver": StaticPlanResolver(make_fixed_plan()),
+        "plan_resolver": StaticPlanResolver(make_fixed_ir()),
+        "binding": BINDING,
     }
     values.update(overrides)
     return create_facade(composition=CompositionProfile(**values))

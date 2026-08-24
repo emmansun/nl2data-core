@@ -4,7 +4,7 @@
 TBD - created by archiving change establish-p2-governed-workflow-runtime. Update Purpose after archive.
 ## Requirements
 ### Requirement: Reference runtime composes existing governed ports
-The deterministic runtime SHALL compose current AI intent, Memory context, trusted tenant scope, semantic plan validation, governance, artifact authorization, adapter execution, result protection, durable state, and idempotency through typed ports.
+The deterministic runtime SHALL compose current AI intent, Memory context, trusted tenant scope, semantic IR validation, governance, artifact authorization, adapter execution, result protection, durable state, and idempotency through typed ports.
 
 #### Scenario: Normal read flow reaches a protected outcome
 - **WHEN** all gates pass for a valid request

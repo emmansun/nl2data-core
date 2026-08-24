@@ -1,6 +1,6 @@
 """Intent resolution: model output to validated structured intent only.
 
-The resolver is the only path from provider output toward plan building.
+The resolver is the only path from provider output toward IR building.
 It validates the output shape, rejects executable-query-shaped or injected
 content, authorizes every semantic reference against the view, and emits
 ``ResolvedIntent``, ``ClarificationRequired``, or ``RejectedIntent`` -
@@ -145,7 +145,7 @@ class IntentResolver:
 
     Provider invocation is bounded by the configured attempt budget;
     malformed, out-of-view, oversized, or executable-query-shaped output
-    fails closed and never reaches plan building.
+    fails closed and never reaches IR building.
     """
 
     def __init__(

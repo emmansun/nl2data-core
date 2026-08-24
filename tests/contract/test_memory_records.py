@@ -61,7 +61,7 @@ def make_reference(reference_id: str = "ref-1") -> QueryReference:
     return QueryReference(
         reference_id=reference_id,
         intent_fingerprint=FP,
-        plan_fingerprint=FP,
+        ir_fingerprint=FP,
         artifact_fingerprint=FP,
         policy_fingerprint=FP,
         catalog_fingerprint=FP,

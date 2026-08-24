@@ -276,7 +276,7 @@ class WorkflowStage(StrEnum):
     """Ordered stages of the governed workflow graph.
 
     The order is fixed: request initialization, Memory recall, intent
-    resolution, plan building, plan validation, governance, authorization,
+    resolution, IR building, IR validation, governance, authorization,
     adapter execution, result protection, Memory write-back, and completion.
     """
 

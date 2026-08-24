@@ -233,7 +233,7 @@ def record_query_reference(
     provider: MemoryProvider,
     turn: CurrentTurnContext,
     intent_fingerprint: str | None = None,
-    plan_fingerprint: str | None = None,
+    ir_fingerprint: str | None = None,
     artifact_fingerprint: str | None = None,
     source_id: str,
     root_entity_id: str | None = None,
@@ -242,12 +242,12 @@ def record_query_reference(
 ) -> str:
     """Record a logical query reference after a successful turn.
 
-    The reference id is a deterministic digest of the plan/intent
+    The reference id is a deterministic digest of the IR/intent
     fingerprints so equal queries never create duplicate references; raw
     prompts and queries are never stored.
     """
     reference_id = sha256_fingerprint(
-        {"plan": plan_fingerprint, "intent": intent_fingerprint}
+        {"ir": ir_fingerprint, "intent": intent_fingerprint}
     )[7:23]
     if turn.tenant_scope_fingerprint is None:
         raise MemoryInvocationError(
@@ -267,7 +267,7 @@ def record_query_reference(
             reference=QueryReference(
                 reference_id=reference_id,
                 intent_fingerprint=intent_fingerprint,
-                plan_fingerprint=plan_fingerprint,
+                ir_fingerprint=ir_fingerprint,
                 artifact_fingerprint=artifact_fingerprint,
                 policy_fingerprint=turn.policy_fingerprint,
                 catalog_fingerprint=turn.catalog_fingerprint,

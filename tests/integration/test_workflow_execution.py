@@ -25,15 +25,14 @@ from nl2data_core.config.loader import load_config
 from nl2data_core.fixtures import SQLiteFixtureProfile
 from nl2data_core.governance.authorization import AuthorizationIssuer, AuthorizationVerifier
 from nl2data_core.governance.models import PolicyScope
-from nl2data_core.planning.models import (
-    ColumnBinding,
-    PhysicalBinding,
-    PlanLineage,
-    SemanticFilter,
-    SemanticOrdering,
-    SemanticQueryPlan,
-    SemanticSelection,
+from nl2data_core.planning.ir.models import (
+    IRFilter,
+    IROrdering,
+    IRProvenance,
+    IRSelection,
+    SemanticQueryIR,
 )
+from nl2data_core.planning.models import ColumnBinding, PhysicalBinding
 from nl2data_core.planning.validation import AuthorizedView
 from nl2data_core.workflow.runner import QueryExecutionRunner, StaticPlanResolver
 
@@ -62,35 +61,40 @@ def make_view(**overrides) -> AuthorizedView:
     return AuthorizedView(**values)
 
 
-def make_plan(**overrides) -> SemanticQueryPlan:
+def make_binding(**overrides) -> PhysicalBinding:
     values = {
-        "plan_id": "plan-1",
-        "source_id": "sales",
-        "root_entity_id": "order",
-        "selections": (
-            SemanticSelection(selection_id="s1", field_id="order_id", alias="oid"),
-            SemanticSelection(selection_id="s2", field_id="amount", alias="amt"),
-        ),
-        "filters": (
-            SemanticFilter(filter_id="f1", field_id="region", operator="eq", value="emea"),
-        ),
-        "orderings": (SemanticOrdering(ordering_id="o1", field_id="order_id", direction="desc"),),
-        "limit": 10,
-        "lineage": PlanLineage(source_id="sales", root_entity_id="order"),
-        "binding": PhysicalBinding(
-            object_id="orders",
-            dialect="sqlite",
-            column_bindings=(
-                ColumnBinding(field_id="order_id", physical_name="order_id"),
-                ColumnBinding(field_id="amount", physical_name="amount"),
-                ColumnBinding(field_id="region", physical_name="region"),
-                ColumnBinding(field_id="status", physical_name="status"),
-                ColumnBinding(field_id="created_at", physical_name="created_at"),
-            ),
+        "object_id": "orders",
+        "dialect": "sqlite",
+        "column_bindings": (
+            ColumnBinding(field_id="order_id", physical_name="order_id"),
+            ColumnBinding(field_id="amount", physical_name="amount"),
+            ColumnBinding(field_id="region", physical_name="region"),
+            ColumnBinding(field_id="status", physical_name="status"),
+            ColumnBinding(field_id="created_at", physical_name="created_at"),
         ),
     }
     values.update(overrides)
-    return SemanticQueryPlan(**values)
+    return PhysicalBinding(**values)
+
+
+def make_ir(**overrides) -> SemanticQueryIR:
+    values = {
+        "ir_id": "ir-1",
+        "source_id": "sales",
+        "root_entity_id": "order",
+        "selections": (
+            IRSelection(selection_id="s1", field_id="order_id", alias="oid"),
+            IRSelection(selection_id="s2", field_id="amount", alias="amt"),
+        ),
+        "filters": (
+            IRFilter(filter_id="f1", field_id="region", operator="eq", value="emea"),
+        ),
+        "orderings": (IROrdering(ordering_id="o1", field_id="order_id", direction="desc"),),
+        "limit": 10,
+        "provenance": IRProvenance(source_id="sales", root_entity_id="order"),
+    }
+    values.update(overrides)
+    return SemanticQueryIR(**values)
 
 
 def make_adapter(tmp_path: Path, **overrides) -> SqlQueryAdapter:
@@ -112,7 +116,8 @@ def make_runner(tmp_path: Path, **overrides) -> QueryExecutionRunner:
         "adapter": make_adapter(tmp_path),
         "policy_scope": make_policy_scope(),
         "view": make_view(),
-        "plan_resolver": StaticPlanResolver(make_plan()),
+        "plan_resolver": StaticPlanResolver(make_ir()),
+        "binding": make_binding(),
     }
     values.update(overrides)
     return QueryExecutionRunner(**values)
@@ -155,7 +160,7 @@ class TestSuccessfulPath:
 
 
 class TestRejectedPaths:
-    async def test_unresolvable_plan_is_rejected(self, tmp_path: Path) -> None:
+    async def test_unresolvable_ir_is_rejected(self, tmp_path: Path) -> None:
         runner = make_runner(tmp_path, plan_resolver=StaticPlanResolver(None))
         outcome = await runner.execute(request())
         assert outcome.status == OutcomeStatus.REJECTED
@@ -163,8 +168,8 @@ class TestRejectedPaths:
         assert outcome.error.code == ErrorCode.PLAN_VALIDATION_FAILED
         assert outcome.result is None
 
-    async def test_invalid_plan_is_rejected(self, tmp_path: Path) -> None:
-        runner = make_runner(tmp_path, plan_resolver=StaticPlanResolver(make_plan(limit=None)))
+    async def test_invalid_ir_is_rejected(self, tmp_path: Path) -> None:
+        runner = make_runner(tmp_path, plan_resolver=StaticPlanResolver(make_ir(limit=None)))
         outcome = await runner.execute(request())
         assert outcome.status == OutcomeStatus.REJECTED
         assert outcome.error is not None

@@ -203,7 +203,7 @@ how database adapters plug into the governed path:
   output. Semantic references outside the authorized view fail closed, and
   provider calls are bounded by the configured attempt budget.
 - The opt-in `AIWorkflowRunner` is a compatibility facade: without a provider
-  it preserves the P1 structured-plan path and the not-configured fallback;
+  it preserves the P1 structured-IR path and the not-configured fallback;
   with a provider it delegates the whole AI+Memory composition to the
   governed workflow runtime (see below), which owns validation, governance,
   authorization, and execution ordering.
@@ -302,7 +302,7 @@ results:
 - Immutable, bounded `MemoryRecord` models (internal `nl2data_core.memory`)
   cover working state, session summaries, query references, semantic
   decisions, and audit references. They store only logical facts and
-  protected SHA-256 fingerprints of intent, plans, artifacts, policies, and
+  protected SHA-256 fingerprints of intent, IRs, artifacts, policies, and
   catalogs - never raw prompts, SQL/MQL, result rows or documents, secrets,
   or native objects.
 - The replaceable `MemoryProvider` protocol (append, recall, compare-and-set,
@@ -314,7 +314,7 @@ results:
   context and revalidates them on every turn: tenant scope, policy/catalog
   fingerprints, semantic view, adapter/artifact references, and record
   expiry. Stale or out-of-scope references fail closed into clarification,
-  and a dependent follow-up never executes a recalled plan directly.
+  and a dependent follow-up never executes a recalled IR directly.
 - Memory is context only. Raw result caching is unsupported: no path stores
   or replays query results or rows.
 - An optional Redis-backed provider (`nl2data_core.memory.RedisMemoryProvider`,
@@ -342,7 +342,7 @@ results:
   store, exactly as with the in-memory provider.
 - When Memory is unavailable the workflow degrades statelessly to the P2.1
   path; memory injection into `AIWorkflowRunner` is opt-in and keeps the
-  governed boundary - validation, authorization, and plan checks still run
+  governed boundary - validation, authorization, and IR checks still run
   on every turn.
 - A deterministic conformance suite (`nl2data_core.memory.conformance`)
   exercises raw-payload rejection, scope isolation, stale reference denial,
@@ -369,7 +369,7 @@ conditionals inside runners:
   outcomes; the rest normalize to public `REJECTED`/`FAILED` outcomes with
   specific error codes.
 - Mandatory gates: the adapter is never invoked unless current tenant
-  scope, plan validation, governance, artifact validation, and
+  scope, IR validation, governance, artifact validation, and
   authorization evidence are present and fresh. Denial or malformed input
   stops before any external work starts, and a future optional backend must
   pass the same gate assertions.
@@ -381,7 +381,7 @@ conditionals inside runners:
 - Checkpoints persist only safe evidence: stage name, workflow state,
   tenant scope, configuration/policy/catalog/semantic/artifact
   fingerprints, and bounded retry/repair counters. Raw prompts, queries,
-  plans, results, provider, and native objects never enter runtime state.
+  IRs, results, provider, and native objects never enter runtime state.
 
 ### At-least-once recovery and idempotency
 
@@ -431,7 +431,7 @@ cases, and protected result assertions.
 
 The P2 query-execution foundation adds a structured, read-only MongoDB
 specialization behind the same generic `QueryAdapter` lifecycle, with the
-same governed order (plan validation, governance, authorization, adapter
+same governed order (IR validation, governance, authorization, adapter
 guard, protected results) as SQL.
 
 - **Optional installation**: `pip install nl2data-core[mongodb]` (PyMongo

@@ -239,7 +239,7 @@ def build_ai_cases() -> tuple[AIEvaluationCase, ...]:
         ),
         AIEvaluationCase(
             case_id="prompt-injection-sql",
-            name="Executable SQL output never reaches plan building",
+            name="Executable SQL output never reaches IR building",
             request=_request("eval-injection", "show orders"),
             response={"sql": "SELECT * FROM orders"},
             mandatory_assertions=(

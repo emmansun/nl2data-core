@@ -2,13 +2,14 @@
 
 Model/provider output cannot bypass IR validation to reach an adapter:
 compilers fail closed on tampered fingerprints, the governed runner and
-runtime reject IR-invalid plans before adapter execution, and the IR layer
+runtime reject invalid IR before adapter execution, and the IR layer
 has no database, LLM, HTTP, or vendor dependency.
 """
 
 from __future__ import annotations
 
 import ast
+import json
 import os
 import subprocess
 import sys
@@ -32,11 +33,11 @@ from nl2data_core.adapters.sql.compile import SQLCompileError, compile_ir
 from nl2data_core.ai.context import SemanticReference
 from nl2data_core.ai.fake import FakeModelProvider
 from nl2data_core.ai.models import StructuredIntent
-from nl2data_core.ai.plan_builder import build_plan_from_intent
+from nl2data_core.ai.plan_builder import build_ir_from_intent
 from nl2data_core.fixtures import SQLiteFixtureProfile
 from nl2data_core.governance.models import PolicyScope
-from nl2data_core.planning.ir.fixtures import golden_ir, golden_plan
-from nl2data_core.planning.ir.models import IRExtension
+from nl2data_core.planning.ir.fixtures import golden_binding, golden_ir
+from nl2data_core.planning.ir.models import IRExtension, SemanticQueryIR
 from nl2data_core.planning.models import ColumnBinding, PhysicalBinding
 from nl2data_core.planning.validation import AuthorizedView
 from nl2data_core.workflow.runner import QueryExecutionRunner, StaticPlanResolver
@@ -196,11 +197,11 @@ def bypass_request() -> QueryRequest:
     )
 
 
-def duplicate_filter_plan() -> object:
-    """A plan that passes structural/view validation but fails IR validation.
+def duplicate_filter_ir() -> object:
+    """An IR that passes view validation but fails canonical IR validation.
 
-    ``validate_plan_structure`` does not check filter id uniqueness, so the
-    only gate that can catch the duplicate is the canonical IR validation.
+    ``validate_ir`` enforces filter id uniqueness, so the only gate that
+    can catch the duplicate is the canonical IR validation.
     """
     intent = StructuredIntent.model_validate(
         {
@@ -209,22 +210,22 @@ def duplicate_filter_plan() -> object:
             "request_id": "req-bypass",
         }
     )
-    plan = build_plan_from_intent(intent, binding=BINDING, catalog_fingerprint=None)
-    return plan.model_copy(update={"filters": (plan.filters[0], plan.filters[0])})
+    ir = build_ir_from_intent(intent, catalog_fingerprint=None)
+    return ir.model_copy(update={"filters": (ir.filters[0], ir.filters[0])})
 
 
 class TestCompilerFailClosed:
     def test_sql_compiler_rejects_tampered_fingerprint(self) -> None:
         tampered = golden_ir().model_copy(update={"fingerprint": "sha256:" + "0" * 64})
         with pytest.raises(SQLCompileError) as excinfo:
-            compile_ir(tampered, binding=golden_plan().binding)
+            compile_ir(tampered, binding=golden_binding())
         assert excinfo.value.code == ErrorCode.SQL_REJECTED
         assert "fingerprint" in excinfo.value.message
 
     def test_mongo_compiler_rejects_tampered_fingerprint(self) -> None:
         tampered = golden_ir().model_copy(update={"fingerprint": "sha256:" + "0" * 64})
         with pytest.raises(MongoCompileError) as excinfo:
-            compile_mongo_ir(tampered, binding=golden_plan().binding)
+            compile_mongo_ir(tampered, binding=golden_binding())
         assert excinfo.value.code == ErrorCode.MONGO_REJECTED
         assert "fingerprint" in excinfo.value.message
 
@@ -239,9 +240,9 @@ class TestCompilerFailClosed:
     def test_compilers_reject_structurally_invalid_ir(self) -> None:
         invalid = golden_ir().model_copy(update={"limit": None})
         with pytest.raises(SQLCompileError):
-            compile_ir(invalid, binding=golden_plan().binding)
+            compile_ir(invalid, binding=golden_binding())
         with pytest.raises(MongoCompileError):
-            compile_mongo_ir(invalid, binding=golden_plan().binding)
+            compile_mongo_ir(invalid, binding=golden_binding())
 
     def test_extensions_cannot_carry_raw_query_material(self) -> None:
         with pytest.raises(ValidationError):
@@ -250,15 +251,21 @@ class TestCompilerFailClosed:
                 kind="risk",
                 payload={"mql": "db.orders.find({})"},
             )
+        with pytest.raises(ValidationError):
+            IRExtension(
+                extension_id="e1",
+                kind="risk",
+                payload={"note": "DELETE FROM orders"},
+            )
 
 
 class TestNoIRBypass:
-    async def test_runner_rejects_ir_invalid_plan_before_adapter(self, tmp_path: Path) -> None:
+    async def test_runner_rejects_ir_invalid_before_adapter(self, tmp_path: Path) -> None:
         adapter = CountingAdapter(make_adapter(tmp_path))
         execution = make_execution(
             tmp_path,
             adapter=adapter,
-            plan_resolver=StaticPlanResolver(duplicate_filter_plan()),
+            plan_resolver=StaticPlanResolver(duplicate_filter_ir()),
         )
         outcome = await execution.execute(bypass_request())
         assert outcome.status == OutcomeStatus.REJECTED
@@ -290,7 +297,7 @@ class TestNoIRBypass:
         assert adapter.execution_count == 0
         assert provider.call_count == 1
 
-    async def test_unbounded_plan_rejected_before_adapter(self, tmp_path: Path) -> None:
+    async def test_unbounded_ir_rejected_before_adapter(self, tmp_path: Path) -> None:
         adapter = CountingAdapter(make_adapter(tmp_path))
         intent = StructuredIntent.model_validate(
             {
@@ -299,14 +306,14 @@ class TestNoIRBypass:
                 "request_id": "req-unbounded",
             }
         )
-        plan = build_plan_from_intent(intent, binding=BINDING, catalog_fingerprint=None)
-        #: The plan builder itself rejects unbounded intents, so the bounded
-        #: plan is stripped of its limit to exercise the governed boundary.
-        plan = plan.model_copy(update={"limit": None})
+        ir = build_ir_from_intent(intent, catalog_fingerprint=None)
+        #: The IR builder itself rejects unbounded intents, so the bounded
+        #: IR is stripped of its limit to exercise the governed boundary.
+        ir = ir.model_copy(update={"limit": None})
         execution = make_execution(
             tmp_path,
             adapter=adapter,
-            plan_resolver=StaticPlanResolver(plan),
+            plan_resolver=StaticPlanResolver(ir),
         )
         outcome = await execution.execute(bypass_request())
         assert outcome.status == OutcomeStatus.REJECTED
@@ -353,3 +360,60 @@ class TestIRLayerImportBoundary:
                 if backend in imported:
                     offenders.append(f"{module_path.name} -> {backend}")
         assert offenders == [], f"forbidden imports found: {offenders}"
+
+
+class TestLegacyShapedPayloadsFailClosed:
+    """Payloads shaped like the removed plan or physical artifacts cannot become IR.
+
+    After the legacy removal there is no translator: a payload that looks
+    like a ``SemanticQueryPlan``, a compiled SQL/MQL artifact, or a physical
+    binding is rejected at the IR model boundary, so it can never reach a
+    compiler or adapter.
+    """
+
+    LEGACY_PLAN_SHAPE = {
+        "plan_id": "plan-legacy-1",
+        "source_id": "acme_warehouse",
+        "root_entity_id": "orders",
+        "selections": [{"selection_id": "s1", "field_id": "region"}],
+        "filters": [
+            {"filter_id": "f1", "field_id": "region", "operator": "eq", "value": "north"}
+        ],
+        "limit": 10,
+        "lineage": {"catalog_fingerprint": "sha256:" + "ab" * 32},
+    }
+
+    def test_legacy_plan_shape_is_rejected_at_the_ir_boundary(self) -> None:
+        with pytest.raises(ValidationError):
+            SemanticQueryIR.model_validate(self.LEGACY_PLAN_SHAPE)
+        with pytest.raises(ValidationError):
+            SemanticQueryIR.from_canonical_json(json.dumps(self.LEGACY_PLAN_SHAPE))
+
+    def test_physical_artifact_shapes_are_rejected_at_the_ir_boundary(self) -> None:
+        for payload in (
+            {"sql": "SELECT region FROM orders_table LIMIT 10", "dialect": "sqlite"},
+            {
+                "spec_id": "mongo-1",
+                "operation": "aggregate",
+                "collection": "orders_table",
+                "pipeline": [{"$limit": 10}],
+            },
+            {
+                "object_id": "orders_table",
+                "dialect": "sqlite",
+                "column_bindings": [{"field_id": "region", "physical_name": "region"}],
+            },
+        ):
+            with pytest.raises(ValidationError):
+                SemanticQueryIR.model_validate(payload)
+            with pytest.raises(ValidationError):
+                SemanticQueryIR.from_canonical_json(json.dumps(payload))
+
+    def test_legacy_fields_cannot_be_smuggled_into_a_valid_ir(self) -> None:
+        payload = json.loads(golden_ir().serialize_canonical())
+        payload["plan_id"] = "plan-legacy-1"
+        payload["lineage"] = {"catalog_fingerprint": "sha256:" + "ab" * 32}
+        with pytest.raises(ValidationError):
+            SemanticQueryIR.model_validate(payload)
+        with pytest.raises(ValidationError):
+            SemanticQueryIR.from_canonical_json(json.dumps(payload))

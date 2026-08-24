@@ -87,7 +87,7 @@ def _reference_record(
             reference=QueryReference(
                 reference_id=f"ref-{record_id}",
                 intent_fingerprint="sha256:" + "11" * 32,
-                plan_fingerprint="sha256:" + "22" * 32,
+                ir_fingerprint="sha256:" + "22" * 32,
                 artifact_fingerprint="sha256:" + "33" * 32,
                 policy_fingerprint=policy_fingerprint,
                 catalog_fingerprint=catalog_fingerprint,

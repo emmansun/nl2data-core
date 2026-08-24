@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from nl2data_core.adapters.mongodb.adapter import MongoQueryAdapter
 from nl2data_core.adapters.mongodb.client import MongoClientHandle
-from nl2data_core.adapters.mongodb.compile import MongoCompileError, compile_mongo_plan
+from nl2data_core.adapters.mongodb.compile import MongoCompileError, compile_mongo_ir
 from nl2data_core.adapters.mongodb.execution import (
     execute_mongo_spec,
     normalize_bson_cell,
@@ -81,7 +81,7 @@ __all__ = [
     "TenantObligation",
     "assert_json_compatible",
     "assert_validated",
-    "compile_mongo_plan",
+    "compile_mongo_ir",
     "discover_metadata",
     "execute_mongo_spec",
     "extract_query_facts",

@@ -124,6 +124,10 @@ class TestIRSchema:
     def test_extension_payloads_reject_physical_content_and_are_immutable(self) -> None:
         with pytest.raises(ValidationError):
             IRExtension(extension_id="e1", kind="k", payload={"sql": "SELECT * FROM orders"})
+        with pytest.raises(ValidationError):
+            IRExtension(
+                extension_id="e1", kind="k", payload={"note": "SELECT * FROM orders"}
+            )
         extension = IRExtension(
             extension_id="e1", kind="k", payload={"mode": "strict", "options": ["a"]}
         )

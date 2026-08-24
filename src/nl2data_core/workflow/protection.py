@@ -17,7 +17,8 @@ from nl2data.errors import ErrorCategory, ErrorCode, NL2DataError
 from nl2data.models import QueryResult
 from nl2data_core.adapters.models import ExecutionResult
 from nl2data_core.governance.models import EffectiveLimits
-from nl2data_core.planning.models import SemanticQueryPlan
+from nl2data_core.planning.ir.models import SemanticQueryIR
+from nl2data_core.planning.models import PhysicalBinding
 
 #: The protected public scalar set; anything else is unsupported.
 _SCALAR_TYPES: tuple[type, ...] = (str, int, float, bool, type(None))
@@ -42,15 +43,17 @@ class ResultProtectionError(NL2DataError):
         )
 
 
-def _allowed_output_columns(plan: SemanticQueryPlan) -> frozenset[str]:
-    """The only column names the plan may expose, from its selections."""
+def _allowed_output_columns(
+    ir: SemanticQueryIR, binding: PhysicalBinding | None
+) -> frozenset[str]:
+    """The only column names the IR may expose, from its selections."""
     allowed: set[str] = set()
-    for selection in plan.selections:
+    for selection in ir.selections:
         if selection.alias is not None:
             allowed.add(selection.alias)
             continue
-        if plan.binding is not None:
-            physical = plan.binding.physical_name(selection.field_id)
+        if binding is not None:
+            physical = binding.physical_name(selection.field_id)
             if physical is not None:
                 if selection.aggregation != "none":
                     allowed.add(f"{selection.aggregation}_{physical}")
@@ -62,7 +65,8 @@ def _allowed_output_columns(plan: SemanticQueryPlan) -> frozenset[str]:
 def protect_result(
     result: ExecutionResult,
     *,
-    plan: SemanticQueryPlan,
+    ir: SemanticQueryIR,
+    binding: PhysicalBinding | None,
     limits: EffectiveLimits,
 ) -> QueryResult:
     """Convert adapter output into a protected public result.
@@ -116,7 +120,7 @@ def protect_result(
                     },
                 )
 
-    allowed = _allowed_output_columns(plan)
+    allowed = _allowed_output_columns(ir, binding)
     keep = [index for index, column in enumerate(result.columns) if column in allowed]
     if not keep and result.columns:
         raise ResultProtectionError(

@@ -173,7 +173,7 @@ class MemoryScope(BaseModel):
 class QueryReference(BaseModel):
     """A logical reference to a prior query, never the query itself.
 
-    Accepts only protected fingerprints (intent/plan/artifact/policy/
+    Accepts only protected fingerprints (intent/IR/artifact/policy/
     catalog) plus bounded semantic identifiers; prompts, SQL/MQL, and
     result rows are structurally impossible in this model.
     """
@@ -182,7 +182,7 @@ class QueryReference(BaseModel):
 
     reference_id: str = Field(pattern=_IDENTIFIER_PATTERN)
     intent_fingerprint: str | None = Field(default=None, pattern=_FINGERPRINT_PATTERN)
-    plan_fingerprint: str | None = Field(default=None, pattern=_FINGERPRINT_PATTERN)
+    ir_fingerprint: str | None = Field(default=None, pattern=_FINGERPRINT_PATTERN)
     artifact_fingerprint: str | None = Field(default=None, pattern=_FINGERPRINT_PATTERN)
     policy_fingerprint: str | None = Field(default=None, pattern=_FINGERPRINT_PATTERN)
     catalog_fingerprint: str | None = Field(default=None, pattern=_FINGERPRINT_PATTERN)
@@ -217,7 +217,7 @@ class QueryReference(BaseModel):
         return {
             "reference_id": self.reference_id,
             "intent_fingerprint": self.intent_fingerprint,
-            "plan_fingerprint": self.plan_fingerprint,
+            "ir_fingerprint": self.ir_fingerprint,
             "artifact_fingerprint": self.artifact_fingerprint,
             "policy_fingerprint": self.policy_fingerprint,
             "catalog_fingerprint": self.catalog_fingerprint,

@@ -1,6 +1,5 @@
-"""Canonical Semantic Query IR: models, validation, and plan compatibility."""
+"""Canonical Semantic Query IR: models and validation."""
 
-from .compat import ir_to_plan, plan_to_ir
 from .models import (
     IR_VERSION,
     SCALAR_TYPES,
@@ -35,8 +34,6 @@ __all__ = [
     "IRExtension",
     "SCALAR_TYPES",
     "SemanticQueryIR",
-    "ir_to_plan",
-    "plan_to_ir",
     "validate_ir",
     "verify_ir_fingerprint",
 ]

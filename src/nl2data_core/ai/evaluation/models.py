@@ -47,7 +47,7 @@ class AIMandatoryAssertion(BaseModel):
     ``outcome_equals`` asserts the resolution outcome and optional error
     code; ``evidence_redacted`` asserts only protected values cross the
     boundary; ``no_adapter_invocation`` asserts unsafe output never
-    reaches plan building; ``bounded_calls`` asserts the provider call
+    reaches IR building; ``bounded_calls`` asserts the provider call
     budget was respected.
     """
 

@@ -1,3 +1,3 @@
-"""Semantic query planning: backend-neutral immutable plans (DDS-004)."""
+"""Semantic query planning: the canonical Semantic Query IR (DDS-019)."""
 
 from __future__ import annotations

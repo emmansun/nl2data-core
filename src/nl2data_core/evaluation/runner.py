@@ -35,9 +35,8 @@ from nl2data_core.evaluation.models import (
 )
 from nl2data_core.fixtures.base import FixtureProfile
 from nl2data_core.fixtures.models import FixtureUnavailableError
-from nl2data_core.planning.ir.compat import plan_to_ir
+from nl2data_core.planning.ir.models import SemanticQueryIR
 from nl2data_core.planning.ir.validation import validate_ir
-from nl2data_core.planning.models import SemanticQueryPlan, validate_plan_structure
 
 #: Scalar cell types allowed in protected evidence rows.
 _SCALAR_TYPES = (str, int, float, bool, type(None))
@@ -57,7 +56,7 @@ _SENSITIVE_TOKENS = (
 
 
 class CaseExecutor(Protocol):
-    """Executes one case plan against a bound fixture.
+    """Executes one case IR against a bound fixture.
 
     Implementations return only protected evidence: fingerprints and
     scalar rows, with at most one safe structured error.  Fixture
@@ -67,11 +66,11 @@ class CaseExecutor(Protocol):
 
     async def execute(
         self,
-        plan: SemanticQueryPlan,
+        ir: SemanticQueryIR,
         fixture: FixtureProfile,
         context: EvaluationRunContext,
     ) -> CaseEvidence:
-        """Run ``plan`` against ``fixture`` and return protected evidence."""
+        """Run ``ir`` against ``fixture`` and return protected evidence."""
         ...
 
 
@@ -83,8 +82,8 @@ def evidence_is_redacted(evidence: CaseEvidence) -> bool:
     the dumped payload.
     """
     payload = evidence.model_dump()
-    plan_fingerprint = payload.get("plan_fingerprint")
-    if not isinstance(plan_fingerprint, str) or not plan_fingerprint.startswith("sha256:"):
+    ir_fingerprint = payload.get("ir_fingerprint")
+    if not isinstance(ir_fingerprint, str) or not ir_fingerprint.startswith("sha256:"):
         return False
     result_fingerprint = payload.get("result_fingerprint")
     if result_fingerprint is not None and (
@@ -253,37 +252,22 @@ class EvaluationRunner:
                     case, CaseOutcome.FAIL, error=as_error_record(error), started=started
                 )
 
-            structure = validate_plan_structure(case.plan)
-            try:
-                ir_result = validate_ir(plan_to_ir(case.plan))
-            except Exception as error:
+            ir_result = validate_ir(case.ir)
+            if not ir_result.valid:
                 return self._result(
                     case,
                     CaseOutcome.FAIL,
                     error=ErrorRecord(
                         code=ErrorCode.PLAN_VALIDATION_FAILED,
                         category=ErrorCategory.VALIDATION,
-                        message="case plan failed canonical IR normalization",
-                        details={"cause_type": type(error).__name__},
-                    ),
-                    started=started,
-                )
-            if not structure.valid or not ir_result.valid:
-                issue_codes = sorted(set(structure.issue_codes() + ir_result.issue_codes()))
-                return self._result(
-                    case,
-                    CaseOutcome.FAIL,
-                    error=ErrorRecord(
-                        code=ErrorCode.PLAN_VALIDATION_FAILED,
-                        category=ErrorCategory.VALIDATION,
-                        message="case plan failed structural validation",
-                        details={"issue_codes": ",".join(issue_codes)},
+                        message="case IR failed structural validation",
+                        details={"issue_codes": ",".join(ir_result.issue_codes())},
                     ),
                     started=started,
                 )
 
             try:
-                evidence = await self._case_executor.execute(case.plan, fixture, context)
+                evidence = await self._case_executor.execute(case.ir, fixture, context)
             except Exception as error:
                 return self._result(
                     case, CaseOutcome.FAIL, error=as_error_record(error), started=started

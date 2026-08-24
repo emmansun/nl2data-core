@@ -48,11 +48,11 @@ from nl2data_core.adapters.models import (
     ValidationContext,
 )
 from nl2data_core.adapters.protocol import QueryAdapter
-from nl2data_core.adapters.sql.compile import compile_plan
+from nl2data_core.adapters.sql.compile import compile_ir
 from nl2data_core.ai.config import ModelConfig
 from nl2data_core.ai.context import SemanticReference
 from nl2data_core.ai.models import ClarificationRequired, RejectedIntent, ResolvedIntent
-from nl2data_core.ai.plan_builder import build_plan_from_intent
+from nl2data_core.ai.plan_builder import build_ir_from_intent
 from nl2data_core.ai.protocol import ModelProvider
 from nl2data_core.ai.resolver import IntentResolver
 from nl2data_core.canonical import sha256_fingerprint
@@ -77,18 +77,10 @@ from nl2data_core.memory.resolver import (
     MultiTurnResolver,
     record_query_reference,
 )
-from nl2data_core.planning.ir.compat import plan_to_ir
 from nl2data_core.planning.ir.models import SemanticQueryIR
 from nl2data_core.planning.ir.validation import validate_ir
-from nl2data_core.planning.models import (
-    PhysicalBinding,
-    SemanticQueryPlan,
-    validate_plan_structure,
-)
-from nl2data_core.planning.validation import (
-    AuthorizedView,
-    validate_plan_against_view,
-)
+from nl2data_core.planning.models import PhysicalBinding
+from nl2data_core.planning.validation import AuthorizedView
 from nl2data_core.tenancy.models import TenantScopeContext
 from nl2data_core.tenancy.validation import validate_tenant_scope
 from nl2data_core.workflow.contract import (
@@ -484,7 +476,7 @@ class _IntentNode(_NodeBase):
 
 
 class _PlanNode(_NodeBase):
-    """Plan building from the validated structured intent."""
+    """IR building from the validated structured intent."""
 
     stage = WorkflowStage.PLAN
 
@@ -497,9 +489,8 @@ class _PlanNode(_NodeBase):
                 details={"stage": self.stage.value},
             )
         try:
-            plan = build_plan_from_intent(
+            ir = build_ir_from_intent(
                 outcome.intent,
-                binding=runtime.binding,
                 catalog_fingerprint=runtime.view.catalog_fingerprint,
             )
         except Exception as error:
@@ -510,8 +501,6 @@ class _PlanNode(_NodeBase):
                     context.request, status=OutcomeStatus.FAILED, error=as_error_record(error)
                 ),
             )
-        ir = plan_to_ir(plan)
-        self._channel["plan"] = plan
         self._channel["ir"] = ir
         self._channel["compat"]["ir"] = sha256_fingerprint(
             {"ir_version": ir.ir_version, "ir_fingerprint": ir.fingerprint}
@@ -524,9 +513,9 @@ class _PlanNode(_NodeBase):
 
 
 class _ValidateNode(_NodeBase):
-    """Plan structure/view validation and artifact parse/validate.
+    """IR validation and artifact parse/validate.
 
-    Produces the plan-validation and artifact-validation gate evidence that
+    Produces the IR-validation and artifact-validation gate evidence that
     adapter execution later requires.
     """
 
@@ -534,19 +523,9 @@ class _ValidateNode(_NodeBase):
 
     async def run(self, context: WorkflowExecutionContext) -> StageResult:
         runtime = self._runtime
-        plan = self._channel["plan"]
         ir = self._channel["ir"]
-        structure = validate_plan_structure(plan)
-        view_result = validate_plan_against_view(plan, view=runtime.view)
         ir_result = validate_ir(ir, view=runtime.view)
-        if not structure.valid or not view_result.valid or not ir_result.valid:
-            issue_codes = sorted(
-                set(
-                    structure.issue_codes()
-                    + view_result.issue_codes()
-                    + ir_result.issue_codes()
-                )
-            )
+        if not ir_result.valid:
             return StageResult(
                 stage=self.stage,
                 status=RuntimeOutcomeStatus.REJECTED,
@@ -555,16 +534,15 @@ class _ValidateNode(_NodeBase):
                     ErrorRecord(
                         code=ErrorCode.PLAN_VALIDATION_FAILED,
                         category=ErrorCategory.VALIDATION,
-                        message="semantic plan failed validation",
-                        details={"issue_codes": ",".join(issue_codes)},
+                        message="semantic IR failed validation",
+                        details={"issue_codes": ",".join(ir_result.issue_codes())},
                     ),
                 ),
             )
-        compiler = runtime.ir_compiler
         try:
-            artifact = compiler(ir) if compiler is not None else runtime.plan_compiler(plan)
+            artifact = runtime.ir_compiler(ir)
             validation_context = ValidationContext(
-                snapshot_fingerprint=plan.lineage.catalog_fingerprint
+                snapshot_fingerprint=ir.provenance.catalog_fingerprint
             )
             parsed = runtime.adapter.parse(artifact, validation_context)
             validated = runtime.adapter.validate(parsed, validation_context)
@@ -577,11 +555,11 @@ class _ValidateNode(_NodeBase):
         self._channel["validated"] = validated
         self._channel["validation_context"] = validation_context
         self._channel["compiler_evidence"] = runtime._build_compiler_evidence(
-            ir, compiler if compiler is not None else runtime.plan_compiler, validated
+            ir, runtime.ir_compiler, validated
         )
         gate_evidence: dict[WorkflowGate, str] = self._channel["gate_evidence"]
         gate_evidence[WorkflowGate.PLAN_VALIDATION] = sha256_fingerprint(
-            {"plan": plan.fingerprint, "structure": "valid", "view": "valid"}
+            {"ir": ir.fingerprint, "structure": "valid", "view": "valid"}
         )
         gate_evidence[WorkflowGate.ARTIFACT_VALIDATION] = validated.fingerprint
         return StageResult(
@@ -598,7 +576,7 @@ class _GovernNode(_NodeBase):
 
     async def run(self, context: WorkflowExecutionContext) -> StageResult:
         runtime = self._runtime
-        plan = self._channel["plan"]
+        ir = self._channel["ir"]
         scope_fingerprint = context.tenant_scope_fingerprint
         isolation_profile = runtime.isolation_profile
         policy_scope = runtime.policy_scope
@@ -620,8 +598,9 @@ class _GovernNode(_NodeBase):
                 ),
             )
         decision = runtime.evaluator.evaluate(
-            runtime._facts_from_plan(
-                plan,
+            runtime._facts_from_ir(
+                ir,
+                binding=runtime.binding,
                 tenant_scope_fingerprint=scope_fingerprint,
                 isolation_profile=isolation_profile,
             ),
@@ -664,36 +643,36 @@ class _AuthorizeNode(_NodeBase):
 
     async def run(self, context: WorkflowExecutionContext) -> StageResult:
         runtime = self._runtime
-        plan = self._channel["plan"]
+        ir = self._channel["ir"]
         validated = self._channel["validated"]
         scope_fingerprint = context.tenant_scope_fingerprint
         isolation_profile = runtime.isolation_profile
         policy_scope = runtime.policy_scope
-        if runtime.approval_required is not None and runtime.approval_required(plan):
+        if runtime.approval_required is not None and runtime.approval_required(ir):
             raise ApprovalRequiredError(
-                "plan requires human approval before adapter execution",
+                "IR requires human approval before adapter execution",
                 details={"stage": self.stage.value},
             )
         capabilities = runtime.adapter.capabilities()
         authorization = runtime.issuer.issue(
             policy_scope=policy_scope,
             adapter_type=capabilities.adapter_type,
-            source_id=plan.source_id,
+            source_id=ir.source_id,
             operation="select",
             artifact_fingerprint=validated.fingerprint,
             tenant_scope_fingerprint=scope_fingerprint,
             isolation_profile=isolation_profile,
             effective_limits=runtime.effective_limits,
-            mandatory_filter_fingerprints=plan.filter_fingerprints(),
+            mandatory_filter_fingerprints=ir.filter_fingerprints(),
             ttl_seconds=runtime.ttl_seconds,
         )
         verification = runtime.verifier.verify(
             authorization,
             artifact_fingerprint=validated.fingerprint,
             adapter_type=capabilities.adapter_type,
-            source_id=plan.source_id,
+            source_id=ir.source_id,
             operation="select",
-            filter_fingerprints=plan.filter_fingerprints(),
+            filter_fingerprints=ir.filter_fingerprints(),
             tenant_scope_fingerprint=scope_fingerprint,
             isolation_profile=isolation_profile,
         )
@@ -800,12 +779,18 @@ class _ProtectNode(_NodeBase):
     stage = WorkflowStage.PROTECT
 
     async def run(self, context: WorkflowExecutionContext) -> StageResult:
+        runtime = self._runtime
         request = context.request
-        plan = self._channel["plan"]
+        ir = self._channel["ir"]
         execution = self._channel["execution"]
         authorization = self._channel["authorization"]
         try:
-            result = protect_result(execution, plan=plan, limits=authorization.effective_limits)
+            result = protect_result(
+                execution,
+                ir=ir,
+                binding=runtime.binding,
+                limits=authorization.effective_limits,
+            )
         except ResultProtectionError as error:
             return StageResult(
                 stage=self.stage,
@@ -840,13 +825,13 @@ class _PersistNode(_NodeBase):
         if memory is not None:
             with contextlib.suppress(Exception):
                 intent_outcome = self._channel["intent_outcome"]
-                plan = self._channel["plan"]
+                ir = self._channel["ir"]
                 result = self._channel.get("result")
                 record_query_reference(
                     provider=memory,
                     turn=self._channel["turn"],
                     intent_fingerprint=intent_outcome.intent.fingerprint,
-                    plan_fingerprint=plan.fingerprint,
+                    ir_fingerprint=ir.fingerprint,
                     artifact_fingerprint=(
                         result.fingerprint if result is not None else None
                     ),
@@ -898,10 +883,10 @@ class DeterministicWorkflowRuntime:
     Adapter, Result Protection, StateStore, and idempotency boundaries in
     one explicit ordered graph.  When the full AI path is not configured it
     reports not-configured exactly like every other runner; the P1
-    structured-plan fallback remains owned by :class:`QueryExecutionRunner`.
+    structured-IR fallback remains owned by :class:`QueryExecutionRunner`.
 
     ``now`` injects the clock for deterministic deadline/cancellation tests;
-    ``approval_required`` is a bounded extension point that rejects a plan
+    ``approval_required`` is a bounded extension point that rejects an IR
     before adapter execution when human approval is required.
     """
 
@@ -920,8 +905,7 @@ class DeterministicWorkflowRuntime:
         budget: WorkflowBudget | None = None,
         state_store: StateStore | None = None,
         idempotency_ttl_seconds: float = 86_400.0,
-        approval_required: Callable[[SemanticQueryPlan], bool] | None = None,
-        plan_compiler: Callable[[SemanticQueryPlan], str] | None = None,
+        approval_required: Callable[[SemanticQueryIR], bool] | None = None,
         ir_compiler: Callable[[SemanticQueryIR], str] | None = None,
         now: Callable[[], datetime] | None = None,
     ) -> None:
@@ -938,8 +922,9 @@ class DeterministicWorkflowRuntime:
         self._state_store = state_store
         self._idempotency_ttl_seconds = idempotency_ttl_seconds
         self._approval_required = approval_required
-        self._plan_compiler = plan_compiler or compile_plan
-        self._ir_compiler = ir_compiler
+        self._ir_compiler = ir_compiler or (
+            lambda ir: compile_ir(ir, binding=self._binding)
+        )
         self._now_fn = now or _utc_now
         self._closed = False
 
@@ -962,7 +947,7 @@ class DeterministicWorkflowRuntime:
 
     @property
     def binding(self) -> PhysicalBinding | None:
-        """The bound physical binding used for plan compilation, if any."""
+        """The bound physical binding used for IR compilation, if any."""
         return self._binding
 
     @property
@@ -986,27 +971,17 @@ class DeterministicWorkflowRuntime:
         return self._memory_ttl_seconds
 
     @property
-    def approval_required(self) -> Callable[[SemanticQueryPlan], bool] | None:
+    def approval_required(self) -> Callable[[SemanticQueryIR], bool] | None:
         """The bounded approval-required hook, if any."""
         return self._approval_required
 
     @property
-    def plan_compiler(self) -> Callable[[SemanticQueryPlan], str]:
-        """The plan compiler used for artifact parse/validate and execution.
+    def ir_compiler(self) -> Callable[[SemanticQueryIR], str]:
+        """The IR compiler used for artifact parse/validate and execution.
 
         Defaults to the SQL compiler; specialization adapters bind their own
         compiler (for example the structured MQL compiler) so the runtime
         graph stays framework-neutral.
-        """
-        return self._plan_compiler
-
-    @property
-    def ir_compiler(self) -> Callable[[SemanticQueryIR], str] | None:
-        """The canonical IR compiler, when bound.
-
-        When set, the graph compiles the validated canonical IR through the
-        compatibility boundary; otherwise the legacy plan compiler remains
-        the artifact source (P1/P2 fallback).
         """
         return self._ir_compiler
 
@@ -1968,21 +1943,20 @@ class DeterministicWorkflowRuntime:
         return self._now_fn()
 
     @staticmethod
-    def _facts_from_plan(
-        plan: SemanticQueryPlan,
+    def _facts_from_ir(
+        ir: SemanticQueryIR,
         *,
+        binding: PhysicalBinding | None = None,
         tenant_scope_fingerprint: str | None = None,
         isolation_profile: str | None = None,
     ) -> GovernanceFacts:
-        resource_ids = (
-            {plan.binding.object_id} if plan.binding is not None else {plan.root_entity_id}
-        )
+        resource_ids = {binding.object_id} if binding is not None else {ir.root_entity_id}
         return GovernanceFacts(
-            source_id=plan.source_id,
+            source_id=ir.source_id,
             operation="select",
             resource_ids=frozenset(resource_ids),
-            field_ids=plan.field_ids(),
-            filter_fingerprints=plan.filter_fingerprints(),
+            field_ids=ir.field_ids(),
+            filter_fingerprints=ir.filter_fingerprints(),
             tenant_scope_fingerprint=tenant_scope_fingerprint,
             isolation_profile=isolation_profile,
         )

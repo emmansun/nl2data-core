@@ -1,4 +1,4 @@
-"""Semantic Query Plan to structured MQL compilation.
+"""Semantic Query IR to structured MQL compilation.
 
 Compilation is deterministic and mirrors the SQL compiler's first cases:
 plain selects compile to ``find``; grouped/aggregated selects compile to a
@@ -11,10 +11,9 @@ from __future__ import annotations
 from typing import Any
 
 from nl2data.errors import ErrorCategory, ErrorCode, NL2DataError
-from nl2data_core.planning.ir.compat import ir_to_plan
-from nl2data_core.planning.ir.models import SemanticQueryIR
+from nl2data_core.planning.ir.models import IRSelection, SemanticQueryIR
 from nl2data_core.planning.ir.validation import validate_ir, verify_ir_fingerprint
-from nl2data_core.planning.models import PhysicalBinding, SemanticQueryPlan
+from nl2data_core.planning.models import PhysicalBinding
 
 from .models import MongoOperation, MongoQuerySpec, mongo_spec_json
 
@@ -22,7 +21,7 @@ from .models import MongoOperation, MongoQuerySpec, mongo_spec_json
 COMPILER_IDENTITY = "mongodb-compiler"
 COMPILER_VERSION = "1.0.0"
 
-#: Plan filter operators to MQL comparison operators.
+#: IR filter operators to MQL comparison operators.
 _OPERATORS = {
     "eq": "$eq",
     "ne": "$ne",
@@ -34,12 +33,12 @@ _OPERATORS = {
     "not_in": "$nin",
 }
 
-#: Plan aggregation kinds to MQL accumulator expressions.
+#: IR aggregation kinds to MQL accumulator expressions.
 _AGGREGATIONS = {"sum": "$sum", "avg": "$avg", "min": "$min", "max": "$max"}
 
 
 class MongoCompileError(NL2DataError):
-    """Raised when a plan cannot be compiled into a structured MQL spec."""
+    """Raised when an IR cannot be compiled into a structured MQL spec."""
 
     def __init__(self, message: str, *, details: dict[str, Any] | None = None) -> None:
         super().__init__(
@@ -58,9 +57,9 @@ def _physical(binding: PhysicalBinding, field_id: str) -> str:
     return name
 
 
-def _compile_filter(plan: SemanticQueryPlan, binding: PhysicalBinding) -> dict[str, Any]:
+def _compile_filter(ir: SemanticQueryIR, binding: PhysicalBinding) -> dict[str, Any]:
     filter_mql: dict[str, Any] = {}
-    for filter_ in plan.filters:
+    for filter_ in ir.filters:
         operator = _OPERATORS.get(filter_.operator)
         if operator is None:
             raise MongoCompileError(
@@ -80,11 +79,11 @@ def _alias(selection: Any, binding: PhysicalBinding) -> str:
 
 
 def _compile_pipeline(
-    plan: SemanticQueryPlan,
+    ir: SemanticQueryIR,
     binding: PhysicalBinding,
     filter_mql: dict[str, Any],
-    grouped: list[Any],
-    aggregated: list[Any],
+    grouped: list[IRSelection],
+    aggregated: list[IRSelection],
 ) -> tuple[dict[str, Any], ...]:
     pipeline: list[dict[str, Any]] = []
     if filter_mql:
@@ -109,9 +108,9 @@ def _compile_pipeline(
             }
     pipeline.append({"$group": group})
 
-    if plan.orderings:
+    if ir.orderings:
         sort: dict[str, int] = {}
-        for ordering in plan.orderings:
+        for ordering in ir.orderings:
             direction = 1 if ordering.direction == "asc" else -1
             if grouped and ordering.field_id == grouped[0].field_id:
                 sort["_id"] = direction
@@ -140,20 +139,21 @@ def _compile_pipeline(
         project[_alias(selection, binding)] = 1
     project["_id"] = 0
     pipeline.append({"$project": project})
-    pipeline.append({"$limit": plan.limit})
+    pipeline.append({"$limit": ir.limit})
     return tuple(pipeline)
 
 
-def compile_mongo_ir(ir: SemanticQueryIR, *, binding: PhysicalBinding) -> str:
-    """Compile a validated canonical IR into structured MQL via the boundary.
+def compile_mongo_ir(ir: SemanticQueryIR, *, binding: PhysicalBinding | None) -> str:
+    """Compile a validated canonical IR into structured MQL wire form.
 
     The IR fingerprint is verified first and compilation fails closed on a
-    tampered or stale fingerprint; the physical binding comes from the
-    compiler context, never from the IR payload.  The spec id is derived
-    from the logical IR fingerprint so the artifact is provably linked to
-    the canonical query while the legacy plan entry point keeps deriving
-    its spec id from the plan fingerprint.
+    tampered or stale fingerprint; the physical binding is explicit
+    compiler context and never part of the IR payload.  The spec id is
+    derived from the logical IR fingerprint so the artifact is provably
+    linked to the canonical query.
     """
+    if binding is None:
+        raise MongoCompileError("IR compilation requires a physical binding")
     if not verify_ir_fingerprint(ir):
         raise MongoCompileError(
             "IR fingerprint does not match its canonical payload",
@@ -166,47 +166,32 @@ def compile_mongo_ir(ir: SemanticQueryIR, *, binding: PhysicalBinding) -> str:
             details={"issue_codes": ",".join(validation.issue_codes())},
         )
     spec_id = f"mongo-{ir.fingerprint[-16:]}"
-    return _compile_mongo(ir_to_plan(ir, binding=binding), binding, spec_id)
-
-
-def compile_mongo_plan(plan: SemanticQueryPlan) -> str:
-    """Compile a validated plan into the strict JSON wire form of an MQL spec.
-
-    The plan must carry a physical binding and a bounded limit; the
-    compiled spec is bounded by the plan limit exactly like the SQL
-    compiler.  Grouped/aggregated selections produce an ``aggregate``
-    pipeline; everything else produces a ``find`` specification.
-    """
-    if plan.binding is None:
-        raise MongoCompileError("plan has no physical binding")
-    binding = plan.binding
-    spec_id = f"mongo-{plan.fingerprint[-16:]}"
-    return _compile_mongo(plan, binding, spec_id)
+    return _compile_mongo(ir, binding, spec_id)
 
 
 def _compile_mongo(
-    plan: SemanticQueryPlan,
+    ir: SemanticQueryIR,
     binding: PhysicalBinding,
     spec_id: str,
 ) -> str:
-    """Shared deterministic compilation core; ``spec_id`` is caller-chosen.
-
-    Keeps the legacy plan entry point byte-for-byte compatible while the
-    IR entry point links the spec to the canonical logical fingerprint.
-    """
-    if plan.limit is None:
+    """Deterministic compilation core; ``spec_id`` is caller-chosen."""
+    if ir.limit is None:
         raise MongoCompileError(
-            "plan has no bounded limit; refusing unbounded compilation"
+            "IR has no bounded limit; refusing unbounded compilation"
         )
 
     collection = binding.object_id
-    filter_mql = _compile_filter(plan, binding)
-    aggregated = [s for s in plan.selections if s.aggregation != "none"]
-    grouped = [s for s in plan.selections if s.aggregation == "none"]
+    filter_mql = _compile_filter(ir, binding)
+    aggregated = [s for s in ir.selections if s.aggregation != "none"]
+    if ir.groupings:
+        grouping_ids = frozenset(grouping.field_id for grouping in ir.groupings)
+        grouped = [s for s in ir.selections if s.field_id in grouping_ids]
+    else:
+        grouped = [s for s in ir.selections if s.aggregation == "none"]
 
     if not aggregated:
         projection: dict[str, Any] = {}
-        for selection in plan.selections:
+        for selection in ir.selections:
             physical = _physical(binding, selection.field_id)
             #: Aliased selections rename the output column ("AS alias" in
             #: SQL); the wire form carries a bounded "$field" rename marker.
@@ -223,16 +208,16 @@ def _compile_mongo(
                 _physical(binding, ordering.field_id): (
                     1 if ordering.direction == "asc" else -1
                 )
-                for ordering in plan.orderings
+                for ordering in ir.orderings
             },
-            limit=plan.limit,
+            limit=ir.limit,
         )
     else:
         spec = MongoQuerySpec(
             spec_id=spec_id,
             operation=MongoOperation.AGGREGATE,
             collection=collection,
-            limit=plan.limit,
-            pipeline=_compile_pipeline(plan, binding, filter_mql, grouped, aggregated),
+            limit=ir.limit,
+            pipeline=_compile_pipeline(ir, binding, filter_mql, grouped, aggregated),
         )
     return mongo_spec_json(spec)

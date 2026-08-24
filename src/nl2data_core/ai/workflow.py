@@ -24,7 +24,8 @@ from nl2data_core.ai.context import SemanticReference
 from nl2data_core.ai.protocol import ModelProvider
 from nl2data_core.memory.models import MemoryRecallBudget
 from nl2data_core.memory.protocol import MemoryProvider
-from nl2data_core.planning.models import PhysicalBinding, SemanticQueryPlan
+from nl2data_core.planning.ir.models import SemanticQueryIR
+from nl2data_core.planning.models import PhysicalBinding
 from nl2data_core.workflow.contract import WorkflowCancellation
 from nl2data_core.workflow.models import WorkflowBudget, WorkflowState
 from nl2data_core.workflow.runner import QueryExecutionRunner
@@ -37,7 +38,7 @@ class AIWorkflowRunner:
 
     Constructor and behavior stay source-compatible with the previous
     orchestration implementation: without a provider the runner delegates
-    to the P1 structured-plan path; with a provider it delegates the whole
+    to the P1 structured-IR path; with a provider it delegates the whole
     AI+Memory composition to the deterministic runtime.  Durable state,
     workflow budgets, approval hooks, and clock injection are forwarded to
     the runtime as well.
@@ -58,7 +59,7 @@ class AIWorkflowRunner:
         budget: WorkflowBudget | None = None,
         state_store: StateStore | None = None,
         idempotency_ttl_seconds: float = 86_400.0,
-        approval_required: Callable[[SemanticQueryPlan], bool] | None = None,
+        approval_required: Callable[[SemanticQueryIR], bool] | None = None,
         now: Callable[[], datetime] | None = None,
     ) -> None:
         self._execution = execution
@@ -102,7 +103,7 @@ class AIWorkflowRunner:
         """Resolve one request through the AI path or the P1 fallback.
 
         Cooperative cancellation is forwarded to the deterministic runtime;
-        the P1 structured-plan fallback path has no cancellation hook and
+        the P1 structured-IR fallback path has no cancellation hook and
         ignores the signal.
         """
         if self._runtime.provider is None:

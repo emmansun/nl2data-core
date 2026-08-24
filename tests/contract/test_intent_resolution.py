@@ -1,9 +1,9 @@
-"""Contract tests for intent resolution and the plan-builder handoff.
+"""Contract tests for intent resolution and the IR-builder handoff.
 
 Covers valid intent resolution, ambiguity and provider clarification,
 malformed output rejection, out-of-view semantic references, executable
 output rejection, output bounds, bounded retry behavior, sensitive
-context exclusion, and the P1 Semantic Query Plan handoff.
+context exclusion, and the P1 Semantic Query IR handoff.
 """
 
 from __future__ import annotations
@@ -19,14 +19,12 @@ from nl2data_core.ai.models import (
     RejectedIntent,
     ResolvedIntent,
 )
-from nl2data_core.ai.plan_builder import build_plan_from_intent
+from nl2data_core.ai.plan_builder import build_ir_from_intent
 from nl2data_core.ai.resolver import IntentResolver
-from nl2data_core.planning.models import (
-    ColumnBinding,
-    PhysicalBinding,
-    SemanticQueryPlan,
-)
-from nl2data_core.planning.validation import AuthorizedView, validate_plan_against_view
+from nl2data_core.planning.ir.models import SemanticQueryIR
+from nl2data_core.planning.ir.validation import validate_ir
+from nl2data_core.planning.models import ColumnBinding, PhysicalBinding
+from nl2data_core.planning.validation import AuthorizedView
 
 VIEW = AuthorizedView(
     source_id="sales",
@@ -402,28 +400,28 @@ class TestSensitiveContextExclusion:
         assert invocation.metadata["context_fingerprint"].startswith("sha256:")
 
 
-class TestPlanBuilderHandoff:
-    async def test_resolved_intent_builds_valid_plan(self) -> None:
+class TestIRBuilderHandoff:
+    async def test_resolved_intent_builds_valid_ir(self) -> None:
         outcome = await resolve_with(FakeModelProvider(default_response=VALID_INTENT))
         assert isinstance(outcome, ResolvedIntent)
-        plan = build_plan_from_intent(
+        ir = build_ir_from_intent(
             outcome.intent,
             catalog_fingerprint=VIEW.catalog_fingerprint,
         )
-        assert isinstance(plan, SemanticQueryPlan)
-        assert plan.plan_id == "plan-req-1"
-        assert plan.source_id == "sales"
-        assert plan.root_entity_id == "order"
-        assert plan.selections[0].field_id == "amount"
-        assert plan.selections[0].aggregation == "sum"
-        assert plan.filters[0].operator == "eq"
-        assert plan.orderings[0].direction == "desc"
-        assert plan.limit == 100
-        assert plan.lineage.catalog_fingerprint == VIEW.catalog_fingerprint
-        validation = validate_plan_against_view(plan, view=VIEW)
+        assert isinstance(ir, SemanticQueryIR)
+        assert ir.ir_id == "ir-req-1"
+        assert ir.source_id == "sales"
+        assert ir.root_entity_id == "order"
+        assert ir.selections[0].field_id == "amount"
+        assert ir.selections[0].aggregation == "sum"
+        assert ir.filters[0].operator == "eq"
+        assert ir.orderings[0].direction == "desc"
+        assert ir.limit == 100
+        assert ir.provenance.catalog_fingerprint == VIEW.catalog_fingerprint
+        validation = validate_ir(ir, view=VIEW)
         assert validation.valid is True
 
-    async def test_plan_with_binding_is_still_valid(self) -> None:
+    async def test_binding_never_enters_the_ir(self) -> None:
         outcome = await resolve_with(FakeModelProvider(default_response=VALID_INTENT))
         assert isinstance(outcome, ResolvedIntent)
         binding = PhysicalBinding(
@@ -434,13 +432,15 @@ class TestPlanBuilderHandoff:
                 ColumnBinding(field_id="status", physical_name="status"),
             ],
         )
-        plan = build_plan_from_intent(outcome.intent, binding=binding)
-        assert plan.binding == binding
-        assert plan.fingerprint.startswith("sha256:")
+        ir = build_ir_from_intent(outcome.intent)
+        #: The binding is explicit compiler context and never enters the IR.
+        assert binding is not None
+        assert "binding" not in SemanticQueryIR.model_fields
+        assert ir.fingerprint.startswith("sha256:")
 
-    async def test_plan_fingerprint_is_deterministic(self) -> None:
+    async def test_ir_fingerprint_is_deterministic(self) -> None:
         outcome = await resolve_with(FakeModelProvider(default_response=VALID_INTENT))
         assert isinstance(outcome, ResolvedIntent)
-        first = build_plan_from_intent(outcome.intent)
-        second = build_plan_from_intent(outcome.intent)
+        first = build_ir_from_intent(outcome.intent)
+        second = build_ir_from_intent(outcome.intent)
         assert first.fingerprint == second.fingerprint

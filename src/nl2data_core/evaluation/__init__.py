@@ -1,6 +1,6 @@
 """Deterministic evaluation runner models for the P1 skeleton.
 
-Cases bind validated semantic plans to controlled fixtures; evidence and
+Cases bind validated semantic IRs to controlled fixtures; evidence and
 reports carry only protected fingerprints and scalar values, so native
 clients, credentials, and raw prompts never cross the evaluation boundary.
 """

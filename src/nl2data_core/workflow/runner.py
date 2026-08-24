@@ -1,7 +1,7 @@
 """The P1 workflow execution runner behind the workflow execution port.
 
-Routes one query through the deterministic governed path: semantic plan,
-plan validation, governance decision, artifact-bound authorization,
+Routes one query through the deterministic governed path: semantic IR,
+IR validation, governance decision, artifact-bound authorization,
 adapter execution, and protected public outcome construction.  When the
 required P1 components are absent the runner reports not-configured -
 exactly like the P0 fallback - so the engine never fabricates results.
@@ -31,7 +31,7 @@ from nl2data.models import (
 )
 from nl2data_core.adapters.models import AdapterLimits, ValidationContext
 from nl2data_core.adapters.protocol import QueryAdapter
-from nl2data_core.adapters.sql.compile import compile_plan
+from nl2data_core.adapters.sql.compile import compile_ir
 from nl2data_core.engine.ports import NOT_CONFIGURED_MESSAGE
 from nl2data_core.governance.authorization import AuthorizationIssuer, AuthorizationVerifier
 from nl2data_core.governance.decisions import PolicyEvaluator
@@ -41,16 +41,10 @@ from nl2data_core.governance.models import (
     GovernanceFacts,
     PolicyScope,
 )
-from nl2data_core.planning.ir.compat import plan_to_ir
+from nl2data_core.planning.ir.models import SemanticQueryIR
 from nl2data_core.planning.ir.validation import validate_ir
-from nl2data_core.planning.models import (
-    SemanticQueryPlan,
-    validate_plan_structure,
-)
-from nl2data_core.planning.validation import (
-    AuthorizedView,
-    validate_plan_against_view,
-)
+from nl2data_core.planning.models import PhysicalBinding
+from nl2data_core.planning.validation import AuthorizedView
 from nl2data_core.tenancy.models import TenantScopeContext
 from nl2data_core.tenancy.validation import validate_tenant_scope
 from nl2data_core.workflow.durable import (
@@ -75,25 +69,21 @@ def _utc_now() -> datetime:
 
 
 class PlanResolver(Protocol):
-    """Maps a public request to a backend-neutral semantic plan."""
+    """Maps a public request to a backend-neutral semantic IR."""
 
-    def resolve(self, request: QueryRequest) -> SemanticQueryPlan | None:
-        """Return the plan for ``request`` or ``None`` when unresolvable."""
+    def resolve(self, request: QueryRequest) -> SemanticQueryIR | None:
+        """Return the IR for ``request`` or ``None`` when unresolvable."""
         ...
 
 
 class StaticPlanResolver:
-    """Resolves every request to one fixed plan (deterministic conformance).
+    """Resolves every request to one fixed IR (deterministic conformance)."""
 
-    The fixed plan is normalized to the canonical IR by the governed
-    boundary at execution, exactly like every other legacy plan source.
-    """
+    def __init__(self, ir: SemanticQueryIR | None) -> None:
+        self._ir = ir
 
-    def __init__(self, plan: SemanticQueryPlan | None) -> None:
-        self._plan = plan
-
-    def resolve(self, request: QueryRequest) -> SemanticQueryPlan | None:
-        return self._plan
+    def resolve(self, request: QueryRequest) -> SemanticQueryIR | None:
+        return self._ir
 
 
 @dataclass(frozen=True)
@@ -162,7 +152,8 @@ class QueryExecutionRunner:
         tenant_context: TenantScopeContext | None = None,
         state_store: StateStore | None = None,
         idempotency_ttl_seconds: float = 86_400.0,
-        plan_compiler: Callable[[SemanticQueryPlan], str] | None = None,
+        binding: PhysicalBinding | None = None,
+        ir_compiler: Callable[[SemanticQueryIR], str] | None = None,
     ) -> None:
         self._adapter = adapter
         self._policy_scope = policy_scope
@@ -176,7 +167,10 @@ class QueryExecutionRunner:
         self._tenant_context = tenant_context
         self._state_store = state_store
         self._idempotency_ttl_seconds = idempotency_ttl_seconds
-        self._plan_compiler = plan_compiler or compile_plan
+        self._binding = binding
+        self._ir_compiler = ir_compiler or (
+            lambda ir: compile_ir(ir, binding=self._binding)
+        )
 
     def is_configured(self) -> bool:
         """Whether the full P1 path is available; otherwise the fallback applies."""
@@ -266,18 +260,18 @@ class QueryExecutionRunner:
         if tenant_denial is not None:
             return tenant_denial
 
-        plan = plan_resolver.resolve(request)
-        if plan is None:
+        ir = plan_resolver.resolve(request)
+        if ir is None:
             return self._rejected(
                 request,
                 ErrorRecord(
                     code=ErrorCode.PLAN_VALIDATION_FAILED,
                     category=ErrorCategory.VALIDATION,
-                    message="no semantic plan could be resolved for the request",
+                    message="no semantic IR could be resolved for the request",
                 ),
             )
 
-        return await self.execute_plan(request, plan)
+        return await self.execute_ir(request, ir)
 
     def _tenant_denial(self, request: QueryRequest) -> QueryOutcome | None:
         """Reject requests whose tenant scope cannot be established safely.
@@ -305,13 +299,13 @@ class QueryExecutionRunner:
             ),
         )
 
-    async def execute_plan(self, request: QueryRequest, plan: SemanticQueryPlan) -> QueryOutcome:
-        """Execute an already-built semantic plan through the governed boundary.
+    async def execute_ir(self, request: QueryRequest, ir: SemanticQueryIR) -> QueryOutcome:
+        """Execute an already-built semantic IR through the governed boundary.
 
-        This is the shared execution boundary for the P1 structured-plan
-        path and the AI intent handoff: structural and view validation,
-        tenant-scope validation, governance decision, artifact-bound
-        authorization, adapter execution, and protected result construction.
+        This is the shared execution boundary for the P1 structured-IR
+        path and the AI intent handoff: IR validation, tenant-scope
+        validation, governance decision, artifact-bound authorization,
+        adapter execution, and protected result construction.
         When a durable ``state_store`` is bound, execution additionally
         persists transition snapshots, enforces idempotency, and replays
         terminal outcome references instead of re-executing completed work.
@@ -331,9 +325,9 @@ class QueryExecutionRunner:
                 ),
             )
         if self._state_store is None:
-            return await self._execute_governed(request, plan)
+            return await self._execute_governed(request, ir)
         try:
-            return await self._execute_durable(request, plan)
+            return await self._execute_durable(request, ir)
         except NL2DataError as error:
             return _outcome(
                 request, status=OutcomeStatus.FAILED, error=as_error_record(error)
@@ -342,14 +336,14 @@ class QueryExecutionRunner:
     async def _execute_governed(
         self,
         request: QueryRequest,
-        plan: SemanticQueryPlan,
+        ir: SemanticQueryIR,
         *,
         workflow_id: str | None = None,
     ) -> QueryOutcome:
         """Run validation, governance, authorization, adapter, and protection.
 
         This is the shared governed execution boundary for the P1
-        structured-plan path, the AI intent handoff, and the durable
+        structured-IR path, the AI intent handoff, and the durable
         composition; ``workflow_id`` is the durable workflow when set.
         """
         scope_fingerprint = (
@@ -391,41 +385,22 @@ class QueryExecutionRunner:
                 ),
             )
 
-        structure = validate_plan_structure(plan)
-        view_result = validate_plan_against_view(plan, view=view)
-        try:
-            ir_result = validate_ir(plan_to_ir(plan), view=view)
-        except Exception as error:
+        ir_result = validate_ir(ir, view=view)
+        if not ir_result.valid:
             return self._rejected(
                 request,
                 ErrorRecord(
                     code=ErrorCode.PLAN_VALIDATION_FAILED,
                     category=ErrorCategory.VALIDATION,
-                    message="semantic plan failed canonical IR normalization",
-                    details={"cause_type": type(error).__name__},
-                ),
-            )
-        if not structure.valid or not view_result.valid or not ir_result.valid:
-            issue_codes = sorted(
-                set(
-                    structure.issue_codes()
-                    + view_result.issue_codes()
-                    + ir_result.issue_codes()
-                )
-            )
-            return self._rejected(
-                request,
-                ErrorRecord(
-                    code=ErrorCode.PLAN_VALIDATION_FAILED,
-                    category=ErrorCategory.VALIDATION,
-                    message="semantic plan failed validation",
-                    details={"issue_codes": ",".join(issue_codes)},
+                    message="semantic IR failed validation",
+                    details={"issue_codes": ",".join(ir_result.issue_codes())},
                 ),
             )
 
         decision = self._evaluator.evaluate(
-            self._facts_from_plan(
-                plan,
+            self._facts_from_ir(
+                ir,
+                binding=self._binding,
                 tenant_scope_fingerprint=scope_fingerprint,
                 isolation_profile=isolation_profile,
             ),
@@ -443,8 +418,10 @@ class QueryExecutionRunner:
             )
 
         try:
-            sql = self._plan_compiler(plan)
-            context = ValidationContext(snapshot_fingerprint=plan.lineage.catalog_fingerprint)
+            sql = self._ir_compiler(ir)
+            context = ValidationContext(
+                snapshot_fingerprint=ir.provenance.catalog_fingerprint
+            )
             parsed = adapter.parse(sql, context)
             validated = adapter.validate(parsed, context)
         except Exception as error:
@@ -454,22 +431,22 @@ class QueryExecutionRunner:
         authorization = self._issuer.issue(
             policy_scope=policy_scope,
             adapter_type=capabilities.adapter_type,
-            source_id=plan.source_id,
+            source_id=ir.source_id,
             operation="select",
             artifact_fingerprint=validated.fingerprint,
             tenant_scope_fingerprint=scope_fingerprint,
             isolation_profile=isolation_profile,
             effective_limits=self._effective_limits,
-            mandatory_filter_fingerprints=plan.filter_fingerprints(),
+            mandatory_filter_fingerprints=ir.filter_fingerprints(),
             ttl_seconds=self._ttl_seconds,
         )
         verification = self._verifier.verify(
             authorization,
             artifact_fingerprint=validated.fingerprint,
             adapter_type=capabilities.adapter_type,
-            source_id=plan.source_id,
+            source_id=ir.source_id,
             operation="select",
-            filter_fingerprints=plan.filter_fingerprints(),
+            filter_fingerprints=ir.filter_fingerprints(),
             tenant_scope_fingerprint=scope_fingerprint,
             isolation_profile=isolation_profile,
         )
@@ -505,7 +482,9 @@ class QueryExecutionRunner:
             )
 
         try:
-            result = protect_result(execution, plan=plan, limits=authorization.effective_limits)
+            result = protect_result(
+                execution, ir=ir, binding=self._binding, limits=authorization.effective_limits
+            )
         except ResultProtectionError as error:
             return _outcome(
                 request,
@@ -522,7 +501,7 @@ class QueryExecutionRunner:
         )
 
     async def _execute_durable(
-        self, request: QueryRequest, plan: SemanticQueryPlan
+        self, request: QueryRequest, ir: SemanticQueryIR
     ) -> QueryOutcome:
         """Durable composition: persist transitions and enforce idempotency.
 
@@ -608,7 +587,7 @@ class QueryExecutionRunner:
         state = self._advance_to_running(
             store, workflow_id, request, state, scope_fingerprint=scope_fingerprint
         )
-        outcome = await self._execute_governed(request, plan, workflow_id=workflow_id)
+        outcome = await self._execute_governed(request, ir, workflow_id=workflow_id)
         if outcome.workflow_id is None:
             outcome = outcome.model_copy(
                 update={
@@ -771,21 +750,20 @@ class QueryExecutionRunner:
             await self._adapter.close()
 
     @staticmethod
-    def _facts_from_plan(
-        plan: SemanticQueryPlan,
+    def _facts_from_ir(
+        ir: SemanticQueryIR,
         *,
+        binding: PhysicalBinding | None = None,
         tenant_scope_fingerprint: str | None = None,
         isolation_profile: str | None = None,
     ) -> GovernanceFacts:
-        resource_ids = (
-            {plan.binding.object_id} if plan.binding is not None else {plan.root_entity_id}
-        )
+        resource_ids = {binding.object_id} if binding is not None else {ir.root_entity_id}
         return GovernanceFacts(
-            source_id=plan.source_id,
+            source_id=ir.source_id,
             operation="select",
             resource_ids=frozenset(resource_ids),
-            field_ids=plan.field_ids(),
-            filter_fingerprints=plan.filter_fingerprints(),
+            field_ids=ir.field_ids(),
+            filter_fingerprints=ir.filter_fingerprints(),
             tenant_scope_fingerprint=tenant_scope_fingerprint,
             isolation_profile=isolation_profile,
         )

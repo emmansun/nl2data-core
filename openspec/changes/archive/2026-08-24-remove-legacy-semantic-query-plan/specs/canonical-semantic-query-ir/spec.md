@@ -1,4 +1,15 @@
-## Requirements
+## MODIFIED Requirements
+
+### Requirement: Legacy plans have no active compatibility contract
+The planning layer SHALL use `SemanticQueryIR` as the sole logical query representation. The active system SHALL NOT define or require a `SemanticQueryPlan` model, `plan_to_ir` translator, or `ir_to_plan` translator. New workflow, compiler, AI, and evaluation integrations SHALL consume validated IR directly.
+
+#### Scenario: IR is the only planning input
+- **WHEN** a planner, workflow, compiler, or evaluation component accepts a logical query
+- **THEN** its contract uses `SemanticQueryIR` and does not construct or translate a legacy plan
+
+#### Scenario: Legacy model is unavailable
+- **WHEN** code attempts to import or instantiate `SemanticQueryPlan` from the active planning package
+- **THEN** the legacy symbol is absent and no compatibility path is invoked
 
 ### Requirement: Canonical Semantic Query IR remains versioned and backend-neutral
 The planning layer SHALL define an immutable, versioned `SemanticQueryIR` representing logical selections, filters, grouping, ordering, bounded limits, time context, result shape, view/source references, provenance, and capability requirements without embedding SQL, MQL, credentials, executable code, native objects, or presentation configuration.
@@ -32,17 +43,6 @@ The IR validator SHALL enforce identifier, scalar, collection, operator, aggrega
 #### Scenario: Unsupported extension is rejected
 - **WHEN** an IR contains an extension node without a matching declared capability
 - **THEN** validation fails closed with an unsupported-feature issue
-
-### Requirement: Legacy plans have no active compatibility contract
-The planning layer SHALL use `SemanticQueryIR` as the sole logical query representation. The active system SHALL NOT define or require a `SemanticQueryPlan` model, `plan_to_ir` translator, or `ir_to_plan` translator. New workflow, compiler, AI, and evaluation integrations SHALL consume validated IR directly.
-
-#### Scenario: IR is the only planning input
-- **WHEN** a planner, workflow, compiler, or evaluation component accepts a logical query
-- **THEN** its contract uses `SemanticQueryIR` and does not construct or translate a legacy plan
-
-#### Scenario: Legacy model is unavailable
-- **WHEN** code attempts to import or instantiate `SemanticQueryPlan` from the active planning package
-- **THEN** the legacy symbol is absent and no compatibility path is invoked
 
 ### Requirement: Compiler evidence binds artifacts to IR
 Every deterministic compiler invocation SHALL receive a validated IR plus compilation context and SHALL emit artifact evidence linked to the IR version and fingerprint. Physical bindings SHALL remain in compiler/model context and SHALL not become part of the canonical logical IR.

@@ -1,4 +1,4 @@
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Immutable backend-neutral semantic query representation
 The system SHALL represent an executable analytical request as an immutable, versioned `SemanticQueryIR` containing source identity, root entity, semantic selections, bounded filters, grouping, ordering, limit, time context, result shape, provenance, and capability requirements without embedding SQL syntax, MQL syntax, credentials, or driver-native values.

@@ -1,4 +1,4 @@
-"""Semantic Query Plan to SQL compilation.
+"""Semantic Query IR to SQL compilation.
 
 Compilation is deterministic and covers the first supported select,
 filter, grouping, ordering, and limit cases.  Identifiers come only from
@@ -13,10 +13,9 @@ from typing import Any
 from sqlglot import exp
 
 from nl2data.errors import ErrorCategory, ErrorCode, NL2DataError
-from nl2data_core.planning.ir.compat import ir_to_plan
-from nl2data_core.planning.ir.models import SemanticQueryIR
+from nl2data_core.planning.ir.models import IRFilter, SemanticQueryIR
 from nl2data_core.planning.ir.validation import validate_ir, verify_ir_fingerprint
-from nl2data_core.planning.models import PhysicalBinding, SemanticFilter, SemanticQueryPlan
+from nl2data_core.planning.models import PhysicalBinding
 
 #: Stable compiler identity/version for artifact evidence (DDS-019).
 COMPILER_IDENTITY = "sql-compiler"
@@ -38,7 +37,7 @@ _RESERVED = frozenset(
 
 
 class SQLCompileError(NL2DataError):
-    """Raised when a plan cannot be compiled to SQL."""
+    """Raised when an IR cannot be compiled to SQL."""
 
     def __init__(self, message: str, *, details: dict[str, Any] | None = None) -> None:
         super().__init__(
@@ -58,7 +57,7 @@ def quote_identifier(name: str) -> str:
 
 
 def render_literal(value: Any, *, dialect: str = "sqlite") -> str:
-    """Render a scalar plan value as a safe SQL literal."""
+    """Render a scalar IR value as a safe SQL literal."""
     if value is None:
         return "NULL"
     if isinstance(value, bool):
@@ -72,12 +71,12 @@ def render_literal(value: Any, *, dialect: str = "sqlite") -> str:
     if isinstance(value, str):
         return exp.Literal.string(value).sql(dialect=dialect)
     raise SQLCompileError(
-        "plan contains a value that cannot be rendered as a SQL literal",
+        "IR contains a value that cannot be rendered as a SQL literal",
         details={"value_type": type(value).__name__},
     )
 
 
-def _render_filter(filter_: SemanticFilter, physical_name: str, dialect: str) -> str:
+def _render_filter(filter_: IRFilter, physical_name: str, dialect: str) -> str:
     column = quote_identifier(physical_name)
     operator = _OPERATORS.get(filter_.operator)
     if filter_.operator in {"in", "not_in"}:
@@ -107,15 +106,16 @@ def _render_filter(filter_: SemanticFilter, physical_name: str, dialect: str) ->
     return f"{column} {operator} {render_literal(filter_.value, dialect=dialect)}"
 
 
-def compile_ir(ir: SemanticQueryIR, *, binding: PhysicalBinding) -> str:
-    """Compile a validated canonical IR into SQL via the compatibility boundary.
+def compile_ir(ir: SemanticQueryIR, *, binding: PhysicalBinding | None) -> str:
+    """Compile a validated canonical IR into a single read-only SQL statement.
 
     The IR fingerprint is verified first and compilation fails closed on a
-    tampered or stale fingerprint; the physical binding comes from the
-    compiler context, never from the IR payload.  The produced SQL is
-    identical to compiling the equivalent legacy plan, so current SQL
-    safety and execution behavior are preserved.
+    tampered or stale fingerprint; the physical binding is explicit
+    compiler context and never part of the IR payload.  The produced SQL
+    is bounded by the IR limit.
     """
+    if binding is None:
+        raise SQLCompileError("IR compilation requires a physical binding")
     if not verify_ir_fingerprint(ir):
         raise SQLCompileError(
             "IR fingerprint does not match its canonical payload",
@@ -127,32 +127,34 @@ def compile_ir(ir: SemanticQueryIR, *, binding: PhysicalBinding) -> str:
             "IR failed structural validation",
             details={"issue_codes": ",".join(validation.issue_codes())},
         )
-    return compile_plan(ir_to_plan(ir, binding=binding))
+    return _compile(ir, binding)
 
 
-def compile_plan(plan: SemanticQueryPlan) -> str:
-    """Compile a validated plan into a single read-only SQL statement.
-
-    The plan must carry a physical binding; the compiled statement is
-    bounded by the plan's limit.
-    """
-    if plan.binding is None:
-        raise SQLCompileError("plan has no physical binding")
-    binding = plan.binding
+def _compile(ir: SemanticQueryIR, binding: PhysicalBinding) -> str:
+    """Compile a validated IR into SQL; the binding is guaranteed present."""
     dialect = binding.dialect
-    if plan.limit is None:
-        raise SQLCompileError("plan has no bounded limit; refusing unbounded compilation")
+    if ir.limit is None:
+        raise SQLCompileError("IR has no bounded limit; refusing unbounded compilation")
 
     selections: list[str] = []
     group_by: list[str] = []
-    for selection in plan.selections:
+    grouped_field_ids = (
+        [grouping.field_id for grouping in ir.groupings]
+        if ir.groupings
+        else [
+            selection.field_id
+            for selection in ir.selections
+            if selection.aggregation == "none"
+        ]
+    )
+    for selection in ir.selections:
         physical = binding.physical_name(selection.field_id)
         if physical is None:
             raise SQLCompileError(
                 f"selection field '{selection.field_id}' is not physically bound",
                 details={"selection_id": selection.selection_id},
             )
-        if selection.aggregation and selection.aggregation != "none":
+        if selection.aggregation != "none":
             selections.append(
                 f"{selection.aggregation.upper()}({quote_identifier(physical)})"
                 f" AS {quote_identifier(selection.alias or f'{selection.aggregation}_{physical}')}"
@@ -161,10 +163,16 @@ def compile_plan(plan: SemanticQueryPlan) -> str:
             selections.append(
                 f"{quote_identifier(physical)} AS {quote_identifier(selection.alias or physical)}"
             )
-            group_by.append(quote_identifier(physical))
+    for field_id in grouped_field_ids:
+        physical = binding.physical_name(field_id)
+        if physical is None:
+            raise SQLCompileError(
+                f"grouping field '{field_id}' is not physically bound",
+            )
+        group_by.append(quote_identifier(physical))
 
     filter_sql: list[str] = []
-    for filter_ in plan.filters:
+    for filter_ in ir.filters:
         physical = binding.physical_name(filter_.field_id)
         if physical is None:
             raise SQLCompileError(
@@ -175,7 +183,7 @@ def compile_plan(plan: SemanticQueryPlan) -> str:
     filters = " AND ".join(filter_sql)
 
     ordering_sql: list[str] = []
-    for ordering in plan.orderings:
+    for ordering in ir.orderings:
         physical = binding.physical_name(ordering.field_id)
         if physical is None:
             raise SQLCompileError(
@@ -192,5 +200,5 @@ def compile_plan(plan: SemanticQueryPlan) -> str:
         sql += f" GROUP BY {', '.join(group_by)}"
     if orderings:
         sql += f" ORDER BY {orderings}"
-    sql += f" LIMIT {plan.limit}"
+    sql += f" LIMIT {ir.limit}"
     return sql

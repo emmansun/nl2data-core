@@ -17,7 +17,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from nl2data.errors import ErrorRecord
 from nl2data_core.canonical import sha256_fingerprint
 from nl2data_core.fixtures.models import FIXED_TIMEZONE, TIME_ANCHOR
-from nl2data_core.planning.models import SemanticQueryPlan
+from nl2data_core.planning.ir.models import SemanticQueryIR
+from nl2data_core.planning.models import PhysicalBinding
 
 _IDENTIFIER_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_\-\.]{0,127}$"
 _FINGERPRINT_PATTERN = r"^sha256:[0-9a-f]{64}$"
@@ -45,13 +46,14 @@ class MandatoryAssertion(BaseModel):
 
 
 class EvaluationCase(BaseModel):
-    """One deterministic evaluation case: a plan plus mandatory assertions."""
+    """One deterministic evaluation case: an IR plus mandatory assertions."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     case_id: str = Field(pattern=_IDENTIFIER_PATTERN)
     name: str = Field(min_length=1, max_length=256)
-    plan: SemanticQueryPlan
+    ir: SemanticQueryIR
+    binding: PhysicalBinding | None = None
     mandatory_assertions: tuple[MandatoryAssertion, ...] = Field(
         default_factory=tuple, max_length=100
     )
@@ -75,7 +77,7 @@ class EvaluationDataset(BaseModel):
                 "dataset_id": self.dataset_id,
                 "name": self.name,
                 "cases": [
-                    {"case_id": case.case_id, "plan_fingerprint": case.plan.fingerprint}
+                    {"case_id": case.case_id, "ir_fingerprint": case.ir.fingerprint}
                     for case in self.cases
                 ],
             }
@@ -117,7 +119,7 @@ class CaseEvidence(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    plan_fingerprint: str = Field(pattern=_FINGERPRINT_PATTERN)
+    ir_fingerprint: str = Field(pattern=_FINGERPRINT_PATTERN)
     result_fingerprint: str | None = Field(default=None, pattern=_FINGERPRINT_PATTERN)
     columns: tuple[str, ...] = Field(default_factory=tuple, max_length=1_000)
     rows: tuple[tuple[Any, ...], ...] = Field(default_factory=tuple, max_length=1_000_000)
@@ -128,7 +130,7 @@ class CaseEvidence(BaseModel):
     def _compute_fingerprint(self) -> CaseEvidence:
         fingerprint = sha256_fingerprint(
             {
-                "plan_fingerprint": self.plan_fingerprint,
+                "ir_fingerprint": self.ir_fingerprint,
                 "result_fingerprint": self.result_fingerprint,
                 "columns": self.columns,
                 "rows": self.rows,
