@@ -13,7 +13,14 @@ from typing import Any
 from sqlglot import exp
 
 from nl2data.errors import ErrorCategory, ErrorCode, NL2DataError
-from nl2data_core.planning.models import SemanticFilter, SemanticQueryPlan
+from nl2data_core.planning.ir.compat import ir_to_plan
+from nl2data_core.planning.ir.models import SemanticQueryIR
+from nl2data_core.planning.ir.validation import validate_ir, verify_ir_fingerprint
+from nl2data_core.planning.models import PhysicalBinding, SemanticFilter, SemanticQueryPlan
+
+#: Stable compiler identity/version for artifact evidence (DDS-019).
+COMPILER_IDENTITY = "sql-compiler"
+COMPILER_VERSION = "1.0.0"
 
 _OPERATORS = {
     "eq": "=",
@@ -98,6 +105,29 @@ def _render_filter(filter_: SemanticFilter, physical_name: str, dialect: str) ->
             details={"filter_id": filter_.filter_id},
         )
     return f"{column} {operator} {render_literal(filter_.value, dialect=dialect)}"
+
+
+def compile_ir(ir: SemanticQueryIR, *, binding: PhysicalBinding) -> str:
+    """Compile a validated canonical IR into SQL via the compatibility boundary.
+
+    The IR fingerprint is verified first and compilation fails closed on a
+    tampered or stale fingerprint; the physical binding comes from the
+    compiler context, never from the IR payload.  The produced SQL is
+    identical to compiling the equivalent legacy plan, so current SQL
+    safety and execution behavior are preserved.
+    """
+    if not verify_ir_fingerprint(ir):
+        raise SQLCompileError(
+            "IR fingerprint does not match its canonical payload",
+            details={"ir_id": ir.ir_id},
+        )
+    validation = validate_ir(ir)
+    if not validation.valid:
+        raise SQLCompileError(
+            "IR failed structural validation",
+            details={"issue_codes": ",".join(validation.issue_codes())},
+        )
+    return compile_plan(ir_to_plan(ir, binding=binding))
 
 
 def compile_plan(plan: SemanticQueryPlan) -> str:

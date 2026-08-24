@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import inspect
+import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -40,7 +41,12 @@ from nl2data.models import (
     QueryOutcome,
     QueryRequest,
 )
-from nl2data_core.adapters.models import AdapterLimits, ValidationContext
+from nl2data_core.adapters.models import (
+    AdapterLimits,
+    CompilerArtifactEvidence,
+    ValidatedArtifact,
+    ValidationContext,
+)
 from nl2data_core.adapters.protocol import QueryAdapter
 from nl2data_core.adapters.sql.compile import compile_plan
 from nl2data_core.ai.config import ModelConfig
@@ -71,6 +77,9 @@ from nl2data_core.memory.resolver import (
     MultiTurnResolver,
     record_query_reference,
 )
+from nl2data_core.planning.ir.compat import plan_to_ir
+from nl2data_core.planning.ir.models import SemanticQueryIR
+from nl2data_core.planning.ir.validation import validate_ir
 from nl2data_core.planning.models import (
     PhysicalBinding,
     SemanticQueryPlan,
@@ -142,6 +151,13 @@ _RESUME_REJECTED_ERRORS = (
     RuntimeRetryExhaustedError,
     StaleCheckpointError,
 )
+
+#: Compatibility keys accumulated by the runtime after a checkpoint was
+#: written; they never participate in the base configuration identity.
+_RUNTIME_ACCUMULATED_COMPAT_KEYS = frozenset({"ir"})
+
+#: Safe compiler identity shape (module-declared constant).
+_COMPILER_IDENTITY_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_\-\.]{0,127}$")
 
 
 def _utc_now() -> datetime:
@@ -279,6 +295,7 @@ class _DurableBinding:
         stage: WorkflowStage,
         compatibility_fingerprints: dict[str, str],
         gate_evidence_fingerprints: frozenset[str],
+        metadata: dict[str, str] | None = None,
     ) -> None:
         """Persist a stage checkpoint without changing the workflow status."""
         next_state = checkpoint(
@@ -287,6 +304,7 @@ class _DurableBinding:
             event_id=f"ev-{uuid4().hex[:16]}",
             compatibility_fingerprints=compatibility_fingerprints,
             gate_evidence_fingerprints=gate_evidence_fingerprints,
+            metadata=metadata,
         )
         self._persist(next_state)
 
@@ -492,7 +510,12 @@ class _PlanNode(_NodeBase):
                     context.request, status=OutcomeStatus.FAILED, error=as_error_record(error)
                 ),
             )
+        ir = plan_to_ir(plan)
         self._channel["plan"] = plan
+        self._channel["ir"] = ir
+        self._channel["compat"]["ir"] = sha256_fingerprint(
+            {"ir_version": ir.ir_version, "ir_fingerprint": ir.fingerprint}
+        )
         return StageResult(
             stage=self.stage,
             status=RuntimeOutcomeStatus.SUCCEEDED,
@@ -512,10 +535,18 @@ class _ValidateNode(_NodeBase):
     async def run(self, context: WorkflowExecutionContext) -> StageResult:
         runtime = self._runtime
         plan = self._channel["plan"]
+        ir = self._channel["ir"]
         structure = validate_plan_structure(plan)
         view_result = validate_plan_against_view(plan, view=runtime.view)
-        if not structure.valid or not view_result.valid:
-            issue_codes = sorted(set(structure.issue_codes() + view_result.issue_codes()))
+        ir_result = validate_ir(ir, view=runtime.view)
+        if not structure.valid or not view_result.valid or not ir_result.valid:
+            issue_codes = sorted(
+                set(
+                    structure.issue_codes()
+                    + view_result.issue_codes()
+                    + ir_result.issue_codes()
+                )
+            )
             return StageResult(
                 stage=self.stage,
                 status=RuntimeOutcomeStatus.REJECTED,
@@ -529,12 +560,13 @@ class _ValidateNode(_NodeBase):
                     ),
                 ),
             )
+        compiler = runtime.ir_compiler
         try:
-            sql = runtime.plan_compiler(plan)
+            artifact = compiler(ir) if compiler is not None else runtime.plan_compiler(plan)
             validation_context = ValidationContext(
                 snapshot_fingerprint=plan.lineage.catalog_fingerprint
             )
-            parsed = runtime.adapter.parse(sql, validation_context)
+            parsed = runtime.adapter.parse(artifact, validation_context)
             validated = runtime.adapter.validate(parsed, validation_context)
         except Exception as error:
             return StageResult(
@@ -544,6 +576,9 @@ class _ValidateNode(_NodeBase):
             )
         self._channel["validated"] = validated
         self._channel["validation_context"] = validation_context
+        self._channel["compiler_evidence"] = runtime._build_compiler_evidence(
+            ir, compiler if compiler is not None else runtime.plan_compiler, validated
+        )
         gate_evidence: dict[WorkflowGate, str] = self._channel["gate_evidence"]
         gate_evidence[WorkflowGate.PLAN_VALIDATION] = sha256_fingerprint(
             {"plan": plan.fingerprint, "structure": "valid", "view": "valid"}
@@ -887,6 +922,7 @@ class DeterministicWorkflowRuntime:
         idempotency_ttl_seconds: float = 86_400.0,
         approval_required: Callable[[SemanticQueryPlan], bool] | None = None,
         plan_compiler: Callable[[SemanticQueryPlan], str] | None = None,
+        ir_compiler: Callable[[SemanticQueryIR], str] | None = None,
         now: Callable[[], datetime] | None = None,
     ) -> None:
         self._provider = provider
@@ -903,6 +939,7 @@ class DeterministicWorkflowRuntime:
         self._idempotency_ttl_seconds = idempotency_ttl_seconds
         self._approval_required = approval_required
         self._plan_compiler = plan_compiler or compile_plan
+        self._ir_compiler = ir_compiler
         self._now_fn = now or _utc_now
         self._closed = False
 
@@ -962,6 +999,16 @@ class DeterministicWorkflowRuntime:
         graph stays framework-neutral.
         """
         return self._plan_compiler
+
+    @property
+    def ir_compiler(self) -> Callable[[SemanticQueryIR], str] | None:
+        """The canonical IR compiler, when bound.
+
+        When set, the graph compiles the validated canonical IR through the
+        compatibility boundary; otherwise the legacy plan compiler remains
+        the artifact source (P1/P2 fallback).
+        """
+        return self._ir_compiler
 
     @property
     def tenant_context(self) -> TenantScopeContext | None:
@@ -1405,6 +1452,10 @@ class DeterministicWorkflowRuntime:
                 return self._branch_outcome(
                     request, options, OutcomeStatus.REJECTED, as_error_record(error)
                 )
+            except StaleCheckpointError as error:
+                return self._branch_outcome(
+                    request, options, OutcomeStatus.REJECTED, as_error_record(error)
+                )
             except NL2DataError as error:
                 return self._branch_outcome(
                     request, options, OutcomeStatus.FAILED, as_error_record(error)
@@ -1476,6 +1527,10 @@ class DeterministicWorkflowRuntime:
             cancellation=context.cancellation,
             now=self._now(),
         )
+        if durable is not None:
+            channel.setdefault("stored_ir_identity", self._stored_ir_identity(durable.state))
+        if stage is WorkflowStage.EXECUTE and durable is not None:
+            self._reject_stale_ir(durable, channel)
         node = _NODES[stage](self, channel)
         remaining = context.deadline.remaining_seconds(now=self._now())
         if remaining <= 0.0:
@@ -1493,10 +1548,18 @@ class DeterministicWorkflowRuntime:
                 details={"stage": stage.value, "timeout_seconds": str(remaining)},
             ) from error
         if durable is not None and result.status is RuntimeOutcomeStatus.SUCCEEDED:
+            stage_metadata: dict[str, str] | None = None
+            ir = channel.get("ir")
+            if ir is not None:
+                stage_metadata = {
+                    "ir_version": str(ir.ir_version),
+                    "ir_fingerprint": ir.fingerprint,
+                }
             durable.checkpoint(
                 stage=result.next_stage or stage,
                 compatibility_fingerprints=dict(channel["compat"]),
                 gate_evidence_fingerprints=frozenset(channel["gate_evidence"].values()),
+                metadata=stage_metadata,
             )
         return result
 
@@ -1563,6 +1626,8 @@ class DeterministicWorkflowRuntime:
         """
         stored = state.compatibility_fingerprints
         for key, fingerprint in sorted(stored.items()):
+            if key in _RUNTIME_ACCUMULATED_COMPAT_KEYS:
+                continue
             current_fingerprint = current_compat.get(key)
             if current_fingerprint is None or current_fingerprint != fingerprint:
                 raise StaleCheckpointError(
@@ -1745,6 +1810,106 @@ class DeterministicWorkflowRuntime:
             error=error,
             workflow_id=options.workflow_id,
             tenant_scope_fingerprint=options.scope_fingerprint,
+        )
+
+    # -- canonical IR helpers ------------------------------------------------
+
+    @staticmethod
+    def _current_ir_identity(channel: dict[str, Any]) -> tuple[int, str] | None:
+        """The freshly derived canonical IR identity of the current run."""
+        ir = channel.get("ir")
+        if ir is None:
+            return None
+        return (ir.ir_version, ir.fingerprint)
+
+    @staticmethod
+    def _stored_ir_identity(state: WorkflowState) -> tuple[int, str] | None:
+        """The IR identity recorded by the newest checkpoint event, if any.
+
+        A checkpoint that carries a partial or malformed IR identity is
+        treated as stale (fail closed) so resume never silently ignores
+        tampered evidence.
+        """
+        for event in reversed(state.events):
+            version = event.metadata.get("ir_version")
+            fingerprint = event.metadata.get("ir_fingerprint")
+            if version is None and fingerprint is None:
+                continue
+            if version is None or fingerprint is None:
+                raise StaleCheckpointError(
+                    "checkpoint carries a partial IR identity",
+                    details={"workflow_id": state.workflow_id},
+                )
+            try:
+                return (int(version), fingerprint)
+            except ValueError:
+                raise StaleCheckpointError(
+                    "checkpoint carries an invalid IR version",
+                    details={"workflow_id": state.workflow_id, "ir_version": version[:64]},
+                ) from None
+        return None
+
+    def _reject_stale_ir(self, durable: _DurableBinding, channel: dict[str, Any]) -> None:
+        """Reject a resumed run whose IR derivation changed since checkpoint.
+
+        The IR identity recorded by the original run's checkpoint is
+        compared against the freshly derived IR before adapter execution; a
+        mismatch means the derivation changed and executing the new
+        artifact would contradict the checkpointed evidence.  Checkpoints
+        written before IR evidence existed (the legacy window) carry no
+        identity and resume untouched.
+        """
+        stored = channel.get("stored_ir_identity")
+        current = self._current_ir_identity(channel)
+        if stored is None or current is None or stored == current:
+            return
+        raise StaleCheckpointError(
+            "checkpoint IR derivation is stale; refusing adapter execution",
+            details={
+                "workflow_id": durable.state.workflow_id,
+                "stored_ir_fingerprint": stored[1],
+                "current_ir_fingerprint": current[1],
+            },
+        )
+
+    @staticmethod
+    def _compiler_identity(compiler: Callable[[Any], str]) -> str:
+        """A safe compiler identity: module constant, module name, fallback."""
+        module = inspect.getmodule(compiler)
+        identity = getattr(module, "COMPILER_IDENTITY", None) if module is not None else None
+        if isinstance(identity, str) and _COMPILER_IDENTITY_PATTERN.fullmatch(identity):
+            return identity
+        if module is not None and module.__name__:
+            return re.sub(r"[^A-Za-z0-9_\-\.]", "_", module.__name__)[:128]
+        return "compiler"
+
+    @staticmethod
+    def _compiler_version(compiler: Callable[[Any], str]) -> str:
+        """The module-declared compiler version, defaulted when absent."""
+        module = inspect.getmodule(compiler)
+        version = getattr(module, "COMPILER_VERSION", None) if module is not None else None
+        if isinstance(version, str) and version:
+            return version[:64]
+        return "1.0.0"
+
+    def _build_compiler_evidence(
+        self,
+        ir: SemanticQueryIR,
+        compiler: Callable[[Any], str],
+        validated: ValidatedArtifact,
+    ) -> CompilerArtifactEvidence:
+        """Safe artifact evidence: IR identity, compiler, and artifact.
+
+        The evidence never carries raw SQL/MQL, credentials, native values,
+        or the physical binding - only fingerprints and safe identities.
+        """
+        return CompilerArtifactEvidence(
+            ir_version=ir.ir_version,
+            ir_fingerprint=ir.fingerprint,
+            compiler_identity=self._compiler_identity(compiler),
+            compiler_version=self._compiler_version(compiler),
+            adapter_type=self.adapter.capabilities().adapter_type,
+            artifact_fingerprint=validated.fingerprint,
         )
 
     def _prepare_turn(self, request: QueryRequest) -> tuple[CurrentTurnContext, dict[str, str]]:

@@ -103,6 +103,25 @@ class CostEstimate(BaseModel):
     currency: str | None = Field(default=None, min_length=1, max_length=16)
 
 
+class CompilerArtifactEvidence(BaseModel):
+    """Safe evidence linking a compiled artifact to its validated logical IR.
+
+    Carries identity and fingerprint references only - never the raw IR
+    payload, raw SQL/MQL, credentials, or native values - so the logical
+    IR fingerprint stays the separate canonical identity of the query
+    while each backend artifact keeps its own artifact fingerprint.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    ir_version: int = Field(ge=1, le=1_000)
+    ir_fingerprint: str = Field(pattern=_FINGERPRINT_PATTERN)
+    compiler_identity: str = Field(pattern=_IDENTIFIER_PATTERN)
+    compiler_version: str = Field(min_length=1, max_length=64)
+    adapter_type: str = Field(pattern=_IDENTIFIER_PATTERN)
+    artifact_fingerprint: str = Field(pattern=_FINGERPRINT_PATTERN)
+
+
 class ExecutionResult(BaseModel):
     """Generic execution result with only protected scalar data.
 

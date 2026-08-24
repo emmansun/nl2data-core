@@ -11,9 +11,16 @@ from __future__ import annotations
 from typing import Any
 
 from nl2data.errors import ErrorCategory, ErrorCode, NL2DataError
+from nl2data_core.planning.ir.compat import ir_to_plan
+from nl2data_core.planning.ir.models import SemanticQueryIR
+from nl2data_core.planning.ir.validation import validate_ir, verify_ir_fingerprint
 from nl2data_core.planning.models import PhysicalBinding, SemanticQueryPlan
 
 from .models import MongoOperation, MongoQuerySpec, mongo_spec_json
+
+#: Stable compiler identity/version for artifact evidence (DDS-019).
+COMPILER_IDENTITY = "mongodb-compiler"
+COMPILER_VERSION = "1.0.0"
 
 #: Plan filter operators to MQL comparison operators.
 _OPERATORS = {
@@ -137,6 +144,31 @@ def _compile_pipeline(
     return tuple(pipeline)
 
 
+def compile_mongo_ir(ir: SemanticQueryIR, *, binding: PhysicalBinding) -> str:
+    """Compile a validated canonical IR into structured MQL via the boundary.
+
+    The IR fingerprint is verified first and compilation fails closed on a
+    tampered or stale fingerprint; the physical binding comes from the
+    compiler context, never from the IR payload.  The spec id is derived
+    from the logical IR fingerprint so the artifact is provably linked to
+    the canonical query while the legacy plan entry point keeps deriving
+    its spec id from the plan fingerprint.
+    """
+    if not verify_ir_fingerprint(ir):
+        raise MongoCompileError(
+            "IR fingerprint does not match its canonical payload",
+            details={"ir_id": ir.ir_id},
+        )
+    validation = validate_ir(ir)
+    if not validation.valid:
+        raise MongoCompileError(
+            "IR failed structural validation",
+            details={"issue_codes": ",".join(validation.issue_codes())},
+        )
+    spec_id = f"mongo-{ir.fingerprint[-16:]}"
+    return _compile_mongo(ir_to_plan(ir, binding=binding), binding, spec_id)
+
+
 def compile_mongo_plan(plan: SemanticQueryPlan) -> str:
     """Compile a validated plan into the strict JSON wire form of an MQL spec.
 
@@ -148,12 +180,25 @@ def compile_mongo_plan(plan: SemanticQueryPlan) -> str:
     if plan.binding is None:
         raise MongoCompileError("plan has no physical binding")
     binding = plan.binding
+    spec_id = f"mongo-{plan.fingerprint[-16:]}"
+    return _compile_mongo(plan, binding, spec_id)
+
+
+def _compile_mongo(
+    plan: SemanticQueryPlan,
+    binding: PhysicalBinding,
+    spec_id: str,
+) -> str:
+    """Shared deterministic compilation core; ``spec_id`` is caller-chosen.
+
+    Keeps the legacy plan entry point byte-for-byte compatible while the
+    IR entry point links the spec to the canonical logical fingerprint.
+    """
     if plan.limit is None:
         raise MongoCompileError(
             "plan has no bounded limit; refusing unbounded compilation"
         )
 
-    spec_id = f"mongo-{plan.fingerprint[-16:]}"
     collection = binding.object_id
     filter_mql = _compile_filter(plan, binding)
     aggregated = [s for s in plan.selections if s.aggregation != "none"]

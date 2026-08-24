@@ -41,6 +41,8 @@ from nl2data_core.governance.models import (
     GovernanceFacts,
     PolicyScope,
 )
+from nl2data_core.planning.ir.compat import plan_to_ir
+from nl2data_core.planning.ir.validation import validate_ir
 from nl2data_core.planning.models import (
     SemanticQueryPlan,
     validate_plan_structure,
@@ -81,7 +83,11 @@ class PlanResolver(Protocol):
 
 
 class StaticPlanResolver:
-    """Resolves every request to one fixed plan (deterministic conformance)."""
+    """Resolves every request to one fixed plan (deterministic conformance).
+
+    The fixed plan is normalized to the canonical IR by the governed
+    boundary at execution, exactly like every other legacy plan source.
+    """
 
     def __init__(self, plan: SemanticQueryPlan | None) -> None:
         self._plan = plan
@@ -387,8 +393,26 @@ class QueryExecutionRunner:
 
         structure = validate_plan_structure(plan)
         view_result = validate_plan_against_view(plan, view=view)
-        if not structure.valid or not view_result.valid:
-            issue_codes = sorted(set(structure.issue_codes() + view_result.issue_codes()))
+        try:
+            ir_result = validate_ir(plan_to_ir(plan), view=view)
+        except Exception as error:
+            return self._rejected(
+                request,
+                ErrorRecord(
+                    code=ErrorCode.PLAN_VALIDATION_FAILED,
+                    category=ErrorCategory.VALIDATION,
+                    message="semantic plan failed canonical IR normalization",
+                    details={"cause_type": type(error).__name__},
+                ),
+            )
+        if not structure.valid or not view_result.valid or not ir_result.valid:
+            issue_codes = sorted(
+                set(
+                    structure.issue_codes()
+                    + view_result.issue_codes()
+                    + ir_result.issue_codes()
+                )
+            )
             return self._rejected(
                 request,
                 ErrorRecord(

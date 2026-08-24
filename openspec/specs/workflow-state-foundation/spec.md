@@ -3,11 +3,15 @@
 Define the versioned workflow state, transition, budget, event, and replaceable state-store contracts.
 ## Requirements
 ### Requirement: Versioned workflow state
-The workflow foundation SHALL represent a workflow instance with a versioned immutable state containing request identity, workflow identity, status, current stage identity, attempt counters, safe evidence references, optional tenant scope fingerprint, and checkpoint compatibility fingerprints. Durable stores SHALL persist only the safe representation.
+The workflow foundation SHALL represent a workflow instance with a versioned immutable state containing request identity, workflow identity, status, current stage identity, attempt counters, safe evidence references, optional tenant scope fingerprint, and checkpoint compatibility fingerprints. Compatibility fingerprints SHALL include the canonical Semantic Query IR version/fingerprint when a workflow has a planned query. Durable stores SHALL persist only the safe representation.
 
 #### Scenario: State snapshot is serializable
 - **WHEN** a workflow state is created with valid identifiers, stage, and status
-- **THEN** it can be serialized without raw prompts, raw queries, credentials, provider objects, or raw result records
+- **THEN** it can be serialized without raw prompts, raw queries, credentials, provider objects, raw result records, SQL/MQL, or physical driver values
+
+#### Scenario: IR compatibility is checked on resume
+- **WHEN** a persisted workflow checkpoint references a Semantic Query IR version or fingerprint that is not compatible with the current runtime
+- **THEN** resume is rejected as stale or incompatible rather than executing the checkpoint under changed semantics
 
 ### Requirement: Valid transitions are enforced
 The workflow foundation SHALL define allowed status and stage transitions and SHALL reject transitions that bypass mandatory runtime gates or move from terminal states. Durable compare-and-set updates SHALL preserve these rules.

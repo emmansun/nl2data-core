@@ -9,6 +9,8 @@ the same immutable plan the P1 structured-plan path accepts.
 
 from __future__ import annotations
 
+from nl2data_core.planning.ir.compat import plan_to_ir
+from nl2data_core.planning.ir.validation import validate_ir
 from nl2data_core.planning.models import (
     PhysicalBinding,
     PlanLineage,
@@ -82,4 +84,8 @@ def build_plan_from_intent(
     if not result.valid:
         codes = ", ".join(result.issue_codes())
         raise ValueError(f"intent produced an invalid plan: {codes}")
+    ir_result = validate_ir(plan_to_ir(plan))
+    if not ir_result.valid:
+        codes = ", ".join(ir_result.issue_codes())
+        raise ValueError(f"intent produced an IR-invalid plan: {codes}")
     return plan

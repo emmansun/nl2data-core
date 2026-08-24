@@ -35,6 +35,8 @@ from nl2data_core.evaluation.models import (
 )
 from nl2data_core.fixtures.base import FixtureProfile
 from nl2data_core.fixtures.models import FixtureUnavailableError
+from nl2data_core.planning.ir.compat import plan_to_ir
+from nl2data_core.planning.ir.validation import validate_ir
 from nl2data_core.planning.models import SemanticQueryPlan, validate_plan_structure
 
 #: Scalar cell types allowed in protected evidence rows.
@@ -252,7 +254,22 @@ class EvaluationRunner:
                 )
 
             structure = validate_plan_structure(case.plan)
-            if not structure.valid:
+            try:
+                ir_result = validate_ir(plan_to_ir(case.plan))
+            except Exception as error:
+                return self._result(
+                    case,
+                    CaseOutcome.FAIL,
+                    error=ErrorRecord(
+                        code=ErrorCode.PLAN_VALIDATION_FAILED,
+                        category=ErrorCategory.VALIDATION,
+                        message="case plan failed canonical IR normalization",
+                        details={"cause_type": type(error).__name__},
+                    ),
+                    started=started,
+                )
+            if not structure.valid or not ir_result.valid:
+                issue_codes = sorted(set(structure.issue_codes() + ir_result.issue_codes()))
                 return self._result(
                     case,
                     CaseOutcome.FAIL,
@@ -260,7 +277,7 @@ class EvaluationRunner:
                         code=ErrorCode.PLAN_VALIDATION_FAILED,
                         category=ErrorCategory.VALIDATION,
                         message="case plan failed structural validation",
-                        details={"issue_codes": ",".join(structure.issue_codes())},
+                        details={"issue_codes": ",".join(issue_codes)},
                     ),
                     started=started,
                 )
