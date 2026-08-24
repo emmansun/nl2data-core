@@ -1,10 +1,11 @@
 """Trusted resolution context for Semantic View resolution.
 
 The context carries only trusted host integration facts - tenant scope and
-principal authorization fingerprints, purpose, policy/catalog fingerprints,
-model version, adapter capabilities, and feature flags.  Client-supplied
-hints are carried as non-authoritative ``client_hints`` and never establish
-access: every access decision is derived from the trusted fields only.
+principal authorization fingerprints, purpose, policy/catalog/bundle
+fingerprints, model version, adapter capabilities, and feature flags.
+Client-supplied hints are carried as non-authoritative ``client_hints``
+and never establish access: every access decision is derived from the
+trusted fields only.
 """
 
 from __future__ import annotations
@@ -77,6 +78,7 @@ class ResolutionContext(BaseModel):
     purpose: str | None = Field(default=None, pattern=_IDENTIFIER_PATTERN)
     policy_fingerprint: str | None = Field(default=None, pattern=_FINGERPRINT_PATTERN)
     catalog_fingerprint: str | None = Field(default=None, pattern=_FINGERPRINT_PATTERN)
+    bundle_fingerprint: str | None = Field(default=None, pattern=_FINGERPRINT_PATTERN)
     model_version: str | None = Field(default=None, pattern=_IDENTIFIER_PATTERN)
     adapter_capabilities: frozenset[str] = Field(
         default_factory=frozenset, max_length=_MAX_CAPABILITIES
@@ -117,6 +119,7 @@ class ResolutionContext(BaseModel):
             "purpose": self.purpose,
             "policy_fingerprint": self.policy_fingerprint,
             "catalog_fingerprint": self.catalog_fingerprint,
+            "bundle_fingerprint": self.bundle_fingerprint,
             "model_version": self.model_version,
             "adapter_capabilities": ",".join(sorted(self.adapter_capabilities)),
             "feature_flags": ",".join(sorted(self.feature_flags)),

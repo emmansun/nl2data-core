@@ -2,10 +2,17 @@
 
 Resolution is a pure function of a view definition plus trusted resolution
 context: it applies tenant scope, principal authorization, purpose, policy,
-model/catalog version, adapter capabilities, and feature flags before
-projecting any member.  Every failure path is structured and safe - a
+model/catalog/bundle version, adapter capabilities, and feature flags
+before projecting any member.  Every failure path is structured and safe - a
 missing, inactive, mismatched, stale, or unsupported input never yields
 partial semantic members.
+
+When bundle-backed catalog resolution is configured (``bundle=``), views
+bound to the bundle's descriptor resolve against the complete active
+validated bundle snapshot and their projections carry the bundle
+identity/version/fingerprint; other views keep the explicit descriptor-only
+compatibility path.  The bundle wraps the descriptor, so there is exactly
+one conversion path and no duplicated validation rules.
 
 When no registry is configured, callers fall back to the explicit unbound
 IR compatibility mode: existing IR executes without a resolved-view
@@ -15,9 +22,13 @@ identity, and no view identity is fabricated.
 from __future__ import annotations
 
 from collections.abc import Iterable
+from typing import TYPE_CHECKING
 
 from nl2data_core.canonical import sha256_fingerprint
 from nl2data_core.planning.models import AggregationKind
+
+if TYPE_CHECKING:
+    from nl2data_core.bundles.models import SemanticModelBundle
 
 from .context import ResolutionContext
 from .models import (
@@ -46,6 +57,7 @@ class ViewRegistry:
         *,
         descriptors: Iterable[SemanticDescriptor],
         views: Iterable[SemanticViewDefinition],
+        bundle: SemanticModelBundle | None = None,
     ) -> None:
         descriptor_list = list(descriptors)
         view_list = list(views)
@@ -67,10 +79,21 @@ class ViewRegistry:
                 raise ValueError(
                     f"view '{definition.view_id}' allowed_operations must include 'select'"
                 )
+        if bundle is not None and bundle.descriptor.descriptor_id not in known_descriptors:
+            raise ValueError(
+                f"bundle descriptor '{bundle.descriptor.descriptor_id}' must be "
+                "registered in the registry"
+            )
         self._descriptors = {
             descriptor.descriptor_id: descriptor for descriptor in descriptor_list
         }
         self._views = {definition.view_id: definition for definition in view_list}
+        self._bundle = bundle
+
+    @property
+    def bundle(self) -> SemanticModelBundle | None:
+        """The active validated bundle snapshot, or ``None`` (descriptor mode)."""
+        return self._bundle
 
     @property
     def is_empty(self) -> bool:
@@ -82,7 +105,13 @@ class ViewRegistry:
         return self._views.get(view_id)
 
     def descriptor(self, descriptor_id: str) -> SemanticDescriptor | None:
-        """The registered semantic descriptor, or ``None`` when unknown."""
+        """The registered semantic descriptor, or ``None`` when unknown.
+
+        When bundle-backed resolution is configured, the bundle's descriptor
+        is the authoritative snapshot for the bundle's descriptor id.
+        """
+        if self._bundle is not None and self._bundle.descriptor.descriptor_id == descriptor_id:
+            return self._bundle.descriptor
         return self._descriptors.get(descriptor_id)
 
     def view_ids(self) -> frozenset[str]:
@@ -107,6 +136,25 @@ class ViewRegistry:
                 "descriptor_missing",
                 f"view '{view_id}' references an unregistered descriptor",
             )
+
+        # -- bundle snapshot (fail closed when bundle-backed) -----------------
+        bundle: SemanticModelBundle | None = None
+        if (
+            self._bundle is not None
+            and self._bundle.descriptor.descriptor_id == definition.descriptor_id
+        ):
+            bundle = self._bundle
+            descriptor = bundle.descriptor
+            if context.bundle_fingerprint is None:
+                return unavailable(
+                    "bundle_scope_missing",
+                    "bundle-backed resolution requires an active bundle fingerprint",
+                )
+            if context.bundle_fingerprint != bundle.fingerprint:
+                return unavailable(
+                    "bundle_stale",
+                    "the trusted bundle fingerprint does not match the active bundle",
+                )
 
         # -- tenant scope (fail closed) -------------------------------------
         if context.tenant_scope_fingerprint is None:
@@ -193,7 +241,7 @@ class ViewRegistry:
             )
 
         # -- project the authorized surface -----------------------------------
-        projection, issues = _project(definition, descriptor, context)
+        projection, issues = _project(definition, descriptor, context, bundle=bundle)
         if issues:
             return ResolutionOutcome(kind="unavailable", issues=tuple(issues))
         assert projection is not None
@@ -212,12 +260,16 @@ def _project(
     definition: SemanticViewDefinition,
     descriptor: SemanticDescriptor,
     context: ResolutionContext,
+    *,
+    bundle: SemanticModelBundle | None = None,
 ) -> tuple[ResolvedViewProjection | None, list[ResolutionIssue]]:
     """Apply member restrictions over the descriptor.
 
     Restrictions are constraints, not authority: aggregation restrictions
     only narrow the descriptor's allowed set, and unresolved member
-    references fail closed with bounded missing-member issues.
+    references fail closed with bounded missing-member issues.  When a
+    validated bundle snapshot is supplied, the projection binds the bundle
+    identity/version/fingerprint so evidence stays revalidatable.
     """
     issues: list[ResolutionIssue] = []
     restrictions: ViewMemberRestrictions = definition.restrictions
@@ -322,6 +374,9 @@ def _project(
         allowed_relationships=restrictions.allowed_relationships,
         result_shape_constraints=restrictions.result_shape_constraints,
         catalog_fingerprint=descriptor.catalog_fingerprint,
+        bundle_id=bundle.bundle_id if bundle is not None else None,
+        bundle_version=bundle.model_version if bundle is not None else None,
+        bundle_fingerprint=bundle.fingerprint if bundle is not None else None,
         policy_fingerprint=context.policy_fingerprint,
         tenant_scope_fingerprint=context.tenant_scope_fingerprint,
         principal_authorization_fingerprint=context.principal_authorization_fingerprint,
@@ -335,6 +390,9 @@ def _project(
             descriptor_fingerprint=descriptor.fingerprint,
             policy_decision_fingerprint=context.policy_fingerprint,
             resolver_version=_RESOLVER_VERSION,
+            bundle_id=bundle.bundle_id if bundle is not None else None,
+            bundle_version=bundle.model_version if bundle is not None else None,
+            bundle_fingerprint=bundle.fingerprint if bundle is not None else None,
         ),
     )
     return projection, issues

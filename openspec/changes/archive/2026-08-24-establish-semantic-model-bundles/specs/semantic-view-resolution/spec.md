@@ -1,4 +1,4 @@
-## ADDED Requirements
+## MODIFIED Requirements
 
 ### Requirement: Semantic Views are versioned and bounded
 The system SHALL represent a Semantic View definition and an immutable resolved projection with bounded semantic entity, field, relationship, operation, aggregation, result-shape, purpose, and provenance metadata. When bundle-backed catalog resolution is configured, the projection SHALL be derived from a complete active validated Semantic Model Bundle snapshot and SHALL include bundle identity/version/fingerprint in safe provenance. A projection SHALL contain only semantic references and safe descriptions, never credentials, physical bindings, hidden policy rules, or native objects.

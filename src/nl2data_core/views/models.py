@@ -93,7 +93,12 @@ def _freeze_mapping(value: dict[str, str]) -> dict[str, str]:
     return cast(dict[str, str], _FrozenDict(value))
 
 
-def _validate_safe_description(value: str) -> str:
+def validate_safe_description(value: str) -> str:
+    """Reject credential/connection/executable material in semantic text.
+
+    Shared by the view models and the Semantic Model Bundle metadata so
+    safe-content rules are never duplicated across artifact boundaries.
+    """
     lowered = value.lower()
     if any(marker in lowered for marker in _UNSAFE_DESCRIPTION_MARKERS):
         raise ValueError("semantic descriptions cannot contain credential or connection material")
@@ -116,7 +121,7 @@ class SemanticFieldDescriptor(BaseModel):
     @field_validator("description")
     @classmethod
     def _safe_description(cls, value: str) -> str:
-        return _validate_safe_description(value)
+        return validate_safe_description(value)
 
     def canonical_payload(self) -> dict[str, Any]:
         return {
@@ -165,7 +170,7 @@ class SemanticEntityDescriptor(BaseModel):
     @field_validator("description")
     @classmethod
     def _safe_description(cls, value: str) -> str:
-        return _validate_safe_description(value)
+        return validate_safe_description(value)
 
     @field_validator("fields")
     @classmethod
@@ -296,19 +301,43 @@ class SemanticDescriptor(BaseModel):
 
 
 class ViewProvenance(BaseModel):
-    """Safe provenance of a view definition or resolved projection."""
+    """Safe provenance of a view definition or resolved projection.
+
+    When bundle-backed catalog resolution is configured, the provenance
+    carries the active bundle identity/version/fingerprint (all-or-none)
+    so every resolved projection and its evidence can be revalidated
+    against the bundle that produced it.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     descriptor_fingerprint: str = Field(pattern=_FINGERPRINT_PATTERN)
     policy_decision_fingerprint: str | None = Field(default=None, pattern=_FINGERPRINT_PATTERN)
     resolver_version: int = Field(ge=1, le=1_000_000)
+    bundle_id: str | None = Field(default=None, pattern=_IDENTIFIER_PATTERN)
+    bundle_version: str | None = Field(default=None, pattern=_IDENTIFIER_PATTERN)
+    bundle_fingerprint: str | None = Field(default=None, pattern=_FINGERPRINT_PATTERN)
+
+    @model_validator(mode="after")
+    def _bundle_identity_consistency(self) -> ViewProvenance:
+        bundle_fields = [self.bundle_id, self.bundle_version, self.bundle_fingerprint]
+        if any(value is not None for value in bundle_fields) and not all(
+            value is not None for value in bundle_fields
+        ):
+            raise ValueError(
+                "bundle provenance requires bundle_id, bundle_version, and "
+                "bundle_fingerprint together"
+            )
+        return self
 
     def canonical_payload(self) -> dict[str, Any]:
         return {
             "descriptor_fingerprint": self.descriptor_fingerprint,
             "policy_decision_fingerprint": self.policy_decision_fingerprint,
             "resolver_version": self.resolver_version,
+            "bundle_id": self.bundle_id,
+            "bundle_version": self.bundle_version,
+            "bundle_fingerprint": self.bundle_fingerprint,
         }
 
 
@@ -446,7 +475,7 @@ class SemanticViewDefinition(BaseModel):
     @field_validator("description")
     @classmethod
     def _safe_description(cls, value: str) -> str:
-        return _validate_safe_description(value)
+        return validate_safe_description(value)
 
     @field_validator("allowed_purposes")
     @classmethod

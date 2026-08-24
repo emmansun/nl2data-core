@@ -4,10 +4,11 @@ A projection is the authorized semantic surface handed to planning and
 provider-context assembly: only permitted entities, fields, operations,
 relationships, and safe descriptions, plus versioned provenance.  The
 fingerprint covers every security dimension - view identity/version,
-model/catalog fingerprint, tenant scope, principal authorization, purpose,
-policy, adapter capability fingerprint, and feature flags - so a change in
-any trusted input invalidates every previously recorded projection,
-IR reference, and workflow evidence reference.
+model/catalog fingerprint, active bundle identity/version/fingerprint when
+configured, tenant scope, principal authorization, purpose, policy,
+adapter capability fingerprint, and feature flags - so a change in any
+trusted input invalidates every previously recorded projection, IR
+reference, and workflow evidence reference.
 
 Raw identity claims, credentials, physical bindings, and hidden policy
 rules never appear in the serialized projection.
@@ -127,6 +128,9 @@ class ResolvedViewProjection(BaseModel):
     )
     result_shape_constraints: tuple[str, ...] = Field(default_factory=tuple, max_length=16)
     catalog_fingerprint: str | None = Field(default=None, pattern=_FINGERPRINT_PATTERN)
+    bundle_id: str | None = Field(default=None, pattern=_IDENTIFIER_PATTERN)
+    bundle_version: str | None = Field(default=None, pattern=_IDENTIFIER_PATTERN)
+    bundle_fingerprint: str | None = Field(default=None, pattern=_FINGERPRINT_PATTERN)
     policy_fingerprint: str | None = Field(default=None, pattern=_FINGERPRINT_PATTERN)
     tenant_scope_fingerprint: str | None = Field(default=None, pattern=_FINGERPRINT_PATTERN)
     principal_authorization_fingerprint: str | None = Field(
@@ -157,6 +161,14 @@ class ResolvedViewProjection(BaseModel):
             raise ValueError("projection field_ids must include every projected entity field")
         if not frozenset(entity_ids).issubset(self.root_entity_ids):
             raise ValueError("projection root_entity_ids must include every projected entity")
+        bundle_fields = [self.bundle_id, self.bundle_version, self.bundle_fingerprint]
+        if any(value is not None for value in bundle_fields) and not all(
+            value is not None for value in bundle_fields
+        ):
+            raise ValueError(
+                "projection bundle binding requires bundle_id, bundle_version, "
+                "and bundle_fingerprint together"
+            )
         fingerprint = sha256_fingerprint(self.canonical_payload())
         object.__setattr__(self, "fingerprint", fingerprint)
         return self
@@ -176,6 +188,9 @@ class ResolvedViewProjection(BaseModel):
             "allowed_relationships": sorted(self.allowed_relationships),
             "result_shape_constraints": list(self.result_shape_constraints),
             "catalog_fingerprint": self.catalog_fingerprint,
+            "bundle_id": self.bundle_id,
+            "bundle_version": self.bundle_version,
+            "bundle_fingerprint": self.bundle_fingerprint,
             "policy_fingerprint": self.policy_fingerprint,
             "tenant_scope_fingerprint": self.tenant_scope_fingerprint,
             "principal_authorization_fingerprint": self.principal_authorization_fingerprint,

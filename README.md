@@ -365,18 +365,25 @@ authorized-view shape:
   different mapping insertion orders produce identical identities.
 - **Fail-closed resolution**: `ViewRegistry.resolve(view_id, ResolutionContext)`
   applies tenant scope (present/active/matching), principal authorization,
-  purpose, policy fingerprint, model/catalog version, adapter capabilities,
-  and feature flags before projecting any member. Missing, inactive,
-  mismatched, stale, or unsupported inputs yield structured `denied`/
-  `unavailable` outcomes - never partial members. Client hints are
+  purpose, policy fingerprint, model/catalog/bundle version, adapter
+  capabilities, and feature flags before projecting any member. Missing,
+  inactive, mismatched, stale, or unsupported inputs yield structured
+  `denied`/`unavailable` outcomes - never partial members. Client hints are
   non-authoritative routing metadata and can never establish access.
+- **Bundle-backed snapshots**: when a `SemanticModelBundle` is configured on
+  the registry, views bound to the bundle's descriptor resolve against the
+  complete active validated bundle snapshot and require a matching
+  `bundle_fingerprint` in the resolution context (`bundle_scope_missing`/
+  `bundle_stale` fail closed). Projections and provenance carry the bundle
+  identity/version/fingerprint, and descriptor-only resolution remains an
+  explicit compatibility mode with exactly one conversion path.
 - **Authorized projections**: a resolved projection exposes only permitted
   entities, fields, operations, relationships, and safe descriptions. Its
   fingerprint covers every security dimension (view identity/version,
-  model/catalog, tenant scope, principal authorization, purpose, policy,
-  adapter capabilities, feature flags), so a change in any trusted input
-  invalidates every previously recorded projection, IR reference, and
-  workflow checkpoint.
+  model/catalog, active bundle identity/version/fingerprint, tenant scope,
+  principal authorization, purpose, policy, adapter capabilities, feature
+  flags), so a change in any trusted input invalidates every previously
+  recorded projection, IR reference, and workflow checkpoint.
 - **IR binding and validation**: IR produced under a resolved view carries an
   `IRViewReference` (view id/version/fingerprint) plus provenance, and
   validation re-checks the reference and every referenced member against the
@@ -393,7 +400,8 @@ authorized-view shape:
   IR whose derivation changed is refused at the execute gate.
 - **Memory revalidation**: recalled references are revalidated against the
   current resolved-view fingerprint on every turn; a follow-up under a changed
-  view fails closed into clarification before the model provider is invoked.
+  view - including an activation or rollback of the active bundle - fails
+  closed into clarification before the model provider is invoked.
 - **Legacy compatibility and migration**: when no view registry is configured,
   existing unbound IR keeps executing exactly as before - no view identity is
   fabricated. Migration is explicit: configure a registry, resolve views from
@@ -404,6 +412,49 @@ authorized-view shape:
   `tests/contract/test_semantic_view_resolution.py`,
   `tests/security/test_semantic_view_security.py`, and
   `tests/integration/test_semantic_view_workflow.py`.
+
+## Semantic Model Bundles (P2.5)
+
+Versioned immutable semantic artifacts (internal `nl2data_core.bundles`) wrap
+one validated `SemanticDescriptor` and add measures/aggregations, semantic
+grain, source/catalog references, dependency fingerprints, authored/inferred/
+approved trust markers, safe provenance, quality status, and compatibility
+metadata - never credentials, connection material, raw executable
+SQL/MQL/code, native objects, physical bindings, or authorization claims:
+
+- **Immutable contract models**: every bundle model is frozen with forbidden
+  extra fields and bounded collections/text. Construction enforces identifier
+  patterns, safe descriptions, uniqueness, aggregation literals, and the
+  schema-version literal; the bundle wraps the existing descriptor primitives
+  so entity/field/relationship validation is never duplicated.
+- **Canonical fingerprints**: `SemanticModelBundle.fingerprint` is a SHA-256
+  fingerprint of the canonical payload, so equivalent contents with different
+  mapping insertion orders produce identical identities; a new version is a
+  new bundle with a new fingerprint.
+- **Structural validation**: `validate_bundle` checks cross-references
+  (measure fields and aggregations, grain entities/attributes, trust fact
+  references), completeness (at least one source reference, non-draft quality
+  status), and schema compatibility, reporting bounded structured issues that
+  never leak raw material.
+- **Catalog lifecycle**: the replaceable `SemanticBundleCatalog` protocol and
+  bounded `InMemorySemanticBundleCatalog` publish only validated bundles,
+  reject duplicate versions, activate atomically (revalidating and requiring
+  every declared dependency to be published with a matching fingerprint),
+  expose immutable active snapshots, and roll back to a previously active
+  version without ever mutating a published artifact.
+- **Canonical loading**: `CanonicalBundleLoader` rejects unsupported schema
+  versions with an explicit `incompatible_schema` result before model
+  construction, recomputes the fingerprint so an altered payload fingerprint
+  can never be trusted, and surfaces every structural problem as a bounded
+  structured issue.
+- **Trust is metadata, never authority**: inferred facts may be retained as
+  metadata but can never independently grant View visibility or execution
+  authority - only trusted View/governance resolution grants access. Bundle
+  provenance serializes bounded opaque references and status only.
+- Relevant suites: `tests/unit/test_semantic_model_bundles.py`,
+  `tests/contract/test_bundle_catalog.py`,
+  `tests/security/test_bundle_security.py`, and
+  `tests/integration/test_bundle_view_workflow.py`.
 
 ## Governed workflow runtime (P2)
 
