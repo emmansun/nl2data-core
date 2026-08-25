@@ -136,10 +136,10 @@ class TestRealMongoProfile:
         _provision(client)
         real = PyMongoExecutor(MONGO_URI, MONGO_DATABASE)
         fake = FakeMongoExecutor(MONGO_SEED)
+        real_adapter = make_adapter(real)
+        fake_adapter = make_adapter(fake)
         try:
             for assertion in MONGO_RESULT_ASSERTIONS:
-                real_adapter = make_adapter(real)
-                fake_adapter = make_adapter(fake)
                 wire = mongo_spec_json(assertion.spec)
                 real_result = await real_adapter.execute(
                     real_adapter.validate(real_adapter.parse(wire, CTX), CTX),
@@ -156,9 +156,9 @@ class TestRealMongoProfile:
                 assert row_maps(real_result.columns, real_result.rows) == row_maps(
                     fake_result.columns, fake_result.rows
                 ), assertion.name
-                await real_adapter.close()
-                await fake_adapter.close()
         finally:
+            await real_adapter.close()
+            await fake_adapter.close()
             real.close()
             _cleanup(client)
 

@@ -434,7 +434,10 @@ class PostgreSQLStateStore:
             cursor.timeout = self._config.command_timeout_seconds
             return
         timeout_ms = int(self._config.command_timeout_seconds * 1000)
-        conn.execute("SET LOCAL statement_timeout = %s", (timeout_ms,))
+        conn.execute(
+            "SELECT set_config('statement_timeout', %s, true)",
+            (str(timeout_ms),),
+        )
 
     def _map_backend_error(
         self, error: Exception, *, operation: str
