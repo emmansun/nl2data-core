@@ -3,27 +3,23 @@
 A governed and extensible Python framework for natural-language access to
 heterogeneous enterprise data.
 
-## Status
-
-P0 foundation: public models and structured errors, configuration, query
-adapter contract, workflow state foundation, plugin manifest and registry,
-telemetry and audit ports, and the `NL2DataEngine` lifecycle skeleton. The
-core never imports optional database, LLM, HTTP, or telemetry backend
-dependencies.
+One public facade (`import nl2data`) composes Semantic IR, Semantic
+View/Bundle resolution, a deterministic governed workflow runtime, and
+optional database, memory, and model-provider backends — so that
+**validation, governance, authorization, and result protection always
+run before any external work**. The base package imports only `pydantic`
+and `PyYAML`; no database driver, LLM SDK, HTTP framework, or telemetry
+backend is ever loaded unless you compose it explicitly.
 
 ## Packaging
 
-| Aspect       | Value            |
-| ------------ | ---------------- |
-| Distribution | `nl2data-core`   |
-| Public API   | `import nl2data` |
-| Internal API | `import nl2data_core` |
-
-- `nl2data` is the documented, stable public surface (models, errors, engine).
-- `nl2data_core` holds narrow internal ports and foundations and is **not**
-  a public API; it exists so optional providers can be plugged in without
-  leaking into the public surface.
-- Requires Python 3.11+.
+| Aspect | Value |
+| --- | --- |
+| Distribution | `nl2data-core` (Python 3.11+) |
+| Public API | `import nl2data` |
+| Internal API | `nl2data_core` — contributor-only, applications must not import it |
+| Optional extras | `sql`, `postgres`, `mongodb`, `redis` |
+| Optional sibling | `nl2data-openai` (OpenAI structured-output provider) |
 
 ## Install
 
@@ -42,116 +38,20 @@ pip install -e ".[dev]"
 ```python
 import asyncio
 
-from nl2data import ErrorCode, NL2DataEngine, OutcomeStatus, QueryRequest, load_config
+from nl2data import CompositionProfile, create_facade, OutcomeStatus, QueryRequest
 
 
 async def main() -> None:
-    config = load_config(
-        {
-            "schema_version": 1,
-            "service": {"name": "example"},
-        }
-    )
-    engine = NL2DataEngine(config=config)
-    await engine.initialize()
-
-    outcome = await engine.query(
-        QueryRequest(
-            request_id="req-1",
-            prompt="How many orders shipped yesterday?",
-        )
-    )
-
-    # P0: no workflow is configured yet, so the engine returns an explicit
-    # not-configured outcome instead of fabricating a result.
-    assert outcome.status == OutcomeStatus.NOT_CONFIGURED
-    assert outcome.error is not None and outcome.error.code == ErrorCode.NOT_CONFIGURED
-
-    await engine.close()
-
-
-asyncio.run(main())
-```
-
-### P0 not-configured behavior
-
-Without a registered workflow, `query()` never invokes native database, LLM,
-or provider executors. It returns a stable `NOT_CONFIGURED` outcome carrying a
-safe, redacted `ErrorRecord`. Queries submitted before initialization or
-during drain/close are rejected with structured `LifecycleError`s, and the
-engine lifecycle is explicit: `created → initializing → ready → draining →
-closed`.
-
-## Public application facade (P2.7)
-
-The P2.7 facade makes the library embeddable: applications compose and run
-the governed runtime through one public entry point (:class:`NL2Data`) and a
-typed composition profile, never through internal ``nl2data_core`` modules.
-
-- **Composition**: :class:`CompositionProfile` binds either a pre-built
-  transport-neutral :class:`WorkflowRuntimePort` or the deterministic
-  composition parts (AI provider, Memory, query adapter, tenant context,
-  governance policy scope, authorized view, plan resolver, state store,
-  telemetry). An empty profile yields the safe ``NOT_CONFIGURED`` fallback
-  and never loads optional backends.
-- **Lifecycle**: ``created -> initializing -> ready -> draining -> closed``.
-  ``initialize()`` is the earliest point optional modules load; constructing
-  a facade imports no database, LLM, HTTP, or telemetry backend.
-- **Async is canonical**: ``await facade.aquery(request)`` returns only
-  protected :class:`QueryOutcome` values. Unexpected runtime failures map
-  to a safe failed outcome; internal details never cross the boundary.
-- **Sync convenience**: ``facade.query(request)`` runs ``aquery`` only when
-  no event loop is active in the current thread. Inside an active loop it
-  raises the stable :class:`SyncUsageError` (``ASYNC_REQUIRED``) instead of
-  nesting or blocking the loop.
-- **Workflow handles**: ``facade.get_workflow(workflow_id)`` returns a
-  bounded :class:`WorkflowHandle` (status, stage, cancellation flag,
-  sha256 evidence fingerprints, bounded event history) or ``None``. Handles
-  exist only when a durable state store is configured; without one the
-  facade reports absence instead of fabricating state.
-- **Cancellation**: ``facade.cancel(CancellationRequest(...))`` persists a
-  cooperative cancellation flag through the state store (``CANCELLED``), or
-  reports ``ALREADY_TERMINAL``/``NOT_FOUND``. A later resume fails fast
-  with ``WORKFLOW_CANCELLED`` before any adapter work.
-- **Capabilities and health**: ``facade.capabilities()`` returns an
-  immutable :class:`FacadeCapabilities` snapshot (configured, runtime,
-  provider, adapter, memory/tenant/durable flags, bounded features);
-  ``facade.health()`` observes the lifecycle.
-- **Idempotent close**: ``drain()`` and ``close()`` are idempotent;
-  ``close()`` releases provider, adapter, Memory, and state-store resources
-  exactly once.
-
-### Embedded usage
-
-```python
-import asyncio
-
-from nl2data import (
-    CancellationRequest,
-    CompositionProfile,
-    NL2Data,
-    OutcomeStatus,
-    QueryRequest,
-)
-
-# Bind a pre-built runtime port, or the deterministic composition parts:
-# adapter, policy_scope, view, plan_resolver, provider, state_store,
-# tenant_context, ... (all optional)
-composition = CompositionProfile()
-
-
-async def main() -> None:
-    facade = NL2Data(composition=composition)  # or create_facade(...)
+    facade = create_facade(composition=CompositionProfile())
     await facade.initialize()
 
     outcome = await facade.aquery(
-        QueryRequest(request_id="req-1", prompt="How many orders yesterday?")
+        QueryRequest(request_id="req-1", prompt="How many orders shipped yesterday?")
     )
-    assert outcome.status == OutcomeStatus.SUCCEEDED
 
-    if outcome.workflow_id is not None:
-        handle = facade.get_workflow(outcome.workflow_id)
-        facade.cancel(CancellationRequest(workflow_id=outcome.workflow_id))
+    # Without a configured runtime the facade returns an explicit,
+    # protected not-configured outcome instead of fabricating a result.
+    assert outcome.status == OutcomeStatus.NOT_CONFIGURED
 
     await facade.close()
 
@@ -159,765 +59,76 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-### Deprecation guidance for `nl2data_core` imports
-
-``nl2data_core`` remains internal: it is not removed, but direct application
-imports from it are deprecated. New code must import only ``nl2data``.
-Existing applications that import ``nl2data_core`` today should migrate
-through the facade:
-
-- Replace ``NL2DataEngine`` usage with ``NL2Data``/``create_facade`` where
-  possible (``NL2DataEngine`` stays for source compatibility).
-- Move composition inputs into ``CompositionProfile`` instead of
-  constructing internal runners, adapters, stores, or tenant contexts at
-  the application boundary.
-- Configuration still loads through the public ``load_config``; the typed
-  configuration model remains internal until a public configuration API
-  ships.
-
-### Future `nl2data_http` hosting boundary
-
-A later ``nl2data_http`` package (out of scope here) may host the library
-behind HTTP. The boundary is already fixed: it will program against the
-transport-neutral :class:`FacadePort` (async query, sync convenience,
-workflow lookup, cancellation, capabilities, health, drain, close) and the
-public models (query request/outcome, workflow handles, cancellation
-results, capability snapshots) without importing internal types. The core
-adds no HTTP dependency and never loads ``fastapi``, ``flask``, or
-``starlette``; transport hosts remain optional packages outside
-``nl2data`` and ``nl2data_core``.
-
-## AI runtime boundary (P2)
-
-The P2 AI runtime boundary keeps model providers optional and lazy, mirroring
-how database adapters plug into the governed path:
-
-- `ModelProvider` (internal `nl2data_core.ai.protocol`) is a provider-neutral
-  asynchronous port for structured output. It receives a bounded invocation
-  request (natural-language prompt plus an authorized context payload) and
-  never receives database clients, credentials, or unfiltered catalog objects.
-- The core ships a deterministic `FakeModelProvider` for contract, security,
-  and evaluation tests; it requires no credentials and no network access.
-- `IntentResolver` converts provider output into validated structured intent,
-  clarification, or safe rejection - never raw SQL/MQL/shell/AST/driver-shaped
-  output. Semantic references outside the authorized view fail closed, and
-  provider calls are bounded by the configured attempt budget.
-- The opt-in `AIWorkflowRunner` is a compatibility facade: without a provider
-  it preserves the P1 structured-IR path and the not-configured fallback;
-  with a provider it delegates the whole AI+Memory composition to the
-  governed workflow runtime (see below), which owns validation, governance,
-  authorization, and execution ordering.
-- Vendor model providers (OpenAI, Anthropic, LangChain, ...) belong in optional
-  packages behind the `ModelProvider` port, exactly like database drivers; the
-  core import boundary never loads them.
-
-### Model instruction contract
-
-System-instruction semantics are owned by the core, not by vendors:
-
-- `ModelInstructionBundle` (internal `nl2data_core.ai.instructions`) is an
-  immutable, versioned, provider-neutral instruction contract with bounded
-  typed sections - role, allowed behavior, output schema/version and response
-  mode, safety constraints, authorized context references, and safe
-  provenance fingerprints (view, model bundle, policy, tenant scope). It is
-  assembled by `assemble_instruction_bundle` from authorized context, the
-  Semantic View, policy fingerprints, and the fixed structured-intent output
-  contract - never from the user prompt.
-- The prompt and the instruction bundle always travel as separate fields of
-  `ModelInvocationRequest`; user text can never rewrite system instructions
-  through formatting, and instruction text can never leak into the prompt.
-  Vendor packages own only the transport mapping of the bundle to their own
-  system/developer/user message channels and never reconstruct governance
-  semantics from raw context.
-- Instructions are safe by construction: credentials, raw SQL/MQL,
-  executable text, native objects, raw tenant/principal claims, and hidden
-  policy material are rejected before any provider call with normalized
-  `UNSAFE_INSTRUCTION_CONTENT` / `INSTRUCTION_BOUNDS_EXCEEDED` errors, and
-  unsupported bundle versions fail closed with
-  `INSTRUCTION_VERSION_INCOMPATIBLE`.
-- Instruction identity is evidence, not text: bundle and output-schema
-  fingerprints appear in invocation metadata, workflow gate evidence, and AI
-  evaluation protected evidence, so security-context changes invalidate the
-  identity while no raw instruction or prompt text crosses any boundary.
-
-### OpenAI model provider (optional distribution)
-
-The `nl2data-openai` distribution implements the `ModelProvider` port with
-OpenAI structured output. It is optional and fully isolated: the core import
-boundary never loads the OpenAI SDK, and this package imports it only lazily
-at client build time - never at import, construction, or capability
-inspection.
-
-- **Installation**: install the sibling package from the `packages/`
-  directory (`pip install packages/nl2data-openai`); it depends on
-  `nl2data-core>=0.1.0` and `openai>=1.40,<3`. The core suite runs without
-  either package installed.
-- **Credential injection**: API keys never enter core models, configuration
-  fingerprints, request metadata, workflow state, telemetry, or errors. Inject
-  them through an `api_key_resolver` callable or a `client_factory` at
-  provider construction, or set the `OPENAI_API_KEY` environment variable,
-  which is read only when the client is first built.
-- **Model selection and limits**: `OpenAIProviderConfig` carries the vendor
-  `model_name` plus bounded invocation settings (`max_input_chars`,
-  `max_output_tokens`, `temperature`, `timeout_seconds`, optional `base_url`
-  and `organization`). Capabilities are derived from this configuration
-  without any network call.
-- **Retry ownership**: the provider performs exactly one vendor request per
-  `generate()` call. Timeout, retry, and attempt-budget policy belong to
-  `IntentResolver`; authentication/configuration failures are non-retryable
-  `INVALID_REQUEST` records, while timeout, connection, rate-limit, and
-  transient service errors map to retryable `MODEL_TIMEOUT` /
-  `PROVIDER_UNAVAILABLE` records. `close()` is idempotent and never leaks
-  native clients or exceptions.
-- **Live-test setup**: an opt-in live evaluation profile
-  (`run_live_openai_evaluation` in `nl2data_openai.live_evaluation`) runs the
-  deterministic AI dataset against the real provider and classifies every
-  case as `verified`, `unavailable`, or `skipped`. Without injected
-  credentials/factory or `OPENAI_API_KEY` every case is `skipped`, so default
-  CI needs no credentials and makes no network access; evidence carries only
-  protected fingerprints and normalized codes.
-- **Rollback**: swap the provider back to the core's deterministic
-  `FakeModelProvider` (`nl2data_core.ai.fake`) at composition time to remove
-  the SDK dependency and network access while keeping the same resolver,
-  governance, and evaluation gates.
-
-## Trusted tenant-context boundary (P2)
-
-The P2 tenant boundary lets hosts bind query execution to a trusted tenant
-scope without ever trusting client-supplied claims:
-
-- `TenantScopeContext` (internal `nl2data_core.tenancy`) is composed only from
-  trusted host integration input - never from `QueryRequest` bodies or
-  prompts. `QueryContext.tenant_hint` is recorded as untrusted routing
-  metadata only.
-- Trusted-context validation fails closed: missing context, inactive tenant
-  lifecycle states, unknown or unsupported isolation profiles, and client
-  hints that conflict with the trusted context are denied before any
-  adapter execution with `TENANT_CONTEXT_REJECTED`.
-- Tenant scope travels as deterministic SHA-256 scope fingerprints through
-  governance facts, policy scopes, execution authorization, workflow state,
-  telemetry context, and tenant-scoped namespace/cache-key primitives - raw
-  tenant IDs, principal IDs, delegation actors, entitlement claims, and
-  client hints are never persisted or exposed. Outcomes expose only the
-  bounded opaque `tenant_scope_fingerprint` reference.
-- Isolation profiles (`pooled`, `schema_isolated`, `database_isolated`,
-  `deployment_isolated`) declare the minimum enforcement obligations the
-  host must guarantee; missing or unsupported profile data denies
-  tenant-scoped execution instead of silently downgrading.
-- A deterministic conformance suite (`nl2data_core.tenancy.conformance`)
-  exercises positive propagation, cross-tenant reuse, inactive tenants,
-  delegation, namespace separation, missing context, and adversarial client
-  claims, emitting protected evidence and reports with no raw identity.
-
-### Host-integration responsibilities
-
-Authentication, durable state, and cryptographic trust remain outside this
-boundary and are owned by the host integration:
-
-- **Authentication**: verifying end-user and principal identity before
-  composing `SubjectContext`.
-- **Durable tenant state**: managing tenant lifecycle, entitlements, and
-  delegation records that feed trusted contexts.
-- **Memory**: long-lived cross-request state (sessions, caches, audit
-  stores) is host-owned; this core only defines bounded scope references for
-  future namespace primitives.
-- **HTTP authentication**: request authentication and tenant routing are
-  host gateway concerns; the core treats `tenant_hint` as untrusted input.
-- **Cryptographic trust**: key management, token signing, and trust
-  establishment for fingerprints and authorization artifacts are host
-  responsibilities; scope fingerprints are deterministic references and are
-  never treated as authentication.
-
-## Durable workflow-state boundary (P2)
-
-An optional durable workflow-state store (internal `nl2data_core.workflow`)
-persists safe workflow snapshots and idempotency records behind the
-replaceable `StateStore` protocol, so hosts can resume and deduplicate query
-work across restarts:
-
-- `SQLiteStateStore` implements the protocol with the Python standard library
-  `sqlite3` - no external database dependency. Records are keyed by
-  `(scope_namespace, workflow_id)`; tenant-scoped workflows are isolated in
-  opaque `tenant:workflow:<fingerprint>` namespaces derived only from scope
-  fingerprints, and unscoped lookups can never observe scoped records.
-- Snapshots are canonical JSON with an explicit `schema_version`; raw payload
-  fields (prompts, queries, SQL, results, rows, credentials, secrets, tokens)
-  are rejected on write and on read, so durable state never leaks raw input
-  or tenant identity.
-- Updates run inside `BEGIN IMMEDIATE` transactions with monotonic revision
-  compare-and-set: missing records, status changes, stale revisions, and
-  tenant-scope mismatches fail with structured `WorkflowStateError`
-  conflicts - stale writers never silently overwrite newer state.
-- Idempotency-key records bind a request identity to one workflow within its
-  scope namespace; reuse with a different request raises
-  `IDEMPOTENCY_CONFLICT`, and completed keys store only a safe terminal
-  outcome fingerprint reference.
-- When a `state_store` is bound, `QueryExecutionRunner` persists workflow
-  transitions, reserves the request id, and replays completed work as
-  `REJECTED` with the public `DUPLICATE_REQUEST` error code instead of
-  re-executing it. Recovery from a `RUNNING` checkpoint re-executes at
-  least once; this core never claims exactly-once external execution.
-- Retention is host-owned: `cleanup()` removes bounded batches of terminal
-  snapshots and expired idempotency records older than the given cutoffs;
-  active or running workflows are never touched.
-- SQLite file locking serializes writers, bounding this store to local
-  workers; the protocol stays replaceable for a service-backed store.
-
-### Shared PostgreSQL backend (P2)
-
-An optional PostgreSQL-backed implementation of the same replaceable
-contract (`nl2data_core.workflow.PostgreSQLStateStore`) lets separate
-workers and Pods share one durable workflow state, idempotency surface,
-and execution ownership:
-
-- **Optional installation and lazy driver boundary**: `pip install -e
-  ".[postgres]"` (psycopg 3 + psycopg_pool). The base package never
-  imports a database driver; the pool is built lazily from a host-owned
-  DSN, and DSNs/credentials are never stored in configuration models or
-  included in errors.
-- **Deployment namespace**: the store owns one bounded schema namespace
-  (default `shared`; pattern `^[A-Za-z][A-Za-z0-9_]{0,63}$`) created
-  lazily on first use, so multiple deployments sharing one database
-  service never observe each other's records. Tenant-scoped records stay
-  isolated in opaque `tenant:workflow:<fingerprint>` namespaces exactly
-  like SQLite.
-- **Versioned migration lifecycle**: schema metadata records the applied
-  version; migrations are additive and applied transactionally up to the
-  configured target (default 1). A database reporting a newer schema
-  than the runtime supports is rejected with a structured
-  `UNSUPPORTED_SCHEMA_VERSION` error without modification - old runtimes
-  fail closed against new deployments, and downgrading is a deployment
-  decision, never an automatic rollback.
-- **Safe snapshots and compare-and-set**: snapshots are the same
-  canonical JSON envelopes with raw-payload rejection; updates are
-  transactional CAS on revision/status/scope, and terminal records can
-  never be overwritten.
-- **Execution leases and fencing**: before resumable execution the
-  runtime acquires a lease (`lease_ttl_seconds`, default 120) granting at
-  most one active owner per workflow. Every stage entry renews the lease
-  when its remaining time drops below `lease_renewal_margin_seconds`
-  (default 20), the lease is reverified immediately before adapter
-  execution, and state mutations, idempotency completion, and terminal
-  persistence require the current owner and a monotonically increasing
-  fencing token. A stale owner is rejected with `FENCING_REJECTED` and
-  can never commit after takeover.
-- **Stale-owner takeover**: a lease is recoverable only after expiry plus
-  the configured clock tolerance (`clock_tolerance_seconds`, default 2);
-  takeover bumps the fencing token, so a partitioned worker can never
-  race a recovered worker for ownership.
-- **Failure normalization and recovery**: connect/command timeouts, pool
-  acquisition failures, and lease-busy conditions surface as retryable
-  `STORE_UNAVAILABLE`/`STORE_TIMEOUT`/`LEASE_BUSY` public errors, while
-  conflicting CAS/status/schema and fencing conditions surface as public
-  rejections. Recovery remains at-least-once: a worker crash leaves a
-  safe checkpoint and an expiring lease, and the next worker resumes
-  from the checkpoint after takeover without claiming exactly-once
-  external execution. Ambiguous post-execution states (external work
-  finished but terminal persistence fenced out) are surfaced for
-  reconciliation - never silently replayed or claimed as success.
-- **Bounded cleanup**: `cleanup()` removes only bounded batches of
-  terminal snapshots, expired idempotency records, and expired leases;
-  running workflows and valid leases always survive.
-- **Verification**: deterministic unit, contract, and concurrency suites
-  run over an in-memory fake pool with no service
-  (`tests/unit/test_postgres_shared.py`,
-  `tests/contract/test_shared_store_contract.py`,
-  `tests/contract/test_shared_store_concurrency.py`); an optional
-  real-service profile (`tests/integration/test_postgres_shared_real.py`)
-  skips when the driver or service is unavailable - never a pass.
-
-## Memory / multi-turn context boundary (P2)
-
-The P2 memory boundary lets hosts bind multi-turn context to query execution
-while keeping Memory strictly contextual - it never caches or replays raw
-results:
-
-- Immutable, bounded `MemoryRecord` models (internal `nl2data_core.memory`)
-  cover working state, session summaries, query references, semantic
-  decisions, and audit references. They store only logical facts and
-  protected SHA-256 fingerprints of intent, IRs, artifacts, policies, and
-  catalogs - never raw prompts, SQL/MQL, result rows or documents, secrets,
-  or native objects.
-- The replaceable `MemoryProvider` protocol (append, recall, compare-and-set,
-  compact, expire, delete) ships with a deterministic in-memory
-  implementation scoped by tenant, session, and conversation fingerprints.
-  Scope mismatches are denied, records expire by TTL, recall honors bounded
-  budgets, and unavailable providers raise normalized errors.
-- `MultiTurnResolver` projects recalled references into the P2.1 provider
-  context and revalidates them on every turn: tenant scope, policy/catalog
-  fingerprints, semantic view, adapter/artifact references, and record
-  expiry. Stale or out-of-scope references fail closed into clarification,
-  and a dependent follow-up never executes a recalled IR directly.
-- Memory is context only. Raw result caching is unsupported: no path stores
-  or replays query results or rows.
-- An optional Redis-backed provider (`nl2data_core.memory.RedisMemoryProvider`,
-  install the `redis` extra) implements the same protocol against a shared
-  Redis service so separate workers and Pods observe one bounded context.
-  It stores only the same safe serialization envelopes, keeps record ids
-  atomic through a namespaced registry, and revalidates every recalled
-  record - so a stale or foreign index member can never authorize a record.
-- **Redis configuration**: hosts own the connection url (never stored in
-  configuration models) and the namespace - one unique namespace per
-  application/environment, since providers never share or assume ownership
-  of keys outside it. `RedisMemoryConfig` validates the namespace pattern
-  and bounds TTL, capacity, recall candidates/batches, compaction batches,
-  expired-id retention, and connect/command timeouts before any
-  connection is made.
-- **TTL behavior**: records expire by their own `ttl_seconds`; an explicitly
-  expired record id stays reserved for `expired_id_retention_seconds`
-  before it may be reused. Availability is a bounded ping; on any failure
-  operations raise normalized `MEMORY_UNAVAILABLE` errors and the workflow
-  degrades statelessly to the P2.1 path - Memory is never required for
-  query execution.
-- Memory provides no workflow execution fencing: shared storage does not
-  serialize or fence workflow runs. Execution ordering, cancellation, and
-  idempotency remain owned by the workflow runtime and durable state
-  store, exactly as with the in-memory provider.
-- When Memory is unavailable the workflow degrades statelessly to the P2.1
-  path; memory injection into `AIWorkflowRunner` is opt-in and keeps the
-  governed boundary - validation, authorization, and IR checks still run
-  on every turn.
-- A deterministic conformance suite (`nl2data_core.memory.conformance`)
-  exercises raw-payload rejection, scope isolation, stale reference denial,
-  retention, deletion, compaction, stateless fallback, and bounded recall,
-  emitting protected evidence and reports with no raw material.
-
-## Semantic View resolution boundary (P2)
-
-The P2 semantic-view boundary lets hosts bind query execution to an immutable,
-versioned Semantic View (internal `nl2data_core.views`) instead of an unscoped
-authorized-view shape:
-
-- **Definitions and descriptors**: `SemanticViewDefinition` binds a bounded
-  `SemanticDescriptor` (entities, fields, relationships, operations, result
-  shapes) to trusted context references: allowed purposes, bound tenant-scope
-  and principal-authorization fingerprints, bound policy fingerprint, required
-  adapter capabilities and feature flags, and a model version. Every model is
-  frozen with forbidden extra fields, collection and text limits are enforced
-  at construction, and fingerprints are canonical so equivalent inputs with
-  different mapping insertion orders produce identical identities.
-- **Fail-closed resolution**: `ViewRegistry.resolve(view_id, ResolutionContext)`
-  applies tenant scope (present/active/matching), principal authorization,
-  purpose, policy fingerprint, model/catalog/bundle version, adapter
-  capabilities, and feature flags before projecting any member. Missing,
-  inactive, mismatched, stale, or unsupported inputs yield structured
-  `denied`/`unavailable` outcomes - never partial members. Client hints are
-  non-authoritative routing metadata and can never establish access.
-- **Bundle-backed snapshots**: when a `SemanticModelBundle` is configured on
-  the registry, views bound to the bundle's descriptor resolve against the
-  complete active validated bundle snapshot and require a matching
-  `bundle_fingerprint` in the resolution context (`bundle_scope_missing`/
-  `bundle_stale` fail closed). Projections and provenance carry the bundle
-  identity/version/fingerprint, and descriptor-only resolution remains an
-  explicit compatibility mode with exactly one conversion path.
-- **Authorized projections**: a resolved projection exposes only permitted
-  entities, fields, operations, relationships, and safe descriptions. Its
-  fingerprint covers every security dimension (view identity/version,
-  model/catalog, active bundle identity/version/fingerprint, tenant scope,
-  principal authorization, purpose, policy, adapter capabilities, feature
-  flags), so a change in any trusted input invalidates every previously
-  recorded projection, IR reference, and workflow checkpoint.
-- **IR binding and validation**: IR produced under a resolved view carries an
-  `IRViewReference` (view id/version/fingerprint) plus provenance, and
-  validation re-checks the reference and every referenced member against the
-  current projection - excluded sources, entities, fields, operations,
-  aggregations, and result shapes fail closed with structured issues before
-  compilation.
-- **AI context assembly**: model-provider context is assembled only from the
-  authorized projection; physical bindings, credentials, restricted members,
-  and hidden policy details never enter the provider payload.
-- **Workflow evidence**: view-bound executions record view id/version/
-  fingerprint in stage-checkpoint metadata and a `view` compatibility
-  fingerprint in checkpoint state; resuming under a different resolved view is
-  rejected with `STALE_CHECKPOINT` before any adapter execution, and a stored
-  IR whose derivation changed is refused at the execute gate.
-- **Memory revalidation**: recalled references are revalidated against the
-  current resolved-view fingerprint on every turn; a follow-up under a changed
-  view - including an activation or rollback of the active bundle - fails
-  closed into clarification before the model provider is invoked.
-- **Legacy compatibility and migration**: when no view registry is configured,
-  existing unbound IR keeps executing exactly as before - no view identity is
-  fabricated. Migration is explicit: configure a registry, resolve views from
-  trusted context, and bind projections to the runtime; new IR-producing paths
-  must carry a view reference once a registry is configured. Rollback is
-  symmetric: unbind the projection and the unbound-IR path remains.
-- Relevant suites: `tests/unit/test_semantic_views.py`,
-  `tests/contract/test_semantic_view_resolution.py`,
-  `tests/security/test_semantic_view_security.py`, and
-  `tests/integration/test_semantic_view_workflow.py`.
-
-## Semantic Model Bundles (P2.5)
-
-Versioned immutable semantic artifacts (internal `nl2data_core.bundles`) wrap
-one validated `SemanticDescriptor` and add measures/aggregations, semantic
-grain, source/catalog references, dependency fingerprints, authored/inferred/
-approved trust markers, safe provenance, quality status, and compatibility
-metadata - never credentials, connection material, raw executable
-SQL/MQL/code, native objects, physical bindings, or authorization claims:
-
-- **Immutable contract models**: every bundle model is frozen with forbidden
-  extra fields and bounded collections/text. Construction enforces identifier
-  patterns, safe descriptions, uniqueness, aggregation literals, and the
-  schema-version literal; the bundle wraps the existing descriptor primitives
-  so entity/field/relationship validation is never duplicated.
-- **Canonical fingerprints**: `SemanticModelBundle.fingerprint` is a SHA-256
-  fingerprint of the canonical payload, so equivalent contents with different
-  mapping insertion orders produce identical identities; a new version is a
-  new bundle with a new fingerprint.
-- **Structural validation**: `validate_bundle` checks cross-references
-  (measure fields and aggregations, grain entities/attributes, trust fact
-  references), completeness (at least one source reference, non-draft quality
-  status), and schema compatibility, reporting bounded structured issues that
-  never leak raw material.
-- **Catalog lifecycle**: the replaceable `SemanticBundleCatalog` protocol and
-  bounded `InMemorySemanticBundleCatalog` publish only validated bundles,
-  reject duplicate versions, activate atomically (revalidating and requiring
-  every declared dependency to be published with a matching fingerprint),
-  expose immutable active snapshots, and roll back to a previously active
-  version without ever mutating a published artifact.
-- **Canonical loading**: `CanonicalBundleLoader` rejects unsupported schema
-  versions with an explicit `incompatible_schema` result before model
-  construction, recomputes the fingerprint so an altered payload fingerprint
-  can never be trusted, and surfaces every structural problem as a bounded
-  structured issue.
-- **Trust is metadata, never authority**: inferred facts may be retained as
-  metadata but can never independently grant View visibility or execution
-  authority - only trusted View/governance resolution grants access. Bundle
-  provenance serializes bounded opaque references and status only.
-- Relevant suites: `tests/unit/test_semantic_model_bundles.py`,
-  `tests/contract/test_bundle_catalog.py`,
-  `tests/security/test_bundle_security.py`, and
-  `tests/integration/test_bundle_view_workflow.py`.
-
-## Metadata discovery and inference boundary (P2.5)
-
-An immutable, provider-neutral discovery snapshot (internal
-`nl2data_core.metadata`) captures what a source catalog looks like without
-any raw values, credentials, or unapproved identity data, and a deterministic
-inference/review boundary converts only explicitly approved facts into
-Semantic Model Bundle inputs:
-
-- **Snapshot contract**: `MetadataSnapshot` is frozen and versioned, with
-  objects (tables/views/collections), fields (bounded dotted paths),
-  constraints, relationships, safe statistics, freshness flags, and
-  provenance/evidence references. Canonical serialization and the SHA-256
-  fingerprint sort objects/relationships by id, so equivalent discovery
-  results with different mapping orders produce identical identities.
-- **Discovery permissions**: discovery is authorized per adapter - object
-  allowlists fail closed (an empty or non-intersecting allowlist raises a
-  structured `MetadataUnauthorizedError`), and tenant/source authorization
-  is enforced before any catalog read. SQL and MongoDB discoverers expose
-  one common protocol (`MetadataDiscoverer`) plus optional capability
-  declarations (`metadata_discovery_capability()`) that never leak
-  backend-specific models into the common contract.
-- **Sampling and bounds**: discovery is bounded by
-  `MetadataDiscoveryConfig` (`max_objects`, `max_fields_per_object`,
-  `include_statistics`, sampling limits); truncation is reported explicitly
-  through `MetadataFreshness.bounded_*` flags, never silently. Missing or
-  unreachable sources raise retryable `MetadataUnavailableError`s; errors
-  never leak paths, DSN material, or sampled values.
-- **Trust levels**: every fact carries `declared` (source schema),
-  `observed` (sampled, e.g. MongoDB dotted paths with
-  `observed_incomplete`), or `inferred` (derived) trust, plus bounded
-  evidence fingerprints and confidence - metadata is never authority.
-- **Review workflow**: `infer_proposals` deterministically derives entity/
-  field/relationship/measure/grain/alias/classification proposals with
-  method, evidence, confidence, trust, freshness, and source snapshot
-  attached. `SemanticProposalSet` supports explicit `approve`/`reject`/
-  `revise`; only `APPROVED` proposals convert (`convert_approved_proposals`),
-  and PENDING/REJECTED/REVISED facts never become bundle inputs, never grant
-  View visibility, and never create mandatory filters or execution
-  authorization.
-- **Schema drift**: `compare_snapshots` reports added/removed/changed
-  objects, fields, types, constraints, and relationships as safe
-  references only. `validate_bundle(..., expected_snapshot_fingerprint=...)`
-  rejects unbound (`snapshot_unbound`) or stale (`snapshot_stale`) bundles
-  before activation; View resolution fails closed with `catalog_stale`
-  when the trusted catalog fingerprint drifted; and SQL/MongoDB adapters
-  bound to a snapshot reject mismatched artifacts with
-  `SQLAdapterError`/`MongoAdapterError` before any execution.
-- **Manual fallback**: discovery is optional. Manually authored
-  descriptors/bundles and adapters without snapshot bindings keep working
-  unchanged (`expected_snapshot_fingerprint=None`); query adapters and
-  metadata discoverers are separate protocols.
-- Relevant suites: `tests/unit/test_metadata_snapshot.py`,
-  `tests/contract/test_metadata_discovery.py`,
-  `tests/security/test_metadata_security.py`, and
-  `tests/integration/test_metadata_drift.py`.
-
-## Governed workflow runtime (P2)
-
-The P2.5 governed workflow runtime (internal `nl2data_core.workflow`) owns
-one explicit order for the existing boundaries instead of nesting
-conditionals inside runners:
-
-- A framework-neutral `WorkflowRuntime` protocol with typed immutable
-  `WorkflowExecutionContext`, stage results, deadlines, cancellation, safe
-  errors, and protected evidence. The core never imports or depends on
-  LangGraph; a deterministic reference runtime implements the same contract
-  and is the conformance baseline.
-- One explicit ordered stage graph:
-  `initialize -> memory -> intent -> plan -> validate -> compile -> guard
-  -> govern -> authorize -> execute -> protect -> persist -> complete`.
-  Clarification, denial, timeout, cancellation, retry exhaustion, and
-  approval-required are typed terminal or controlled branch outcomes -
-  never generic provider exceptions. `SUCCEEDED` and `CLARIFICATION` map
-  one-to-one onto public outcomes; the rest normalize to public
-  `REJECTED`/`FAILED` outcomes with specific error codes.
-- Mandatory gates: the adapter is never invoked unless current tenant
-  scope, IR validation, compilation, artifact-guard, governance, artifact
-  validation, authorization, and deadline evidence are present and fresh.
-  `validate_stage_entry` enforces the ordered `REQUIRED_GATES`: COMPILE
-  requires IR validation, GUARD requires compilation, and EXECUTE requires
-  all eight gates (tenant scope, IR validation, compilation, artifact
-  guard, governance, artifact validation, authorization, deadline).
-  Denial or malformed input stops before any external work starts, and a
-  future optional backend must pass the same gate assertions.
-- Compiler-governance boundary: SQL and MongoDB compilers consume one
-  immutable `CompilationContext` (validated IR, adapter capabilities,
-  effective limits, mandatory filter obligations, view/bundle/tenant/
-  policy references, physical bindings) and emit backend-neutral
-  `CompilationEvidence` carrying only fingerprints - never raw SQL/MQL,
-  credentials, or identity. Compilation alone cannot grant authority:
-  execution requires an artifact guard bound to the compiled artifact and
-  an authorization issued only after governance, then re-verified by
-  `verify_pre_execution_guard` immediately before execution against IR,
-  capability, obligation, bound, tenant, and authorization evidence.
-  Protected results and audit evidence retain the full logical-to-physical
-  lineage (IR, view/model/policy, artifact, guard, authorization, and
-  result fingerprints) without raw payloads.
-- Cooperative cancellation and request deadlines: every stage that can
-  perform external work receives a bounded deadline/cancellation context
-  and stops before starting the next external operation. The runtime never
-  claims it cancelled an already-running external call; ambiguous
-  post-execution states are recorded for reconciliation.
-- Checkpoints persist only safe evidence: stage name, workflow state,
-  tenant scope, configuration/policy/catalog/semantic/artifact
-  fingerprints, and bounded retry/repair counters. Raw prompts, queries,
-  IRs, results, provider, and native objects never enter runtime state.
-- Relevant suites: `tests/contract/test_compiler_governance_boundaries.py`,
-  `tests/contract/test_compiler_parity.py`, and
-  `tests/security/test_compiler_governance_security.py`, alongside the
-  backend conformance suites below.
-
-### At-least-once recovery and idempotency
-
-- Checkpoints persist through the replaceable P2.3 `StateStore` at stage
-  boundaries; restart resumes only compatible non-terminal checkpoints.
-  Stale configuration/policy/catalog/semantic/artifact snapshots and
-  cross-tenant checkpoints are rejected, never resumed.
-- Recovery is at-least-once: an interrupted workflow may re-run stages, and
-  this core never claims exactly-once external execution. Completed
-  terminal outcomes replay idempotently through durable idempotency-key
-  records without re-executing finished external work.
-- With the shared PostgreSQL backend, at-least-once recovery extends
-  across workers: one worker owns the lease at a time, renewal is bounded
-  by the lease TTL, and a lost owner is fenced out before it can commit
-  state or claim terminal completion.
-
-### Optional LangGraph backend
-
-A future optional backend (for example `nl2data-langgraph`) may translate
-the core stage contract to LangGraph nodes and checkpoints behind the
-`WorkflowBackend`/`WorkflowBackendProfile` contract. It must pass the same
-mandatory conformance suite (`tests/contract/test_backend_conformance.py`,
-`tests/conformance/test_workflow_runtime_conformance.py`) and cannot bypass
-core gates; activation happens only after conformance passes.
-
-### Unsupported today
-
-Streaming wire protocols, autonomous repair or agent loops (only bounded
-extension points exist), a public approval-required outcome status
-(internal runtime event only), and additional service-backed stores
-(MongoDB, HTTP transport) are out of scope for this runtime. Multi-worker
-execution is supported for durable workflows through the shared
-PostgreSQL backend above; any other backend must pass the same mandatory
-conformance suite before activation.
-
-## PostgreSQL conformance profile
-
-The P1 query-execution foundation ships an optional PostgreSQL conformance
-profile that reuses the SQLite fixture's logical schema, seed data, policy
-cases, and protected result assertions.
-
-- Install the optional driver: `pip install -e ".[postgres]"` (psycopg 3).
-- Point the profile at a developer-managed service with the
-  `NL2DATA_POSTGRES_DSN` environment variable (default:
-  `postgresql://localhost:5432/nl2data_test`).
-- The profile never requires the service: when the driver or service is
-  unavailable, conformance tests are skipped and evaluation outcomes are
-  reported as `skipped`/`unavailable` - never as a pass.
-- Relevant suites: `tests/integration/test_fixtures.py` and
-  `tests/conformance/test_postgres_conformance.py`.
-
-## MongoDB adapter profile (P2)
-
-The P2 query-execution foundation adds a structured, read-only MongoDB
-specialization behind the same generic `QueryAdapter` lifecycle, with the
-same governed order (IR validation, compilation, artifact guard,
-governance, authorization, protected results) as SQL.
-
-- **Optional installation**: `pip install nl2data-core[mongodb]` (PyMongo
-  4.6+). The base package never imports PyMongo; MongoDB models, the
-  validator, and the deterministic fake executor work with no driver, and
-  import-boundary tests enforce that no MongoDB type or dependency enters
-  the public `nl2data` API or the framework-neutral adapter contracts.
-- **Supported operations**: `find`, bounded `aggregate` pipelines
-  (`$match`, `$project`, `$sort`, `$skip`, `$limit`, `$group`, `$count`,
-  `$unwind`), and `count_documents`. Writes, administrative commands,
-  JavaScript, `$where`, regex evaluation, wildcard projections, and
-  unbounded operations are rejected before any driver call.
-- **Safe defaults**: specifications are strict JSON wire forms validated
-  against collection/field/operator/stage allowlists; results are bounded
-  by document, column, byte, and wall-clock limits; supported BSON values
-  are normalized conservatively into scalar `ExecutionResult` rows, and
-  unsupported native values fail with safe structured errors that never
-  expose the raw value. Canonical normalization makes fingerprints stable
-  across runs.
-- **Tenant and governance integration**: MongoDB query facts (collections,
-  fields, operators, stages, result shape, tenant obligations) feed the
-  existing governance, tenant-scope, execution-authorization, and result
-  protection gates; pooled profiles require mandatory tenant predicates,
-  and non-pooled profiles require routing evidence, failing closed when
-  the adapter profile cannot enforce them.
-- **Driver/service availability**: the optional PyMongo profile connects
-  lazily and reports `MONGO_UNAVAILABLE` when the driver is missing or the
-  service is unreachable - never a false pass. Real-service conformance is
-  skipped (`skipped`/`unavailable` outcomes) unless both exist; the
-  deterministic fake executor covers the same conformance and
-  SQL/Mongo equivalence cases without any service.
-- **Deferred capabilities**: `$lookup`/cross-collection joins, Atlas
-  Search/vector stages, map-reduce, change streams, writes, explain-based
-  cost estimation, and native BSON identifier/date forms beyond the
-  normalized scalar set are out of scope for the first profile.
-- Relevant suites: `tests/unit/test_mongodb_specs.py`,
-  `tests/contract/test_mongodb_adapter.py`,
-  `tests/contract/test_compiler_parity.py`,
-  `tests/security/test_mongodb_security.py`,
-  `tests/security/test_compiler_governance_security.py`,
-  `tests/conformance/test_mongodb_conformance.py`,
-  `tests/integration/test_mongodb_governance.py`, and
-  `tests/integration/test_mongodb_real.py` (optional service).
-
-## Production metadata discovery (P2)
-
-The production profile (internal `nl2data_core.metadata`) turns metadata
-discovery into a governed, evidence-only operation: snapshots are immutable,
-activation is policy-checked, drift is classified by severity, and operational
-evidence never exposes connection material or unrestricted names. It is an
-optional capability layered over the provider-neutral `MetadataDiscoverer`
-contract; manual descriptor and Bundle construction keeps working unchanged.
-
-### Prerequisites
-
-- A trusted source/tenant authorization context: `DiscoveryAuthorization`
-  requires a `source_id`, a trusted tenant scope fingerprint, and a
-  `discovery_identity_fingerprint` referencing the read-only discovery
-  identity - never credentials, DSNs, or physical connection details.
-- Optional drivers for real services: `pip install -e ".[postgres]"`
-  (psycopg 3) or `pip install nl2data-core[mongodb]` (PyMongo). Drivers are
-  imported lazily; the base package never imports them.
-- A reachable service for real discovery: the dedicated integration workflow
-  (`.github/workflows/integration.yml`) starts PostgreSQL and MongoDB with
-  health checks (`pg_isready`, `mongosh ping`). Locally, missing drivers or
-  unreachable services report `skipped` - never a pass - and every skip
-  reason is surfaced with `-rs`.
-
-### Least-privilege permissions
-
-- Discovery is read-only: PostgreSQL introspection runs inside
-  `SET TRANSACTION READ ONLY` with a bounded `statement_timeout`, and MongoDB
-  discovery uses read-only client operations. A SELECT-only role is
-  sufficient for the full profile.
-- Privileges bound the catalog: schema `USAGE` without `SELECT` sees no
-  tables, an invalid identity fails closed as `unavailable`, and an empty
-  object allowlist denies the whole run (`unauthorized`) before any metadata
-  is read.
-
-### Allowlists and bounds
-
-- `ProductionDiscoveryConfig.bounds` carries the object/field allowlists and
-  the bounded limits: `max_objects`, `max_fields_per_object`, `max_samples`,
-  `max_statistics`, `timeout_seconds`, `max_concurrency`, and
-  `include_statistics`. An empty `allowed_objects` denies every object.
-- `sensitive_name_markers` counts objects/fields whose names match a marker
-  (`redacted_sensitive_objects`/`redacted_sensitive_fields`) but never names
-  them in evidence.
-- Every failure is normalized into a safe `DiscoveryOutcome` category
-  (`unavailable`, `unauthorized`, `bounds_exceeded`, `discovery_failed`)
-  with bounded counts, duration, truncation flags, and fingerprints - never
-  driver text, DSNs, credentials, raw rows, or sampled values.
-
-### Snapshot lifecycle, retention, and activation
-
-- Snapshots are immutable and host-owned: `SnapshotLedger` (process-local
-  by design - no distributed metadata registry is added) registers snapshots
-  as retained evidence, and only complete snapshots activate by default.
-  Bounded/partial snapshots (allowlist truncation, sample bounds,
-  `observed_incomplete` collections) register as `partial` evidence and are
-  rejected on activation unless an explicit `allow_partial` policy accepts
-  them.
-- Retention is bounded and explicit: `cleanup_expired` drops records past
-  their retention window (default 30 days), including an expired active
-  snapshot, so an expired snapshot stops resolving until a fresh discovery
-  run registers and activates a replacement. A failed or unauthorized run
-  never replaces the active snapshot, and `discovery_health` reports the
-  last outcome category and freshness without exposing names.
-- Activation requires an explicit `SnapshotActivationPolicy`: freshness
-  bound, tenant/source scope, compatible catalog fingerprints, and
-  partial-snapshot tolerance. `check_snapshot_activation` fails closed on
-  `snapshot_unavailable`, `snapshot_unauthorized`, `source_changed`,
-  `catalog_incompatible`, `snapshot_partial`, `snapshot_stale`, and
-  `blocking_drift`. Bundle catalog activation consumes the same rules
-  through `ProductionActivationContext`.
-
-### Drift response
-
-- `classify_drift` rates changes between two compatible snapshots:
-  `informational` (unreferenced additions), `warning` (unreferenced
-  removals/type changes), and `blocking` (referenced removals, referenced
-  type/constraint changes, source identity or catalog changes, expired
-  freshness). Blocking decisions reject activation by default.
-- An explicit `DriftOverride` permits exactly one decision (by canonical
-  decision fingerprint), is scoped to one tenant and one source, carries a
-  bounded safe reason, and may expire. It can never widen an allowlist or
-  authorize anything outside its decision; wrong-tenant or wrong-source
-  overrides stay blocked.
-
-### Rollback and manual fallback
-
-- Manual Bundle construction (a descriptor with `catalog_fingerprint=None`
-  and publish/activate without a production context) keeps working
-  unchanged - the fallback path needs no snapshot or ledger.
-- To roll back an activation, activate a previous registered snapshot under
-  the same policy, or re-register and re-activate the prior discovery
-  snapshot; stale snapshot/bundle evidence fails closed in View resolution
-  (`snapshot_stale`/`bundle_stale`) and stale workflow checkpoints are
-  rejected before any adapter execution.
-
-### Known limitations
-
-- The ledger is process-local; cross-process lifecycle coordination is a
-  host responsibility (a later shared catalog must implement the same
-  host-owned semantics).
-- Discovery captures structural evidence (objects, fields, constraints,
-  relationships, statistics) - never row data, sampled values, or
-  credentials.
-- Recovery semantics remain at-least-once: re-running a discovery is safe
-  because snapshots are deterministic, but the core never claims exactly-
-  once external execution.
-- Real-service profiles require the service and driver; without them they
-  skip explicitly and are never reported as production verification.
-- Relevant suites: `tests/unit/test_metadata_production.py`,
-  `tests/contract/test_metadata_discovery.py`,
-  `tests/integration/test_production_profile_e2e.py`,
-  `tests/integration/test_postgres_discovery_real.py`, and
-  `tests/integration/test_mongodb_discovery_real.py`.
+Every query returns a protected `QueryOutcome`; internal details never
+cross the public boundary. Bind a pre-built `WorkflowRuntimePort` or the
+deterministic composition parts (adapter, policy scope, view, plan
+resolver, provider, state store, tenant context — all optional) to
+execute real work. See the [quickstart](docs/getting-started/quickstart.md).
+
+## Capability and support status
+
+| Capability | Status | Prerequisites |
+| --- | --- | --- |
+| Public facade, lifecycle, protected outcomes | Implemented + conformant | None |
+| Semantic IR, View/Bundle resolution | Implemented + conformant | None |
+| Governed workflow runtime (deterministic) | Implemented + conformant | None |
+| SQL adapter (SQLite fixtures) | Implemented + conformant | `sql` extra (`sqlglot`) |
+| SQL adapter (PostgreSQL) | Implemented; service-verified in CI | `postgres` extra + service |
+| MongoDB adapter | Implemented; service-verified in CI | `mongodb` extra + service |
+| Durable workflow state (SQLite) | Implemented + conformant | None |
+| Shared workflow state (PostgreSQL) | Implemented; service-verified in CI | `postgres` extra + service |
+| Memory (in-memory) | Implemented + conformant | None |
+| Memory (Redis) | Implemented; service-verified in CI | `redis` extra + service |
+| Metadata discovery (PostgreSQL/MongoDB) | Implemented; service-verified in CI | `postgres`/`mongodb` extra + service |
+| AI intent resolution + evaluation | Implemented + conformant | `nl2data-openai` for live provider |
+| OpenAI structured-output provider | Implemented; live-verified on demand | `nl2data-openai` + credentials |
+
+Status vocabulary: **Implemented** (exists in source), **Conformant**
+(passes the deterministic conformance suite), **Verified** (passed a
+real-service/live-provider run). Nothing in this repository claims
+general **production support** for unverified adapters, transports, or
+deployment topologies — see [Production readiness](docs/reference/production-readiness.md).
+
+## Limitations
+
+- **At-least-once execution**: interrupted workflows may re-run stages;
+  this core never claims exactly-once external execution.
+- **No HTTP hosting**: there is no `nl2data_http` package yet; hosting
+  behind HTTP is out of scope (a future host programs against the
+  transport-neutral `FacadePort`).
+- **No streaming, agent loops, or autonomous repair** beyond the bounded
+  extension points; approval-required is an internal runtime event only.
+- **Process-local metadata ledger**: cross-process metadata lifecycle
+  coordination is a host responsibility.
+- **Real-service verification is environment-dependent**: without a
+  service or driver, real-service profiles skip explicitly — never a
+  false pass.
+
+## Documentation
+
+- [Documentation index](docs/README.md) — reader-oriented guides for
+  users, integrators, architects, operators, and contributors.
+- [Installation](docs/getting-started/installation.md) ·
+  [Quickstart](docs/getting-started/quickstart.md)
+- [Architecture overview](docs/architecture/overview.md) ·
+  [Execution flow](docs/architecture/execution-flow.md) ·
+  [Evidence and fingerprints](docs/architecture/evidence-and-fingerprints.md)
+- [Service configuration](docs/operations/services.md) ·
+  [Secrets and live testing](docs/operations/secrets.md) ·
+  [Troubleshooting](docs/operations/troubleshooting.md)
+- [Configuration](docs/reference/configuration.md) ·
+  [Error codes](docs/reference/error-codes.md) ·
+  [Compatibility](docs/reference/compatibility.md)
+- 中文文档：访问[文档索引](docs/README.zh-CN.md)（English is the
+  normative source; Chinese pages are staged translations）。
 
 ## Development
 
 ```bash
-python -m pytest        # full unit/contract/integration/security suite
-python -m mypy src      # static type checking
-python -m ruff check src tests  # lint
+python -m pytest                      # full unit/contract/integration/security suite
+python -m mypy src packages/nl2data-openai/src  # static type checking
+python -m ruff check src tests packages/nl2data-openai/src  # lint
+python scripts/check_docs.py          # documentation quality gates
 ```
+
+See [Local development](docs/development/local-development.md).

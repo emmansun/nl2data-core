@@ -47,10 +47,31 @@ jobs:
         run: python -m pytest -q
 
       - name: Run Ruff
-        run: python -m ruff check src tests packages/nl2data-openai/src
+        run: python -m ruff check src tests packages/nl2data-openai/src scripts
 
       - name: Run Mypy
         run: python -m mypy src packages/nl2data-openai/src
+
+  docs:
+    name: Documentation quality gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install core development dependencies
+        run: python -m pip install --upgrade pip && python -m pip install -e ".[dev]"
+
+      - name: Run documentation checks
+        run: python scripts/check_docs.py
 
   build:
     name: Build distributions

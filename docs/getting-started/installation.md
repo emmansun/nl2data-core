@@ -1,0 +1,78 @@
+# Installation
+
+> **Reader**: application developers. **Prerequisites**: Python 3.11+ and
+> `pip`. All commands in this guide are deterministic and require no
+> credentials or network service.
+
+## Install the core library
+
+```bash
+pip install nl2data-core
+```
+
+The base package depends only on `pydantic>=2.0,<3` and `PyYAML>=6.0`.
+Importing it never loads database drivers, model-provider SDKs, HTTP
+frameworks, or telemetry backends — optional backends stay unloaded until
+you compose them explicitly.
+
+## Optional extras
+
+| Extra | Provides | Dependency |
+| --- | --- | --- |
+| `sql` | SQL query adapter (SQLite fixtures use the standard library; `sqlglot` powers bounded SQL compilation) | `sqlglot>=25.0,<30` |
+| `postgres` | Shared workflow state backend (`PostgreSQLStateStore`) and PostgreSQL discovery/conformance profiles | `psycopg[binary,pool]>=3.1,<4` |
+| `mongodb` | MongoDB query adapter and metadata discovery profile | `pymongo>=4.6,<5` |
+| `redis` | Redis-backed Memory provider | `redis>=5.0,<7` |
+
+```bash
+# For example: SQL adapter plus Redis Memory
+pip install "nl2data-core[sql,redis]"
+```
+
+Extras are lazy: installing them does not import anything at package
+import time. Drivers are loaded only when a real service client is
+first built.
+
+## Install the optional OpenAI provider
+
+The OpenAI provider is a separate distribution implementing the
+provider-neutral `ModelProvider` contract:
+
+```bash
+pip install nl2data-openai
+```
+
+It depends on `nl2data-core>=0.1.0` and `openai>=1.40,<3`. The OpenAI SDK
+is never imported at package import time; the client is built lazily from
+injected credentials on first use.
+
+From a source checkout, both packages install with:
+
+```bash
+pip install -e ".[dev]"
+pip install -e packages/nl2data-openai
+```
+
+## Install for development
+
+See [Local development](../development/local-development.md) for the
+full contributor setup (virtual environment, test tooling, lint, type
+checking, and package builds).
+
+## Verify the installation
+
+```python
+import nl2data
+
+print(nl2data.__all__)  # public API surface
+```
+
+If this prints the public symbol list, the core is installed. Continue
+with the [Quickstart](quickstart.md).
+
+## Next steps
+
+- [Quickstart](quickstart.md) — compose a facade and submit a first query.
+- [Composition and query lifecycle](../guides/composition-and-query-lifecycle.md)
+  — protected outcomes, clarification, cancellation, and health operations.
+- [Installation (简体中文)](installation.zh-CN.md) — 中文安装指南。
