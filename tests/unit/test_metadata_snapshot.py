@@ -14,6 +14,7 @@ import pytest
 from pydantic import ValidationError
 
 from nl2data.errors import ErrorCategory, ErrorCode
+from nl2data_core.adapters.sql.discovery import _sql_type
 from nl2data_core.canonical import sha256_fingerprint
 from nl2data_core.metadata import (
     METADATA_SCHEMA_VERSION,
@@ -312,6 +313,10 @@ class TestTrustLevels:
 
 
 class TestDiscoveryConfig:
+    def test_sql_type_aliases_are_canonicalized(self) -> None:
+        assert _sql_type("character varying(255)") == "VARCHAR"
+        assert _sql_type("double precision") == "DOUBLE"
+
     def test_config_bounds_are_enforced(self) -> None:
         config = MetadataDiscoveryConfig()
         assert config.max_objects == 256

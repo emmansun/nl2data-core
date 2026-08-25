@@ -95,6 +95,15 @@ def _raise_postgres_error(error: BaseException, message: str) -> None:
 def _sql_type(declared: str) -> str:
     """Normalize a declared SQL type into a bounded canonical name."""
     base = declared.split("(", 1)[0].strip().upper()
+    aliases = {
+        "CHARACTER VARYING": "VARCHAR",
+        "CHAR VARYING": "VARCHAR",
+        "CHARACTER": "CHAR",
+        "DOUBLE PRECISION": "DOUBLE",
+        "TIMESTAMP WITHOUT TIME ZONE": "TIMESTAMP",
+        "TIMESTAMP WITH TIME ZONE": "TIMESTAMPTZ",
+    }
+    base = aliases.get(base, base)
     return base[:64] or "UNKNOWN"
 
 
