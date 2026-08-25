@@ -79,6 +79,7 @@ def discover_metadata(
     collections: dict[str, tuple[str, ...]] = {}
     bounded_objects = False
     bounded_fields = False
+    bounded_samples = False
     for name in handle.list_collections():
         if name.startswith("system."):
             continue
@@ -88,6 +89,10 @@ def discover_metadata(
             bounded_objects = True
             break
         document = handle.sample_document(name)
+        if document is not None:
+            # Sampling is inherently bounded: at most one document per
+            # collection is ever observed, never the full document set.
+            bounded_samples = True
         paths = (
             _collect_paths(document, max_fields=max_fields_per_collection)
             if document is not None
@@ -149,8 +154,9 @@ def discover_metadata(
         freshness=MetadataFreshness(
             bounded_objects=bounded_objects,
             bounded_fields=bounded_fields,
-            bounded_samples=bounded_objects,
-            sample_limit=max_collections,
+            bounded_samples=bounded_samples,
+            # At most one document per collection is ever sampled.
+            sample_limit=1,
         ),
         provenance=MetadataProvenance(
             discovered_by_fingerprint=sha256_fingerprint({"backend": "mongodb"}),

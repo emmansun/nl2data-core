@@ -215,8 +215,10 @@ class PyMongoExecutor:
             ) from error
 
     def sample_document(self, collection: str) -> dict[str, Any] | None:
+        """Read one deterministic sample document (lowest ``_id``) so
+        repeated observations of an unchanged collection stay comparable."""
         try:
-            document = self._collection(collection).find_one()
+            document = self._collection(collection).find_one(sort=[("_id", 1)])
         except MongoUnavailableError:
             raise
         except Exception as error:

@@ -261,8 +261,11 @@ async def run_production_discovery(
     denied before any metadata is read.  Failures are normalized into safe
     outcome categories (unavailable/unauthorized/bounds_exceeded/failed) and
     never leak driver material, DSNs, credentials, or raw payloads.  A
-    bounded/partial snapshot is retained as evidence with a ``partial``
-    outcome but never activated by this function.
+    schema-truncated snapshot (object/field bounds) is retained as evidence
+    with a ``partial`` outcome; sampling bounds and observed-incomplete
+    markers are reported as evidence flags and block activation through
+    :func:`check_snapshot_activation`, but do not make the discovery run
+    itself partial.
     """
     started = time.monotonic()
     try:
@@ -311,12 +314,11 @@ async def run_production_discovery(
         snapshot, config.sensitive_name_markers
     )
     freshness = snapshot.freshness
-    partial = bool(
-        freshness.bounded_objects
-        or freshness.bounded_fields
-        or freshness.bounded_samples
-        or any(obj.observed_incomplete for obj in snapshot.objects)
-    )
+    # The outcome is partial only when the discovered schema was truncated
+    # (object/field bounds).  Sampling bounds and observed-incomplete markers
+    # are reported as evidence flags and block activation through
+    # SnapshotActivationPolicy, but do not make the discovery run partial.
+    partial = bool(freshness.bounded_objects or freshness.bounded_fields)
     outcome = DiscoveryOutcome(
         outcome=(
             DiscoveryOutcomeCategory.PARTIAL

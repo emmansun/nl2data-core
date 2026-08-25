@@ -215,7 +215,9 @@ class TestMongoDiscovery:
         assert "customer.customer_id" in paths
         assert "customer.email" in paths
         assert all(field.data_type == "document" for field in orders.fields)
-        assert snapshot.freshness.bounded_samples is False
+        # Sampling is inherently bounded (one document per collection), so
+        # an observed sample records the bound explicitly.
+        assert snapshot.freshness.bounded_samples is True
         assert not orders.statistics
 
     @pytest.mark.asyncio

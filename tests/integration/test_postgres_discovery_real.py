@@ -58,6 +58,20 @@ def _connect(dsn: str) -> Any:
     return driver.connect(dsn, connect_timeout=2.0)
 
 
+def _create_role(connection: Any, role_name: str, password: str) -> None:
+    """Create a login role with a quoted password literal.
+
+    psycopg3 does not support query parameters in DDL, so the password is
+    composed through ``psycopg.sql`` instead of a ``%s`` placeholder.
+    """
+    psycopg = import_module("psycopg")
+    connection.execute(
+        psycopg.sql.SQL("CREATE ROLE {} LOGIN PASSWORD {}").format(
+            psycopg.sql.Identifier(role_name), psycopg.sql.Literal(password)
+        )
+    )
+
+
 def _require_driver() -> None:
     """Skip cleanly when the optional driver is absent (skipped outcome)."""
     if not _driver_available():
@@ -111,9 +125,7 @@ def postgres_source() -> Iterator[dict[str, Any]]:
                 f'FROM "{namespace}".customers GROUP BY region'
             )
             for role_name in (reader_role, denied_role):
-                connection.execute(
-                    f'CREATE ROLE "{role_name}" LOGIN PASSWORD %s', (password,)
-                )
+                _create_role(connection, role_name, password)
                 connection.execute(
                     f'GRANT USAGE ON SCHEMA "{namespace}" TO "{role_name}"'
                 )

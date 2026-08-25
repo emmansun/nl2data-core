@@ -551,7 +551,13 @@ class MetadataSnapshot(BaseModel):
         Objects and relationships are sorted by id so the same metadata
         mapped in a different backend iteration order produces the same
         fingerprint; field order within an object stays structural.
+        Discovered-at timestamps are environmental and excluded, so
+        re-discovery of an unchanged catalog keeps its identity.
         """
+        freshness = self.freshness.canonical_payload()
+        freshness.pop("discovered_at", None)
+        provenance = self.provenance.canonical_payload()
+        provenance.pop("discovered_at", None)
         return {
             "schema_version": self.schema_version,
             "snapshot_id": self.snapshot_id,
@@ -566,8 +572,8 @@ class MetadataSnapshot(BaseModel):
                     self.relationships, key=lambda item: item.relationship_id
                 )
             ],
-            "freshness": self.freshness.canonical_payload(),
-            "provenance": self.provenance.canonical_payload(),
+            "freshness": freshness,
+            "provenance": provenance,
         }
 
     def serialize_canonical(self) -> str:

@@ -586,7 +586,14 @@ class TestStaleEvidenceFailsClosed:
             bundle_v1.bundle_id, bundle_v1.model_version, production=context_v1
         ).success
 
-        # A fresh discovery run produces a new snapshot of the same schema.
+        # A fresh discovery run observes a changed catalog: one more order
+        # row moves the row-count statistic (the schema stays the same), so
+        # the new snapshot gets a different fingerprint.
+        with sqlite3.connect(db_path) as connection:
+            connection.execute(
+                "INSERT INTO orders (order_id, customer_id, amount, region, status, created_at)"
+                " VALUES (99, 1, 5.0, 'emea', 1, '2026-01-25')"
+            )
         second = await run_production_discovery(
             make_discoverer(db_path), make_production_config()
         )
