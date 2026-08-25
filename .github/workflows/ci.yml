@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            packages/nl2data-openai/pyproject.toml
+
+      - name: Install core development dependencies
+        run: python -m pip install --upgrade pip && python -m pip install -e ".[dev]"
+
+      - name: Install OpenAI provider package
+        run: python -m pip install -e packages/nl2data-openai
+
+      - name: Run tests
+        run: python -m pytest -q
+
+      - name: Run Ruff
+        run: python -m ruff check src tests packages/nl2data-openai/src
+
+      - name: Run Mypy
+        run: python -m mypy src packages/nl2data-openai/src
+
+  build:
+    name: Build distributions
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            packages/nl2data-openai/pyproject.toml
+
+      - name: Install build tooling
+        run: python -m pip install --upgrade pip build
+
+      - name: Build core distribution
+        run: python -m build --wheel --outdir dist/core .
+
+      - name: Build OpenAI provider distribution
+        run: python -m build --wheel --outdir dist/openai packages/nl2data-openai
+
+      - name: Verify wheel metadata
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          
+          wheels = sorted(Path("dist").rglob("*.whl"))
+          assert any("nl2data_core" in wheel.name for wheel in wheels)
+          assert any("nl2data_openai" in wheel.name for wheel in wheels)
+          print("Built wheels:")
+          for wheel in wheels:
+              print(wheel)
+          PY

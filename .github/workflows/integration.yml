@@ -1,0 +1,84 @@
+name: Integration Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: integration-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  services:
+    name: PostgreSQL, Redis, and MongoDB
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      mongodb:
+        image: mongo:7
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.adminCommand({ ping: 1 }).ok'"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      NL2DATA_POSTGRES_DSN: postgresql://postgres:postgres@127.0.0.1:5432/postgres
+      NL2DATA_REDIS_URL: redis://127.0.0.1:6379
+      NL2DATA_MONGO_URI: mongodb://127.0.0.1:27017
+      NL2DATA_MONGO_DATABASE: nl2data_mongo_test
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install integration dependencies
+        run: >-
+          python -m pip install --upgrade pip
+          && python -m pip install -e ".[dev,postgres,redis,mongodb]"
+
+      - name: Run real service integration tests
+        run: >-
+          python -m pytest -q
+          tests/integration/test_postgres_shared_real.py
+          tests/integration/test_redis_memory_real.py
+          tests/integration/test_mongodb_real.py
+          tests/conformance/test_postgres_conformance.py
+          tests/conformance/test_mongodb_conformance.py
