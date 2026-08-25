@@ -121,6 +121,11 @@ from nl2data_core.workflow.durable import (
     IdempotencyStore,
     terminal_outcome_fingerprint,
 )
+from nl2data_core.workflow.lease import (
+    FencedStateStore,
+    WorkflowLease,
+    WorkflowLeaseStore,
+)
 from nl2data_core.workflow.models import (
     TERMINAL_STATUSES,
     WorkflowBudget,
@@ -136,6 +141,7 @@ from nl2data_core.workflow.runner import (
     QueryExecutionRunner,
     _outcome,
 )
+from nl2data_core.workflow.shared_errors import SharedStoreError
 from nl2data_core.workflow.store import StateStore
 from nl2data_core.workflow.transitions import checkpoint, transition
 
@@ -392,7 +398,11 @@ class _DurableBinding:
     """Checkpoint/commit facade over one durable workflow execution.
 
     Every persisted mutation is compare-and-set on the stored revision so a
-    concurrent executor can never silently overwrite a checkpoint.
+    concurrent executor can never silently overwrite a checkpoint.  Over a
+    fenced shared backend the binding renews the execution lease between
+    stages and attaches the current owner and fencing token to every
+    mutation, so a worker that lost ownership fails fast instead of
+    committing stale work.
     """
 
     def __init__(
@@ -402,11 +412,22 @@ class _DurableBinding:
         workflow_id: str,
         state: WorkflowState,
         scope_fingerprint: str | None,
+        lease: WorkflowLease | None = None,
+        lease_store: WorkflowLeaseStore | None = None,
+        lease_ttl_seconds: float = 120.0,
+        lease_renewal_margin_seconds: float = 20.0,
+        now_fn: Callable[[], datetime] = _utc_now,
     ) -> None:
         self._store = store
         self._workflow_id = workflow_id
         self._state = state
         self._scope_fingerprint = scope_fingerprint
+        self._lease = lease
+        self._lease_store = lease_store
+        self._lease_ttl_seconds = lease_ttl_seconds
+        self._lease_renewal_margin_seconds = lease_renewal_margin_seconds
+        self._now_fn = now_fn
+        self._fenced = isinstance(store, FencedStateStore) and lease is not None
 
     @property
     def state(self) -> WorkflowState:
@@ -453,14 +474,58 @@ class _DurableBinding:
         revision = self._store.get_revision(
             self._workflow_id, tenant_scope_fingerprint=self._scope_fingerprint
         )
-        self._store.update(
+        if self._fenced and self._lease is not None:
+            cast(FencedStateStore, self._store).update(
+                self._workflow_id,
+                self._state.status,
+                next_state,
+                expected_version=revision,
+                tenant_scope_fingerprint=self._scope_fingerprint,
+                owner_id=self._lease.owner_id,
+                fencing_token=self._lease.fencing_token,
+            )
+        else:
+            self._store.update(
+                self._workflow_id,
+                self._state.status,
+                next_state,
+                expected_version=revision,
+                tenant_scope_fingerprint=self._scope_fingerprint,
+            )
+        self._state = next_state
+
+    def renew_if_due(self) -> None:
+        """Renew the lease when it is within the renewal margin.
+
+        Called between stages so a long workflow never lets its lease
+        expire while work is still in flight.
+        """
+        if not self._fenced or self._lease is None or self._lease_store is None:
+            return
+        remaining = (self._lease.expires_at - self._now_fn()).total_seconds()
+        if remaining <= self._lease_renewal_margin_seconds:
+            self._renew()
+
+    def reverify_ownership(self) -> None:
+        """Atomically re-verify lease ownership before external work.
+
+        The unconditional renewal doubles as an atomic ownership check: a
+        stale worker's renewal is rejected, so it can never reach adapter
+        execution after losing the lease.
+        """
+        if not self._fenced or self._lease is None or self._lease_store is None:
+            return
+        self._renew()
+
+    def _renew(self) -> None:
+        assert self._lease is not None
+        assert self._lease_store is not None
+        self._lease = self._lease_store.renew_lease(
             self._workflow_id,
-            self._state.status,
-            next_state,
-            expected_version=revision,
+            owner_id=self._lease.owner_id,
+            fencing_token=self._lease.fencing_token,
             tenant_scope_fingerprint=self._scope_fingerprint,
         )
-        self._state = next_state
 
 
 class _NodeBase:
@@ -1219,6 +1284,9 @@ class DeterministicWorkflowRuntime:
         budget: WorkflowBudget | None = None,
         state_store: StateStore | None = None,
         idempotency_ttl_seconds: float = 86_400.0,
+        worker_id: str | None = None,
+        lease_ttl_seconds: float = 120.0,
+        lease_renewal_margin_seconds: float = 20.0,
         approval_required: Callable[[SemanticQueryIR], bool] | None = None,
         ir_compiler: IRCompiler | Callable[[SemanticQueryIR], str] | None = None,
         now: Callable[[], datetime] | None = None,
@@ -1236,6 +1304,17 @@ class DeterministicWorkflowRuntime:
         self._budget = budget or WorkflowBudget()
         self._state_store = state_store
         self._idempotency_ttl_seconds = idempotency_ttl_seconds
+        if worker_id is None:
+            worker_id = f"worker-{uuid4().hex[:16]}"
+        if not (1.0 <= lease_ttl_seconds <= 86_400.0):
+            raise ValueError("lease_ttl_seconds must be between 1 and 86400 seconds")
+        if not (0.0 < lease_renewal_margin_seconds < lease_ttl_seconds):
+            raise ValueError(
+                "lease_renewal_margin_seconds must be positive and below the lease TTL"
+            )
+        self._worker_id = worker_id
+        self._lease_ttl_seconds = lease_ttl_seconds
+        self._lease_renewal_margin_seconds = lease_renewal_margin_seconds
         self._approval_required = approval_required
         self._ir_compiler = _BoundCompiler(ir_compiler or compile_sql)
         self._now_fn = now or _utc_now
@@ -1425,6 +1504,16 @@ class DeterministicWorkflowRuntime:
             return await self._execute_plain(request, cancellation=cancellation)
         try:
             return await self._execute_durable(request, cancellation=cancellation)
+        except SharedStoreError as error:
+            return _outcome(
+                request,
+                status=(
+                    OutcomeStatus.REJECTED
+                    if error.is_public_rejected()
+                    else OutcomeStatus.FAILED
+                ),
+                error=error.to_public_record(),
+            )
         except NL2DataError as error:
             return _outcome(
                 request, status=OutcomeStatus.FAILED, error=as_error_record(error)
@@ -1476,9 +1565,16 @@ class DeterministicWorkflowRuntime:
         """
         if self._state_store is None:
             return None
-        return self._state_store.get(
-            workflow_id, tenant_scope_fingerprint=tenant_scope_fingerprint
-        )
+        try:
+            return self._state_store.get(
+                workflow_id, tenant_scope_fingerprint=tenant_scope_fingerprint
+            )
+        except SharedStoreError as error:
+            raise WorkflowStateError(
+                "shared state backend is unavailable",
+                retryable=True,
+                details={"cause_type": type(error).__name__},
+            ) from error
 
     def cancel(self, request: CancellationRequest) -> CancellationResult:
         """Request cooperative cancellation for a stored non-terminal workflow.
@@ -1497,9 +1593,17 @@ class DeterministicWorkflowRuntime:
                 reason=request.reason,
                 occurred_at=self._now(),
             )
-        state = store.get(
-            request.workflow_id, tenant_scope_fingerprint=request.tenant_scope_fingerprint
-        )
+        try:
+            state = store.get(
+                request.workflow_id,
+                tenant_scope_fingerprint=request.tenant_scope_fingerprint,
+            )
+        except SharedStoreError as error:
+            raise WorkflowStateError(
+                "shared state backend is unavailable",
+                retryable=True,
+                details={"cause_type": type(error).__name__},
+            ) from error
         if state is None:
             return CancellationResult(
                 status=CancellationStatus.NOT_FOUND,
@@ -1554,6 +1658,9 @@ class DeterministicWorkflowRuntime:
         turn, compat = self._prepare_turn(request)
         idempotency: IdempotencyStore | None = (
             store if isinstance(store, IdempotencyStore) else None
+        )
+        lease_store: WorkflowLeaseStore | None = (
+            store if isinstance(store, WorkflowLeaseStore) else None
         )
         existing_idempotency = (
             idempotency.get_idempotency(
@@ -1642,63 +1749,105 @@ class DeterministicWorkflowRuntime:
                 else WorkflowDeadline.from_budget(self._budget, now=self._now())
             )
 
-        state = self._advance_to_running(
-            store, workflow_id, request, state, scope_fingerprint=scope_fingerprint
-        )
-        binding = _DurableBinding(
-            store=store,
-            workflow_id=workflow_id,
-            state=state,
-            scope_fingerprint=scope_fingerprint,
-        )
-        options = _GraphOptions(
-            workflow_id=workflow_id,
-            scope_fingerprint=scope_fingerprint,
-            deadline=deadline,
-            compatibility=compat,
-            start_stage=state.current_stage or WorkflowStage.INITIALIZE,
-            cancellation_requested=state.cancellation_requested,
-            durable=binding,
-        )
-        outcome = await self._execute_graph(
-            request, options, turn=turn, cancellation=cancellation
-        )
-        if outcome.workflow_id is None:
-            outcome = outcome.model_copy(
-                update={
-                    "workflow_id": workflow_id,
-                    "tenant_scope_fingerprint": scope_fingerprint,
-                }
+        lease: WorkflowLease | None = None
+        if lease_store is not None:
+            lease = lease_store.acquire_lease(
+                workflow_id,
+                owner_id=self._worker_id,
+                tenant_scope_fingerprint=scope_fingerprint,
+                ttl_seconds=self._lease_ttl_seconds,
             )
-        if (
-            outcome.status is OutcomeStatus.REJECTED
-            and outcome.error is not None
-            and outcome.error.code is ErrorCode.WORKFLOW_CANCELLED
-        ):
-            # The public outcome stands; the stored cancellation flag keeps
-            # later resumes failing fast when the commit failed.
-            with contextlib.suppress(NL2DataError):
-                binding.mark_cancelled()
-        if outcome.status in (OutcomeStatus.SUCCEEDED, OutcomeStatus.FAILED):
-            target = (
-                WorkflowStatus.SUCCEEDED
-                if outcome.status == OutcomeStatus.SUCCEEDED
-                else WorkflowStatus.FAILED
+        try:
+            state = self._advance_to_running(
+                store,
+                workflow_id,
+                request,
+                state,
+                scope_fingerprint=scope_fingerprint,
+                owner_id=lease.owner_id if lease is not None else None,
+                fencing_token=lease.fencing_token if lease is not None else None,
             )
-            try:
-                binding.step(target)
-                if idempotency is not None and outcome.status == OutcomeStatus.SUCCEEDED:
-                    idempotency.complete_idempotency(
-                        request.request_id,
-                        workflow_id=workflow_id,
-                        terminal_outcome_fingerprint=terminal_outcome_fingerprint(outcome),
+            binding = _DurableBinding(
+                store=store,
+                workflow_id=workflow_id,
+                state=state,
+                scope_fingerprint=scope_fingerprint,
+                lease=lease,
+                lease_store=lease_store,
+                lease_ttl_seconds=self._lease_ttl_seconds,
+                lease_renewal_margin_seconds=self._lease_renewal_margin_seconds,
+                now_fn=self._now_fn,
+            )
+            options = _GraphOptions(
+                workflow_id=workflow_id,
+                scope_fingerprint=scope_fingerprint,
+                deadline=deadline,
+                compatibility=compat,
+                start_stage=state.current_stage or WorkflowStage.INITIALIZE,
+                cancellation_requested=state.cancellation_requested,
+                durable=binding,
+            )
+            outcome = await self._execute_graph(
+                request, options, turn=turn, cancellation=cancellation
+            )
+            if outcome.workflow_id is None:
+                outcome = outcome.model_copy(
+                    update={
+                        "workflow_id": workflow_id,
+                        "tenant_scope_fingerprint": scope_fingerprint,
+                    }
+                )
+            if (
+                outcome.status is OutcomeStatus.REJECTED
+                and outcome.error is not None
+                and outcome.error.code is ErrorCode.WORKFLOW_CANCELLED
+            ):
+                # The public outcome stands; the stored cancellation flag keeps
+                # later resumes failing fast when the commit failed.
+                with contextlib.suppress(NL2DataError, SharedStoreError):
+                    binding.mark_cancelled()
+            if outcome.status in (OutcomeStatus.SUCCEEDED, OutcomeStatus.FAILED):
+                target = (
+                    WorkflowStatus.SUCCEEDED
+                    if outcome.status == OutcomeStatus.SUCCEEDED
+                    else WorkflowStatus.FAILED
+                )
+                try:
+                    binding.step(target)
+                    if (
+                        idempotency is not None
+                        and outcome.status == OutcomeStatus.SUCCEEDED
+                    ):
+                        fenced = isinstance(store, FencedStateStore)
+                        completion: dict[str, Any] = {}
+                        if fenced and lease is not None:
+                            completion = {
+                                "owner_id": lease.owner_id,
+                                "fencing_token": lease.fencing_token,
+                            }
+                        idempotency.complete_idempotency(
+                            request.request_id,
+                            workflow_id=workflow_id,
+                            terminal_outcome_fingerprint=terminal_outcome_fingerprint(
+                                outcome
+                            ),
+                            tenant_scope_fingerprint=scope_fingerprint,
+                            **completion,
+                        )
+                except NL2DataError:
+                    # The public outcome stands; the durable state remains
+                    # reconcilable (at-least-once) if the commit failed.
+                    pass
+            return outcome
+        finally:
+            if lease is not None and lease_store is not None:
+                with contextlib.suppress(SharedStoreError):
+                    lease_store.release_lease(
+                        workflow_id,
+                        owner_id=lease.owner_id,
+                        fencing_token=lease.fencing_token,
                         tenant_scope_fingerprint=scope_fingerprint,
                     )
-            except NL2DataError:
-                # The public outcome stands; the durable state remains
-                # reconcilable (at-least-once) if the commit failed.
-                pass
-        return outcome
 
     async def _execute_graph(
         self,
@@ -1769,6 +1918,17 @@ class DeterministicWorkflowRuntime:
             except StaleCheckpointError as error:
                 return self._branch_outcome(
                     request, options, OutcomeStatus.REJECTED, as_error_record(error)
+                )
+            except SharedStoreError as error:
+                return self._branch_outcome(
+                    request,
+                    options,
+                    (
+                        OutcomeStatus.REJECTED
+                        if error.is_public_rejected()
+                        else OutcomeStatus.FAILED
+                    ),
+                    error.to_public_record(),
                 )
             except NL2DataError as error:
                 return self._branch_outcome(
@@ -1845,6 +2005,13 @@ class DeterministicWorkflowRuntime:
             channel.setdefault("stored_ir_identity", self._stored_ir_identity(durable.state))
         if stage is WorkflowStage.EXECUTE and durable is not None:
             self._reject_stale_ir(durable, channel)
+        if durable is not None:
+            # Keep the shared lease alive between stages; re-verify it
+            # atomically right before external adapter work.
+            if stage is WorkflowStage.EXECUTE:
+                durable.reverify_ownership()
+            else:
+                durable.renew_if_due()
         node = _NODES[stage](self, channel)
         remaining = context.deadline.remaining_seconds(now=self._now())
         if remaining <= 0.0:
@@ -2007,13 +2174,16 @@ class DeterministicWorkflowRuntime:
         state: WorkflowState,
         *,
         scope_fingerprint: str | None,
+        owner_id: str | None = None,
+        fencing_token: int | None = None,
     ) -> WorkflowState:
         """Move a checkpoint toward RUNNING through allowed transition edges.
 
         A RUNNING checkpoint means a previous execution stopped before a
         terminal commit; the retry edge records the recovery attempt so the
         attempt budget still bounds re-execution and the bounded resume
-        retry counter advances.
+        retry counter advances.  Ownership arguments are forwarded to a
+        fenced shared store so every transition is lease-protected.
         """
         status = state.status
         if status == WorkflowStatus.CREATED:
@@ -2024,6 +2194,8 @@ class DeterministicWorkflowRuntime:
                 state,
                 WorkflowStatus.QUEUED,
                 scope_fingerprint=scope_fingerprint,
+                owner_id=owner_id,
+                fencing_token=fencing_token,
             )
             return self._step(
                 store,
@@ -2032,6 +2204,8 @@ class DeterministicWorkflowRuntime:
                 queued,
                 WorkflowStatus.RUNNING,
                 scope_fingerprint=scope_fingerprint,
+                owner_id=owner_id,
+                fencing_token=fencing_token,
             )
         if status == WorkflowStatus.QUEUED:
             return self._step(
@@ -2041,6 +2215,8 @@ class DeterministicWorkflowRuntime:
                 state,
                 WorkflowStatus.RUNNING,
                 scope_fingerprint=scope_fingerprint,
+                owner_id=owner_id,
+                fencing_token=fencing_token,
             )
         if status == WorkflowStatus.RUNNING:
             queued = self._step(
@@ -2050,6 +2226,8 @@ class DeterministicWorkflowRuntime:
                 state,
                 WorkflowStatus.QUEUED,
                 scope_fingerprint=scope_fingerprint,
+                owner_id=owner_id,
+                fencing_token=fencing_token,
             )
             return self._step(
                 store,
@@ -2059,6 +2237,8 @@ class DeterministicWorkflowRuntime:
                 WorkflowStatus.RUNNING,
                 scope_fingerprint=scope_fingerprint,
                 retry_count=queued.retry_count + 1,
+                owner_id=owner_id,
+                fencing_token=fencing_token,
             )
         raise WorkflowStateError(
             f"workflow '{workflow_id}' is not resumable from '{status.value}'",
@@ -2075,6 +2255,8 @@ class DeterministicWorkflowRuntime:
         *,
         scope_fingerprint: str | None,
         retry_count: int | None = None,
+        owner_id: str | None = None,
+        fencing_token: int | None = None,
     ) -> WorkflowState:
         """Persist one validated transition with compare-and-set."""
         revision = store.get_revision(
@@ -2086,13 +2268,24 @@ class DeterministicWorkflowRuntime:
             event_id=f"ev-{uuid4().hex[:16]}",
             retry_count=retry_count,
         )
-        store.update(
-            workflow_id,
-            state.status,
-            next_state,
-            expected_version=revision,
-            tenant_scope_fingerprint=scope_fingerprint,
-        )
+        if isinstance(store, FencedStateStore):
+            store.update(
+                workflow_id,
+                state.status,
+                next_state,
+                expected_version=revision,
+                tenant_scope_fingerprint=scope_fingerprint,
+                owner_id=owner_id,
+                fencing_token=fencing_token,
+            )
+        else:
+            store.update(
+                workflow_id,
+                state.status,
+                next_state,
+                expected_version=revision,
+                tenant_scope_fingerprint=scope_fingerprint,
+            )
         return next_state
 
     def _duplicate_outcome(

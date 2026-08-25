@@ -178,3 +178,71 @@ class TestRedisImportBoundary:
             names = [name for name in dir(module) if not name.startswith("_")]
             leaked = [name for name in names if "redis" in name.lower()]
             assert leaked == [], f"redis types leaked into {module.__name__}: {leaked}"
+
+
+class TestPostgresImportBoundary:
+    def test_importing_the_workflow_package_loads_no_psycopg(self) -> None:
+        import nl2data_core.workflow  # noqa: F401
+        import nl2data_core.workflow.fake_postgres  # noqa: F401
+        import nl2data_core.workflow.lease  # noqa: F401
+        import nl2data_core.workflow.postgres_client  # noqa: F401
+        import nl2data_core.workflow.postgres_schema  # noqa: F401
+        import nl2data_core.workflow.postgres_store  # noqa: F401
+        import nl2data_core.workflow.shared_config  # noqa: F401
+        import nl2data_core.workflow.shared_errors  # noqa: F401
+
+        loaded = {name.split(".")[0] for name in sys.modules}
+        assert "psycopg" not in loaded, "psycopg loaded with the workflow package"
+        assert "psycopg_pool" not in loaded, "psycopg_pool loaded with the workflow package"
+
+    def test_shared_store_modules_never_import_optional_providers(self) -> None:
+        """The shared-state modules use only importlib; a static scan must
+        find no forbidden driver import anywhere in them.
+        """
+        workflow_root = SRC_ROOT / "nl2data_core" / "workflow"
+        offenders: list[str] = []
+        for module_path in workflow_root.rglob("*.py"):
+            imported = _imported_names(module_path)
+            for forbidden in FORBIDDEN_IMPORTS:
+                if forbidden in imported:
+                    offenders.append(
+                        f"{module_path.relative_to(SRC_ROOT)} -> {forbidden}"
+                    )
+        assert offenders == [], f"forbidden imports found: {offenders}"
+
+    def test_no_postgres_types_enter_public_contracts(self) -> None:
+        """PostgreSQL is a specialization: no Postgres type name may appear
+        in the public models or the public composition profile.
+        """
+        import nl2data.composition
+        import nl2data.models
+
+        public_modules = (nl2data.models, nl2data.composition)
+        for module in public_modules:
+            names = [name for name in dir(module) if not name.startswith("_")]
+            leaked = [
+                name
+                for name in names
+                if "postgres" in name.lower() or "psycopg" in name.lower()
+            ]
+            assert leaked == [], f"postgres types leaked into {module.__name__}: {leaked}"
+
+    def test_shared_store_error_maps_to_public_codes(self) -> None:
+        """Backend error codes surface through the stable public contract."""
+        from nl2data import ErrorCode
+        from nl2data_core.workflow.shared_errors import (
+            SharedStoreError,
+            SharedStoreErrorCode,
+        )
+
+        mapping = {
+            SharedStoreErrorCode.STORE_UNAVAILABLE: ErrorCode.STORE_UNAVAILABLE,
+            SharedStoreErrorCode.STORE_TIMEOUT: ErrorCode.STORE_TIMEOUT,
+            SharedStoreErrorCode.SCHEMA_MISMATCH: ErrorCode.UNSUPPORTED_SCHEMA_VERSION,
+            SharedStoreErrorCode.STATE_CONFLICT: ErrorCode.INVALID_TRANSITION,
+            SharedStoreErrorCode.LEASE_BUSY: ErrorCode.LEASE_BUSY,
+            SharedStoreErrorCode.FENCING_REJECTED: ErrorCode.FENCING_REJECTED,
+        }
+        for code, public in mapping.items():
+            error = SharedStoreError(code, "boundary check")
+            assert error.to_public_record().code == public

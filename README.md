@@ -291,7 +291,70 @@ work across restarts:
   snapshots and expired idempotency records older than the given cutoffs;
   active or running workflows are never touched.
 - SQLite file locking serializes writers, bounding this store to local
-  workers; the protocol stays replaceable for a future service-backed store.
+  workers; the protocol stays replaceable for a service-backed store.
+
+### Shared PostgreSQL backend (P2)
+
+An optional PostgreSQL-backed implementation of the same replaceable
+contract (`nl2data_core.workflow.PostgreSQLStateStore`) lets separate
+workers and Pods share one durable workflow state, idempotency surface,
+and execution ownership:
+
+- **Optional installation and lazy driver boundary**: `pip install -e
+  ".[postgres]"` (psycopg 3 + psycopg_pool). The base package never
+  imports a database driver; the pool is built lazily from a host-owned
+  DSN, and DSNs/credentials are never stored in configuration models or
+  included in errors.
+- **Deployment namespace**: the store owns one bounded schema namespace
+  (default `shared`; pattern `^[A-Za-z][A-Za-z0-9_]{0,63}$`) created
+  lazily on first use, so multiple deployments sharing one database
+  service never observe each other's records. Tenant-scoped records stay
+  isolated in opaque `tenant:workflow:<fingerprint>` namespaces exactly
+  like SQLite.
+- **Versioned migration lifecycle**: schema metadata records the applied
+  version; migrations are additive and applied transactionally up to the
+  configured target (default 1). A database reporting a newer schema
+  than the runtime supports is rejected with a structured
+  `UNSUPPORTED_SCHEMA_VERSION` error without modification - old runtimes
+  fail closed against new deployments, and downgrading is a deployment
+  decision, never an automatic rollback.
+- **Safe snapshots and compare-and-set**: snapshots are the same
+  canonical JSON envelopes with raw-payload rejection; updates are
+  transactional CAS on revision/status/scope, and terminal records can
+  never be overwritten.
+- **Execution leases and fencing**: before resumable execution the
+  runtime acquires a lease (`lease_ttl_seconds`, default 120) granting at
+  most one active owner per workflow. Every stage entry renews the lease
+  when its remaining time drops below `lease_renewal_margin_seconds`
+  (default 20), the lease is reverified immediately before adapter
+  execution, and state mutations, idempotency completion, and terminal
+  persistence require the current owner and a monotonically increasing
+  fencing token. A stale owner is rejected with `FENCING_REJECTED` and
+  can never commit after takeover.
+- **Stale-owner takeover**: a lease is recoverable only after expiry plus
+  the configured clock tolerance (`clock_tolerance_seconds`, default 2);
+  takeover bumps the fencing token, so a partitioned worker can never
+  race a recovered worker for ownership.
+- **Failure normalization and recovery**: connect/command timeouts, pool
+  acquisition failures, and lease-busy conditions surface as retryable
+  `STORE_UNAVAILABLE`/`STORE_TIMEOUT`/`LEASE_BUSY` public errors, while
+  conflicting CAS/status/schema and fencing conditions surface as public
+  rejections. Recovery remains at-least-once: a worker crash leaves a
+  safe checkpoint and an expiring lease, and the next worker resumes
+  from the checkpoint after takeover without claiming exactly-once
+  external execution. Ambiguous post-execution states (external work
+  finished but terminal persistence fenced out) are surfaced for
+  reconciliation - never silently replayed or claimed as success.
+- **Bounded cleanup**: `cleanup()` removes only bounded batches of
+  terminal snapshots, expired idempotency records, and expired leases;
+  running workflows and valid leases always survive.
+- **Verification**: deterministic unit, contract, and concurrency suites
+  run over an in-memory fake pool with no service
+  (`tests/unit/test_postgres_shared.py`,
+  `tests/contract/test_shared_store_contract.py`,
+  `tests/contract/test_shared_store_concurrency.py`); an optional
+  real-service profile (`tests/integration/test_postgres_shared_real.py`)
+  skips when the driver or service is unavailable - never a pass.
 
 ## Memory / multi-turn context boundary (P2)
 
@@ -521,6 +584,10 @@ conditionals inside runners:
   this core never claims exactly-once external execution. Completed
   terminal outcomes replay idempotently through durable idempotency-key
   records without re-executing finished external work.
+- With the shared PostgreSQL backend, at-least-once recovery extends
+  across workers: one worker owns the lease at a time, renewal is bounded
+  by the lease TTL, and a lost owner is fenced out before it can commit
+  state or claim terminal completion.
 
 ### Optional LangGraph backend
 
@@ -533,11 +600,13 @@ core gates; activation happens only after conformance passes.
 
 ### Unsupported today
 
-Streaming wire protocols, distributed or multi-worker execution,
-autonomous repair or agent loops (only bounded extension points exist), a
-public approval-required outcome status (internal runtime event only), and
-service-backed stores (MongoDB, HTTP transport) are out of scope for this
-runtime.
+Streaming wire protocols, autonomous repair or agent loops (only bounded
+extension points exist), a public approval-required outcome status
+(internal runtime event only), and additional service-backed stores
+(MongoDB, HTTP transport) are out of scope for this runtime. Multi-worker
+execution is supported for durable workflows through the shared
+PostgreSQL backend above; any other backend must pass the same mandatory
+conformance suite before activation.
 
 ## PostgreSQL conformance profile
 

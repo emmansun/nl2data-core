@@ -4,7 +4,7 @@
 TBD - created by archiving change establish-p2-persistent-workflow-state. Update Purpose after archive.
 ## Requirements
 ### Requirement: Workflow resume is tenant-scoped
-The system SHALL retrieve checkpoints by workflow/request identity and matching tenant scope fingerprint, and SHALL reject missing or mismatched scope for tenant-scoped records.
+The system SHALL retrieve checkpoints by workflow/request identity and matching tenant scope fingerprint, reject missing or mismatched scope for tenant-scoped records, and require a valid current workflow lease and fencing token before resuming execution.
 
 #### Scenario: Cross-tenant checkpoint lookup is denied
 - **WHEN** tenant B requests a workflow checkpoint created under tenant A
@@ -15,7 +15,7 @@ The system SHALL retrieve checkpoints by workflow/request identity and matching 
 - **THEN** it receives the immutable safe snapshot and can continue through the existing transition rules
 
 ### Requirement: Idempotency prevents conflicting duplicate requests
-The system SHALL bind an idempotency key to request identity, tenant scope, workflow identity, and expiry, and SHALL reject reuse with a different request or scope.
+The system SHALL bind an idempotency key to request identity, tenant scope, workflow identity, expiry, and shared ownership state, and SHALL atomically reject reuse with a different request or scope.
 
 #### Scenario: Repeated terminal request returns the same safe reference
 - **WHEN** the same tenant submits the same idempotency key after terminal completion
@@ -25,8 +25,12 @@ The system SHALL bind an idempotency key to request identity, tenant scope, work
 - **WHEN** a key is reused with a different request or tenant scope
 - **THEN** the store returns a structured idempotency conflict
 
+#### Scenario: Stale completion is rejected
+- **WHEN** a worker completes an idempotency key using an expired or superseded fencing token
+- **THEN** completion is rejected and an existing terminal record is not overwritten
+
 ### Requirement: Recovery does not claim exactly-once execution
-The system SHALL represent ambiguous post-crash recovery using safe status and evidence references and SHALL NOT claim that an external query executed exactly once.
+The system SHALL represent ambiguous post-crash recovery using safe status and evidence references, SHALL use lease expiry and fencing to recover ownership, and SHALL NOT claim that an external query executed exactly once.
 
 #### Scenario: Crash after external execution remains reconcilable
 - **WHEN** a worker terminates after external execution but before terminal state commit

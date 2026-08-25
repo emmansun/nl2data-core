@@ -11,7 +11,7 @@ The system SHALL define a provider-neutral `WorkflowRuntime` contract with typed
 - **THEN** the workflow runtime contracts import and deterministic runtime composition remains usable
 
 ### Requirement: Workflow stages and mandatory gates are explicit
-The runtime SHALL expose ordered stages for memory, intent, IR building, IR/view validation, deterministic compilation, artifact guarding, governance, authorization, execution, protection, persistence, and completion, and SHALL reject execution when a required prior gate is missing, stale, or inconsistent.
+The runtime SHALL expose ordered stages for memory, intent, IR building, IR/view validation, deterministic compilation, artifact guarding, governance, authorization, execution, protection, persistence, and completion, and SHALL reject execution when a required prior gate is missing, stale, or inconsistent. Shared resumable execution SHALL acquire, renew, verify, and release workflow ownership around state commits and adapter work.
 
 #### Scenario: Adapter cannot bypass governance
 - **WHEN** a workflow attempts to execute before current IR/view validation, compilation, artifact guard, governance, and authorization gates pass
@@ -22,7 +22,7 @@ The runtime SHALL expose ordered stages for memory, intent, IR building, IR/view
 - **THEN** the workflow stops before governance authorization and adapter execution
 
 ### Requirement: Cancellation and deadlines are bounded
-Every stage that can perform external work SHALL receive a bounded deadline/cancellation context and SHALL produce a typed timeout or cancellation outcome without leaking native task/provider objects. The runtime SHALL reverify compiler, artifact, governance, authorization, and effective-limit evidence immediately before adapter execution.
+Every stage that can perform external work SHALL receive a bounded deadline/cancellation context and SHALL produce a typed timeout or cancellation outcome without leaking native task/provider objects. The runtime SHALL reverify lease, fencing, compiler, artifact, governance, authorization, tenant, and effective-limit evidence immediately before adapter execution.
 
 #### Scenario: Cancelled workflow stops before execution
 - **WHEN** cancellation is observed after IR validation but before adapter execution

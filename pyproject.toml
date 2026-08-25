@@ -28,8 +28,8 @@ dependencies = [
 [project.optional-dependencies]
 # SQL parser + evaluation extras; SQLite itself is stdlib (no dependency).
 sql = ["sqlglot>=25.0,<30"]
-# Optional PostgreSQL conformance profile driver.
-postgres = ["psycopg[binary]>=3.1,<4"]
+# Optional PostgreSQL conformance profile driver (lazy; never imported by the base package).
+postgres = ["psycopg[binary,pool]>=3.1,<4"]
 # Optional MongoDB profile driver (lazy; never imported by the base package).
 mongodb = ["pymongo>=4.6,<5"]
 # Optional Redis shared memory backend driver (lazy; never imported by the base package).

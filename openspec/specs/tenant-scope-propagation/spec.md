@@ -4,7 +4,7 @@
 TBD - created by archiving change establish-p2-tenant-context. Update Purpose after archive.
 ## Requirements
 ### Requirement: Tenant scope propagates across governed execution
-Tenant-scoped governance facts, execution authorizations, workflow context, and reusable namespace keys SHALL carry the effective tenant scope fingerprint and SHALL reject mismatches.
+Tenant-scoped governance facts, execution authorizations, workflow context, shared workflow keys, leases, and reusable namespace keys SHALL carry the effective tenant scope fingerprint and SHALL reject mismatches.
 
 #### Scenario: Authorization scope mismatch is rejected
 - **WHEN** an executor receives an artifact authorization issued for a different tenant scope
