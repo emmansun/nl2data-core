@@ -799,6 +799,121 @@ governance, authorization, protected results) as SQL.
   `tests/integration/test_mongodb_governance.py`, and
   `tests/integration/test_mongodb_real.py` (optional service).
 
+## Production metadata discovery (P2)
+
+The production profile (internal `nl2data_core.metadata`) turns metadata
+discovery into a governed, evidence-only operation: snapshots are immutable,
+activation is policy-checked, drift is classified by severity, and operational
+evidence never exposes connection material or unrestricted names. It is an
+optional capability layered over the provider-neutral `MetadataDiscoverer`
+contract; manual descriptor and Bundle construction keeps working unchanged.
+
+### Prerequisites
+
+- A trusted source/tenant authorization context: `DiscoveryAuthorization`
+  requires a `source_id`, a trusted tenant scope fingerprint, and a
+  `discovery_identity_fingerprint` referencing the read-only discovery
+  identity - never credentials, DSNs, or physical connection details.
+- Optional drivers for real services: `pip install -e ".[postgres]"`
+  (psycopg 3) or `pip install nl2data-core[mongodb]` (PyMongo). Drivers are
+  imported lazily; the base package never imports them.
+- A reachable service for real discovery: the dedicated integration workflow
+  (`.github/workflows/integration.yml`) starts PostgreSQL and MongoDB with
+  health checks (`pg_isready`, `mongosh ping`). Locally, missing drivers or
+  unreachable services report `skipped` - never a pass - and every skip
+  reason is surfaced with `-rs`.
+
+### Least-privilege permissions
+
+- Discovery is read-only: PostgreSQL introspection runs inside
+  `SET TRANSACTION READ ONLY` with a bounded `statement_timeout`, and MongoDB
+  discovery uses read-only client operations. A SELECT-only role is
+  sufficient for the full profile.
+- Privileges bound the catalog: schema `USAGE` without `SELECT` sees no
+  tables, an invalid identity fails closed as `unavailable`, and an empty
+  object allowlist denies the whole run (`unauthorized`) before any metadata
+  is read.
+
+### Allowlists and bounds
+
+- `ProductionDiscoveryConfig.bounds` carries the object/field allowlists and
+  the bounded limits: `max_objects`, `max_fields_per_object`, `max_samples`,
+  `max_statistics`, `timeout_seconds`, `max_concurrency`, and
+  `include_statistics`. An empty `allowed_objects` denies every object.
+- `sensitive_name_markers` counts objects/fields whose names match a marker
+  (`redacted_sensitive_objects`/`redacted_sensitive_fields`) but never names
+  them in evidence.
+- Every failure is normalized into a safe `DiscoveryOutcome` category
+  (`unavailable`, `unauthorized`, `bounds_exceeded`, `discovery_failed`)
+  with bounded counts, duration, truncation flags, and fingerprints - never
+  driver text, DSNs, credentials, raw rows, or sampled values.
+
+### Snapshot lifecycle, retention, and activation
+
+- Snapshots are immutable and host-owned: `SnapshotLedger` (process-local
+  by design - no distributed metadata registry is added) registers snapshots
+  as retained evidence, and only complete snapshots activate by default.
+  Bounded/partial snapshots (allowlist truncation, sample bounds,
+  `observed_incomplete` collections) register as `partial` evidence and are
+  rejected on activation unless an explicit `allow_partial` policy accepts
+  them.
+- Retention is bounded and explicit: `cleanup_expired` drops records past
+  their retention window (default 30 days), including an expired active
+  snapshot, so an expired snapshot stops resolving until a fresh discovery
+  run registers and activates a replacement. A failed or unauthorized run
+  never replaces the active snapshot, and `discovery_health` reports the
+  last outcome category and freshness without exposing names.
+- Activation requires an explicit `SnapshotActivationPolicy`: freshness
+  bound, tenant/source scope, compatible catalog fingerprints, and
+  partial-snapshot tolerance. `check_snapshot_activation` fails closed on
+  `snapshot_unavailable`, `snapshot_unauthorized`, `source_changed`,
+  `catalog_incompatible`, `snapshot_partial`, `snapshot_stale`, and
+  `blocking_drift`. Bundle catalog activation consumes the same rules
+  through `ProductionActivationContext`.
+
+### Drift response
+
+- `classify_drift` rates changes between two compatible snapshots:
+  `informational` (unreferenced additions), `warning` (unreferenced
+  removals/type changes), and `blocking` (referenced removals, referenced
+  type/constraint changes, source identity or catalog changes, expired
+  freshness). Blocking decisions reject activation by default.
+- An explicit `DriftOverride` permits exactly one decision (by canonical
+  decision fingerprint), is scoped to one tenant and one source, carries a
+  bounded safe reason, and may expire. It can never widen an allowlist or
+  authorize anything outside its decision; wrong-tenant or wrong-source
+  overrides stay blocked.
+
+### Rollback and manual fallback
+
+- Manual Bundle construction (a descriptor with `catalog_fingerprint=None`
+  and publish/activate without a production context) keeps working
+  unchanged - the fallback path needs no snapshot or ledger.
+- To roll back an activation, activate a previous registered snapshot under
+  the same policy, or re-register and re-activate the prior discovery
+  snapshot; stale snapshot/bundle evidence fails closed in View resolution
+  (`snapshot_stale`/`bundle_stale`) and stale workflow checkpoints are
+  rejected before any adapter execution.
+
+### Known limitations
+
+- The ledger is process-local; cross-process lifecycle coordination is a
+  host responsibility (a later shared catalog must implement the same
+  host-owned semantics).
+- Discovery captures structural evidence (objects, fields, constraints,
+  relationships, statistics) - never row data, sampled values, or
+  credentials.
+- Recovery semantics remain at-least-once: re-running a discovery is safe
+  because snapshots are deterministic, but the core never claims exactly-
+  once external execution.
+- Real-service profiles require the service and driver; without them they
+  skip explicitly and are never reported as production verification.
+- Relevant suites: `tests/unit/test_metadata_production.py`,
+  `tests/contract/test_metadata_discovery.py`,
+  `tests/integration/test_production_profile_e2e.py`,
+  `tests/integration/test_postgres_discovery_real.py`, and
+  `tests/integration/test_mongodb_discovery_real.py`.
+
 ## Development
 
 ```bash

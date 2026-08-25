@@ -155,6 +155,15 @@ class ViewRegistry:
                     "bundle_stale",
                     "the trusted bundle fingerprint does not match the active bundle",
                 )
+            if (
+                context.snapshot_fingerprint is not None
+                and bundle.descriptor.catalog_fingerprint != context.snapshot_fingerprint
+            ):
+                return unavailable(
+                    "snapshot_stale",
+                    "the trusted discovery snapshot does not match the active "
+                    "bundle source snapshot",
+                )
 
         # -- tenant scope (fail closed) -------------------------------------
         if context.tenant_scope_fingerprint is None:

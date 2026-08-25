@@ -75,10 +75,16 @@ jobs:
           && python -m pip install -e ".[dev,postgres,redis,mongodb]"
 
       - name: Run real service integration tests
+        # Discovery profiles are classified explicitly: an unreachable service
+        # or missing driver reports a skip (never a pass), while a reachable
+        # service that fails discovery fails the job.  -rs makes every skip
+        # reason visible so profiles are never silently unverified.
         run: >-
-          python -m pytest -q
+          python -m pytest -q -rs
           tests/integration/test_postgres_shared_real.py
+          tests/integration/test_postgres_discovery_real.py
           tests/integration/test_redis_memory_real.py
           tests/integration/test_mongodb_real.py
+          tests/integration/test_mongodb_discovery_real.py
           tests/conformance/test_postgres_conformance.py
           tests/conformance/test_mongodb_conformance.py

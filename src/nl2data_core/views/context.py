@@ -79,6 +79,7 @@ class ResolutionContext(BaseModel):
     policy_fingerprint: str | None = Field(default=None, pattern=_FINGERPRINT_PATTERN)
     catalog_fingerprint: str | None = Field(default=None, pattern=_FINGERPRINT_PATTERN)
     bundle_fingerprint: str | None = Field(default=None, pattern=_FINGERPRINT_PATTERN)
+    snapshot_fingerprint: str | None = Field(default=None, pattern=_FINGERPRINT_PATTERN)
     model_version: str | None = Field(default=None, pattern=_IDENTIFIER_PATTERN)
     adapter_capabilities: frozenset[str] = Field(
         default_factory=frozenset, max_length=_MAX_CAPABILITIES
@@ -120,6 +121,7 @@ class ResolutionContext(BaseModel):
             "policy_fingerprint": self.policy_fingerprint,
             "catalog_fingerprint": self.catalog_fingerprint,
             "bundle_fingerprint": self.bundle_fingerprint,
+            "snapshot_fingerprint": self.snapshot_fingerprint,
             "model_version": self.model_version,
             "adapter_capabilities": ",".join(sorted(self.adapter_capabilities)),
             "feature_flags": ",".join(sorted(self.feature_flags)),

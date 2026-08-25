@@ -58,11 +58,22 @@ The system SHALL define a replaceable catalog protocol and a bounded reference i
 - **THEN** the catalog changes the active pointer to that version without mutating either bundle artifact
 
 ### Requirement: Bundle loading and compatibility are explicit
-Bundle loaders SHALL validate schema version, model version, source identity, dependency fingerprints, and compatibility constraints before returning a bundle. Incompatible or stale bundles SHALL fail closed and SHALL not be silently downgraded.
+Bundle loaders SHALL validate schema version, model version, source identity, dependency fingerprints, source snapshot fingerprint, freshness, completeness, and compatibility constraints before returning or activating a bundle. Incompatible, stale, expired, unauthorized, or blocking-drift bundles SHALL fail closed and SHALL not be silently downgraded. A partial discovery snapshot SHALL not satisfy production activation by default.
 
 #### Scenario: Stale dependency blocks activation
 - **WHEN** a bundle depends on an unavailable or incompatible catalog/model fingerprint
 - **THEN** loading or activation is rejected before a View can resolve against it
+
+#### Scenario: Compatible snapshot permits activation
+- **WHEN** a bundle source snapshot is fresh, authorized, complete, and has no blocking drift against its declared compatibility baseline
+- **THEN** the bundle may be activated after normal Bundle validation
+
+### Requirement: Catalog publication applies discovery drift policy
+Bundle catalog publication SHALL validate source snapshot compatibility and production drift policy before making a bundle available, and activation SHALL never expose a partial or blocking-drift snapshot.
+
+#### Scenario: Blocking drift remains inactive
+- **WHEN** a candidate bundle is based on a snapshot with a blocking drift decision
+- **THEN** the catalog rejects publication or activation and preserves the current active bundle
 
 ### Requirement: Semantic Views consume bundle snapshots
 When bundle-backed catalog resolution is configured, Semantic Views SHALL resolve against an active validated Semantic Model Bundle snapshot, include the bundle identity/version/fingerprint in provenance, and invalidate when the active bundle changes. Descriptor-only resolution MAY remain as an explicit compatibility mode until the migration window ends.

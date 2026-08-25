@@ -17,6 +17,14 @@ tenant access, mandatory filters, or execution authorization.
 
 from .compare import SnapshotComparison, compare_snapshots
 from .conversion import ConvertedBundleInput, ProposalReference, convert_approved_proposals
+from .drift import (
+    DriftChangeReference,
+    DriftDecision,
+    DriftOverride,
+    DriftReason,
+    DriftSeverity,
+    classify_drift,
+)
 from .inference import infer_proposals
 from .models import (
     METADATA_SCHEMA_VERSION,
@@ -37,6 +45,27 @@ from .models import (
     MetadataStatisticKind,
     MetadataTrustLevel,
 )
+from .policy import (
+    ActivationCheckIssue,
+    ActivationCheckResult,
+    ProductionActivationContext,
+    SnapshotActivationPolicy,
+    check_snapshot_activation,
+)
+from .production import (
+    DiscoveryAuthorization,
+    DiscoveryHealthEvidence,
+    DiscoveryOutcome,
+    DiscoveryOutcomeCategory,
+    LedgerActivation,
+    ProductionDiscoveryConfig,
+    ProductionDiscoveryResult,
+    SnapshotLedger,
+    SnapshotLifecycleRecord,
+    SnapshotLifecycleState,
+    discovery_health,
+    run_production_discovery,
+)
 from .proposals import (
     ProposalStatus,
     SemanticProposal,
@@ -55,7 +84,19 @@ from .protocol import (
 
 __all__ = [
     "METADATA_SCHEMA_VERSION",
+    "ActivationCheckIssue",
+    "ActivationCheckResult",
     "ConvertedBundleInput",
+    "DiscoveryAuthorization",
+    "DiscoveryHealthEvidence",
+    "DiscoveryOutcome",
+    "DiscoveryOutcomeCategory",
+    "DriftChangeReference",
+    "DriftDecision",
+    "DriftOverride",
+    "DriftReason",
+    "DriftSeverity",
+    "LedgerActivation",
     "MetadataBoundsExceededError",
     "MetadataConfidence",
     "MetadataConstraint",
@@ -81,11 +122,22 @@ __all__ = [
     "MetadataUnauthorizedError",
     "ProposalReference",
     "ProposalStatus",
+    "ProductionActivationContext",
+    "ProductionDiscoveryConfig",
+    "ProductionDiscoveryResult",
     "SemanticProposal",
     "SemanticProposalKind",
     "SemanticProposalSet",
+    "SnapshotActivationPolicy",
     "SnapshotComparison",
+    "SnapshotLedger",
+    "SnapshotLifecycleRecord",
+    "SnapshotLifecycleState",
+    "classify_drift",
     "compare_snapshots",
     "convert_approved_proposals",
+    "check_snapshot_activation",
+    "discovery_health",
     "infer_proposals",
+    "run_production_discovery",
 ]
