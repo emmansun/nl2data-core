@@ -26,7 +26,7 @@ sequenceDiagram
     S-->>W1: lease owner=A, fencing token=1
 
     loop every stage entry
-        W1->>S: renew lease when remaining &lt; margin (20s)
+        W1->>S: renew lease when remaining < margin (20s)
         S-->>W1: renewed (token stays 1)
     end
 
@@ -40,7 +40,7 @@ sequenceDiagram
 
     W1->>S: commit stage result (stale owner, token=1)
     S-->>W1: FENCING_REJECTED (stale owner can never commit)
-    W1->>W1: stop; never claims success
+    Note over W1: stop; never claims success
 
     W2->>S: execute adapter work
     W2->>S: persist protected evidence + idempotency completion
