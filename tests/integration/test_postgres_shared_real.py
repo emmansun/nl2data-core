@@ -346,7 +346,7 @@ class TestCleanup:
             "wf-live",
             owner_id="worker-live",
             tenant_scope_fingerprint=SCOPE_A,
-            ttl_seconds=TTL_SECONDS,
+            ttl_seconds=TTL_SECONDS * 10,
         )
         time.sleep(TAKEOVER_WAIT_SECONDS)
         removed = store.cleanup(
