@@ -40,7 +40,7 @@ sequenceDiagram
 
     W1->>S: commit stage result (stale owner, token=1)
     S-->>W1: FENCING_REJECTED (stale owner can never commit)
-    W1-->>S: stale commit rejected; no success claimed
+    W1-->>S: stale commit rejected, no success claimed
 
     W2->>S: execute adapter work
     W2->>S: persist protected evidence + idempotency completion
