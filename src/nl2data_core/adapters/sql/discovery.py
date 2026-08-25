@@ -313,8 +313,6 @@ class SqlMetadataDiscoverer:
         if len(selected) > config.max_objects:
             selected = selected[: config.max_objects]
             bounded_objects = True
-        if len(catalog_objects) > len(selected):
-            bounded_objects = True
 
         for name, kind in selected:
             if time.monotonic() >= deadline:
@@ -449,7 +447,7 @@ class SqlMetadataDiscoverer:
             )
 
             # -- foreign keys become relationships ----------------------------
-            for _constraint_name, from_column, target_table, to_column in (
+            for _constraint_name, from_column, to_column, target_table in (
                 connection.execute(
                     "SELECT c.conname, a.attname AS from_column, "
                     "  fa.attname AS to_column, f.relname AS target_table "
@@ -557,8 +555,6 @@ class SqlMetadataDiscoverer:
         ]
         if len(selected) > config.max_objects:
             selected = selected[: config.max_objects]
-            bounded_objects = True
-        if len(catalog_objects) > len(selected):
             bounded_objects = True
 
         for name, kind in selected:

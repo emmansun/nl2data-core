@@ -189,6 +189,19 @@ class TestSqlDiscovery:
         assert bounded.freshness.bounded_fields is True
         assert len(bounded.objects[0].fields) == 1
 
+    @pytest.mark.asyncio
+    async def test_allowlist_exclusions_are_not_reported_as_bound_truncation(self, sql_db) -> None:
+        discoverer = SqlMetadataDiscoverer(
+            dialect="sqlite",
+            db_path=sql_db,
+            allowed_objects=frozenset({"customers", "orders", "order_summary"}),
+        )
+        snapshot = await discoverer.discover(
+            MetadataDiscoveryConfig(allowed_objects=frozenset({"customers", "orders"}))
+        )
+        assert snapshot.object_ids() == frozenset({"customers", "orders"})
+        assert snapshot.freshness.bounded_objects is False
+
         no_stats = await discoverer.discover(
             MetadataDiscoveryConfig(include_statistics=False)
         )
