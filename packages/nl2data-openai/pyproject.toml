@@ -3,14 +3,14 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "nl2data-core"
+name = "nl2data-openai"
 version = "0.1.0"
-description = "A governed and extensible Python framework for natural-language access to heterogeneous enterprise data."
+description = "OpenAI structured-output provider for the nl2data-core model provider boundary."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "Apache-2.0" }
 authors = [{ name = "NL2Data Contributors" }]
-keywords = ["nl2data", "natural language", "data", "enterprise", "governance"]
+keywords = ["nl2data", "openai", "structured output", "model provider"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -21,52 +21,36 @@ classifiers = [
     "Topic :: Software Development :: Libraries",
 ]
 dependencies = [
-    "pydantic>=2.0,<3",
-    "PyYAML>=6.0",
+    "nl2data-core>=0.1.0",
+    "openai>=1.40,<3",
 ]
 
 [project.optional-dependencies]
-# SQL parser + evaluation extras; SQLite itself is stdlib (no dependency).
-sql = ["sqlglot>=25.0,<30"]
-# Optional PostgreSQL conformance profile driver (lazy; never imported by the base package).
-postgres = ["psycopg[binary,pool]>=3.1,<4"]
-# Optional MongoDB profile driver (lazy; never imported by the base package).
-mongodb = ["pymongo>=4.6,<5"]
-# Optional Redis shared memory backend driver (lazy; never imported by the base package).
-redis = ["redis>=5.0,<7"]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "mypy>=1.10",
     "ruff>=0.5",
-    "types-PyYAML>=6.0",
-    "sqlglot>=25.0,<30",
 ]
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-asyncio_mode = "auto"
-addopts = "-q"
-pythonpath = ["src", "packages/nl2data-openai/src"]
-
 [tool.mypy]
 python_version = "3.11"
 files = ["src"]
+mypy_path = ["../../src"]
 check_untyped_defs = true
 disallow_untyped_defs = true
 no_implicit_optional = true
 warn_redundant_casts = true
 warn_unused_ignores = true
 warn_return_any = true
-exclude = ["tests"]
 
 [tool.ruff]
 line-length = 100
 target-version = "py311"
-src = ["src", "tests", "packages/nl2data-openai/src"]
+src = ["src"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]

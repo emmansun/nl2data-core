@@ -2,9 +2,7 @@
 
 ## Purpose
 Define the provider-neutral, bounded model instruction contract and its safe identity across model, workflow, and evaluation boundaries.
-
 ## Requirements
-
 ### Requirement: Instruction bundles are provider-neutral and versioned
 The core SHALL define an immutable, versioned `ModelInstructionBundle` containing bounded system instruction sections, safety constraints, output schema/version, authorized context references, and safe provenance fingerprints. It SHALL be independent of OpenAI, Anthropic, or any vendor message format.
 
@@ -17,19 +15,18 @@ The core SHALL define an immutable, versioned `ModelInstructionBundle` containin
 - **THEN** the invocation is rejected with a normalized configuration/response error before vendor execution
 
 ### Requirement: Instruction content is bounded and safe
-Instruction bundles SHALL reject credentials, connection strings, raw SQL/MQL, executable code, native objects, raw tenant/principal claims, hidden policy material, and unbounded text or section counts. User prompt content SHALL remain separate from system instructions. Additional model context SHALL satisfy the same bounded JSON and safe-content boundary before provider execution.
 
-#### Scenario: Unsafe instruction material is rejected
-- **WHEN** instruction content contains a secret, physical query, executable text, or raw identity claim
-- **THEN** bundle validation rejects it before a provider call
-
-#### Scenario: User prompt cannot rewrite system instructions
-- **WHEN** a user prompt contains text attempting to replace or disable system constraints
-- **THEN** the prompt remains a separate bounded input and the bundle's system instructions remain unchanged
+Instruction bundles SHALL reject credentials, connection strings, raw SQL/MQL, executable code, native objects, raw tenant/principal claims, hidden policy material, and unbounded text or section counts. User prompt content SHALL remain separate from system instructions. Additional model context SHALL satisfy the same bounded JSON and safe-content boundary before provider execution. Authorized bounded configuration fields (such as output-token limits) SHALL be accepted as extra context and SHALL NOT be rejected solely because the field name contains a credential marker substring.
 
 #### Scenario: Unsafe extra context is rejected
+
 - **WHEN** additional model context contains credentials, instruction overrides, physical query text, native objects, or non-JSON values
 - **THEN** resolution returns a normalized rejection before provider invocation
+
+#### Scenario: Authorized bounded configuration passes the extra-context guard
+
+- **WHEN** additional model context carries a bounded configuration field such as `max_output_tokens` alongside recalled memory references
+- **THEN** the context is accepted and provider invocation proceeds without rejecting the field by name
 
 ### Requirement: Security and semantic provenance are fingerprinted
 The bundle SHALL carry stable fingerprints for the instruction version, output schema, authorized Semantic View/model bundle, policy, tenant scope, and context used to assemble it. Raw identity claims, credentials, hidden policy rules, and physical bindings SHALL never appear in the serialized payload or fingerprint inputs.
@@ -55,3 +52,4 @@ Model invocation, workflow checkpoint, and evaluation evidence SHALL include the
 #### Scenario: Evidence links model call safely
 - **WHEN** a model invocation succeeds or fails
 - **THEN** safe evidence can identify the instruction bundle and output contract without exposing raw prompt/instruction payloads
+

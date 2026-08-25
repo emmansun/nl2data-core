@@ -123,15 +123,37 @@ _UNSAFE_CONTEXT_KEYS = frozenset(
 )
 
 
+#: Bounded configuration fields that are authorized extra context even
+#: though their names contain credential marker substrings (for example
+#: ``max_output_tokens`` contains ``token``).
+_ALLOWED_CONTEXT_EXTRA_KEYS = frozenset({"max_output_tokens"})
+_MAX_CONTEXT_EXTRA_OUTPUT_TOKENS = 131_072
+
+
 def _validate_context_extra(value: Any, path: str = "context_extra") -> None:
     """Reject unsafe keys and instruction/physical-query text in extra context."""
     if isinstance(value, Mapping):
         for key, item in value.items():
+            if not isinstance(key, str):
+                raise ValueError(f"{path} contains a non-string context field name")
             key_text = str(key).lower()
-            if key_text in _UNSAFE_CONTEXT_KEYS or any(
-                marker in key_text for marker in ("password", "credential", "secret", "token")
+            if key_text not in _ALLOWED_CONTEXT_EXTRA_KEYS and (
+                key_text in _UNSAFE_CONTEXT_KEYS
+                or any(
+                    marker in key_text
+                    for marker in ("password", "credential", "secret", "token")
+                )
             ):
                 raise ValueError(f"{path}.{key_text} is not an authorized context field")
+            if key_text == "max_output_tokens" and (
+                isinstance(item, bool)
+                or not isinstance(item, int)
+                or not 1 <= item <= _MAX_CONTEXT_EXTRA_OUTPUT_TOKENS
+            ):
+                raise ValueError(
+                    f"{path}.{key_text} must be an integer between 1 and "
+                    f"{_MAX_CONTEXT_EXTRA_OUTPUT_TOKENS}"
+                )
             _validate_context_extra(item, f"{path}.{key_text}")
         return
     if isinstance(value, list):

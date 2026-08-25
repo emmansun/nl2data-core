@@ -267,3 +267,129 @@ class AIEvaluationReport(BaseModel):
         ]
         payload["fingerprint"] = self.fingerprint
         return json.dumps(payload, sort_keys=True, indent=2, ensure_ascii=False)
+
+
+class LiveAvailability(StrEnum):
+    """Explicit availability classification of a live-provider evaluation case.
+
+    A live profile without credentials or service access reports
+    ``unavailable`` or ``skipped`` and never classifies a case as
+    ``verified``.
+    """
+
+    VERIFIED = "verified"
+    UNAVAILABLE = "unavailable"
+    SKIPPED = "skipped"
+
+
+class LiveAICaseResult(BaseModel):
+    """One live-provider case outcome with an explicit availability class."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    case_id: str = Field(pattern=_IDENTIFIER_PATTERN)
+    availability: LiveAvailability
+    evidence: AIProtectedEvidence | None = None
+    error: ModelErrorRecord | None = None
+    skip_reason: str | None = Field(default=None, max_length=512)
+    duration_ms: int = Field(default=0, ge=0)
+
+
+class LiveAIEvaluationReport(BaseModel):
+    """Deterministic live-provider evaluation report.
+
+    Every case is explicitly classified as ``verified``, ``unavailable``,
+    or ``skipped``; provider/model identity is recorded alongside protected
+    evidence.  The fingerprint covers semantic content only (durations are
+    environmental), so equal runs produce equal fingerprints.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    dataset_id: str = Field(pattern=_IDENTIFIER_PATTERN)
+    run_id: str = Field(pattern=_IDENTIFIER_PATTERN)
+    provider_name: str = Field(min_length=1, max_length=64)
+    model_name: str = Field(min_length=1, max_length=128)
+    time_anchor: datetime
+    timezone: str = Field(min_length=1, max_length=32)
+    results: tuple[LiveAICaseResult, ...] = Field(
+        default_factory=tuple, max_length=1_000
+    )
+    fingerprint: str = Field(default="", pattern=_FINGERPRINT_PATTERN)
+
+    @model_validator(mode="after")
+    def _compute_fingerprint(self) -> LiveAIEvaluationReport:
+        object.__setattr__(self, "fingerprint", sha256_fingerprint(self._semantic_payload()))
+        return self
+
+    def _semantic_payload(self) -> dict[str, Any]:
+        """Fingerprint payload without environmental durations."""
+        return {
+            "dataset_id": self.dataset_id,
+            "run_id": self.run_id,
+            "provider_name": self.provider_name,
+            "model_name": self.model_name,
+            "time_anchor": self.time_anchor.isoformat(),
+            "timezone": self.timezone,
+            "results": [
+                {
+                    "case_id": result.case_id,
+                    "availability": result.availability.value,
+                    "evidence": (
+                        result.evidence.model_dump()
+                        if result.evidence is not None
+                        else None
+                    ),
+                    "error": (
+                        result.error.safe_dump() if result.error is not None else None
+                    ),
+                    "skip_reason": result.skip_reason,
+                }
+                for result in self.results
+            ],
+        }
+
+    @property
+    def verified_count(self) -> int:
+        return sum(
+            1
+            for result in self.results
+            if result.availability == LiveAvailability.VERIFIED
+        )
+
+    @property
+    def unavailable_count(self) -> int:
+        return sum(
+            1
+            for result in self.results
+            if result.availability == LiveAvailability.UNAVAILABLE
+        )
+
+    @property
+    def skipped_count(self) -> int:
+        return sum(
+            1 for result in self.results if result.availability == LiveAvailability.SKIPPED
+        )
+
+    def to_json(self) -> str:
+        """Deterministic JSON rendering of the full live report."""
+        payload = self._semantic_payload()
+        payload["results"] = [
+            {
+                "case_id": result.case_id,
+                "availability": result.availability.value,
+                "evidence": (
+                    result.evidence.model_dump()
+                    if result.evidence is not None
+                    else None
+                ),
+                "error": (
+                    result.error.safe_dump() if result.error is not None else None
+                ),
+                "skip_reason": result.skip_reason,
+                "duration_ms": result.duration_ms,
+            }
+            for result in self.results
+        ]
+        payload["fingerprint"] = self.fingerprint
+        return json.dumps(payload, sort_keys=True, indent=2, ensure_ascii=False)

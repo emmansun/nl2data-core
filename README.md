@@ -240,6 +240,47 @@ System-instruction semantics are owned by the core, not by vendors:
   evaluation protected evidence, so security-context changes invalidate the
   identity while no raw instruction or prompt text crosses any boundary.
 
+### OpenAI model provider (optional distribution)
+
+The `nl2data-openai` distribution implements the `ModelProvider` port with
+OpenAI structured output. It is optional and fully isolated: the core import
+boundary never loads the OpenAI SDK, and this package imports it only lazily
+at client build time - never at import, construction, or capability
+inspection.
+
+- **Installation**: install the sibling package from the `packages/`
+  directory (`pip install packages/nl2data-openai`); it depends on
+  `nl2data-core>=0.1.0` and `openai>=1.40,<3`. The core suite runs without
+  either package installed.
+- **Credential injection**: API keys never enter core models, configuration
+  fingerprints, request metadata, workflow state, telemetry, or errors. Inject
+  them through an `api_key_resolver` callable or a `client_factory` at
+  provider construction, or set the `OPENAI_API_KEY` environment variable,
+  which is read only when the client is first built.
+- **Model selection and limits**: `OpenAIProviderConfig` carries the vendor
+  `model_name` plus bounded invocation settings (`max_input_chars`,
+  `max_output_tokens`, `temperature`, `timeout_seconds`, optional `base_url`
+  and `organization`). Capabilities are derived from this configuration
+  without any network call.
+- **Retry ownership**: the provider performs exactly one vendor request per
+  `generate()` call. Timeout, retry, and attempt-budget policy belong to
+  `IntentResolver`; authentication/configuration failures are non-retryable
+  `INVALID_REQUEST` records, while timeout, connection, rate-limit, and
+  transient service errors map to retryable `MODEL_TIMEOUT` /
+  `PROVIDER_UNAVAILABLE` records. `close()` is idempotent and never leaks
+  native clients or exceptions.
+- **Live-test setup**: an opt-in live evaluation profile
+  (`run_live_openai_evaluation` in `nl2data_openai.live_evaluation`) runs the
+  deterministic AI dataset against the real provider and classifies every
+  case as `verified`, `unavailable`, or `skipped`. Without injected
+  credentials/factory or `OPENAI_API_KEY` every case is `skipped`, so default
+  CI needs no credentials and makes no network access; evidence carries only
+  protected fingerprints and normalized codes.
+- **Rollback**: swap the provider back to the core's deterministic
+  `FakeModelProvider` (`nl2data_core.ai.fake`) at composition time to remove
+  the SDK dependency and network access while keeping the same resolver,
+  governance, and evaluation gates.
+
 ## Trusted tenant-context boundary (P2)
 
 The P2 tenant boundary lets hosts bind query execution to a trusted tenant
