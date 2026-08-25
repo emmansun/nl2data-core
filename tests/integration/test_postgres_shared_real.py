@@ -39,6 +39,7 @@ DSN = os.environ.get(
 )
 
 SCOPE_A = "sha256:" + "a" * 64
+SCOPE_B = "sha256:" + "b" * 64
 FINGERPRINT = "sha256:" + "f" * 64
 
 #: Short lease TTL so takeover/expiry tests stay fast; the configured clock
@@ -61,8 +62,8 @@ def make_state(
     )
 
 
-def make_terminal(workflow_id: str) -> WorkflowState:
-    state = make_state(workflow_id=workflow_id)
+def make_terminal(workflow_id: str, scope: str | None = None) -> WorkflowState:
+    state = make_state(workflow_id=workflow_id, scope=scope)
     for target in (WorkflowStatus.QUEUED, WorkflowStatus.RUNNING, WorkflowStatus.SUCCEEDED):
         state = transition(state, target, event_id=f"ev-{uuid4().hex[:8]}")
     return state
@@ -154,11 +155,10 @@ class TestStateRoundTrip:
         self, shared_backend: tuple[PostgreSQLStateStore, Any]
     ) -> None:
         store, _ = shared_backend
-        store.create(make_state(workflow_id="wf-a", scope=SCOPE_A))
-        assert store.get("wf-a", tenant_scope_fingerprint=SCOPE_A) is not None
-        assert store.list_ids(tenant_scope_fingerprint=SCOPE_A) == ("wf-a",)
-        other_scope = "sha256:" + "b" * 64
-        assert store.get("wf-a", tenant_scope_fingerprint=other_scope) is None
+        store.create(make_state(workflow_id="wf-a", scope=SCOPE_B))
+        assert store.get("wf-a", tenant_scope_fingerprint=SCOPE_B) is not None
+        assert store.list_ids(tenant_scope_fingerprint=SCOPE_B) == ("wf-a",)
+        assert store.get("wf-a", tenant_scope_fingerprint=SCOPE_A) is None
 
 
 class TestIdempotency:
@@ -304,7 +304,7 @@ class TestCleanup:
         store.update(
             "wf-done",
             WorkflowStatus.CREATED,
-            make_terminal("wf-done"),
+            make_terminal("wf-done", scope=SCOPE_A),
             expected_version=1,
             tenant_scope_fingerprint=SCOPE_A,
         )
