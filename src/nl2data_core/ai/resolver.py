@@ -454,10 +454,21 @@ class IntentResolver:
             if not record.retryable:
                 return record
         assert last_error is not None
+        last_cause_type = last_error.cause_type or last_error.details.get(
+            "cause_type", "unknown"
+        )
+        last_status_code = last_error.details.get("status_code")
+        details = {
+            "attempts": str(attempts),
+            "last_code": last_error.code.value,
+            "last_cause_type": last_cause_type,
+        }
+        if last_status_code is not None:
+            details["last_status_code"] = last_status_code
         return ModelInvocationError(
             ModelErrorCode.RETRY_EXHAUSTED,
             f"model call failed after {self._config.max_attempts} attempts",
-            details={"attempts": str(attempts), "last_code": last_error.code.value},
+            details=details,
         ).to_record()
 
     def _validate_response(

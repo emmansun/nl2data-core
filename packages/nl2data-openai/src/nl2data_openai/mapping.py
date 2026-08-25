@@ -36,7 +36,11 @@ _MAX_TOKEN_COUNT = 1_000_000_000
 _RESPONSE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_\-\.]{0,127}$")
 
 
-def build_messages(request: ModelInvocationRequest) -> list[dict[str, str]]:
+def build_messages(
+    request: ModelInvocationRequest,
+    *,
+    merge_developer_into_system: bool = False,
+) -> list[dict[str, str]]:
     """Map the instruction bundle and prompt to system/developer/user messages.
 
     The system channel carries the role and allowed behavior; the developer
@@ -48,8 +52,14 @@ def build_messages(request: ModelInvocationRequest) -> list[dict[str, str]]:
     messages: list[dict[str, str]] = []
     instruction = request.instruction
     if instruction is not None:
-        messages.append({"role": "system", "content": _system_message(instruction)})
-        messages.append({"role": "developer", "content": _developer_message(instruction)})
+        system_message = _system_message(instruction)
+        developer_message = _developer_message(instruction)
+        if merge_developer_into_system:
+            system_message = f"{system_message}\n\n{developer_message}"
+            messages.append({"role": "system", "content": system_message})
+        else:
+            messages.append({"role": "system", "content": system_message})
+            messages.append({"role": "developer", "content": developer_message})
     messages.append({"role": "user", "content": request.prompt})
     return messages
 
@@ -118,7 +128,10 @@ def build_request_params(
     )
     params: dict[str, Any] = {
         "model": config.model_name,
-        "messages": build_messages(request),
+        "messages": build_messages(
+            request,
+            merge_developer_into_system=config.merge_developer_into_system,
+        ),
         "response_format": {
             "type": "json_schema",
             "json_schema": {

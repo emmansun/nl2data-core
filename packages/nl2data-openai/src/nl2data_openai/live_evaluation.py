@@ -70,6 +70,7 @@ async def run_live_openai_evaluation(
     min_confidence: float = 0.6,
     time_anchor: datetime = TIME_ANCHOR,
     timezone: str = FIXED_TIMEZONE,
+    progress_callback: Callable[[str, str, LiveAICaseResult], None] | None = None,
 ) -> LiveAIEvaluationReport:
     """Run the dataset against the live OpenAI provider and classify cases.
 
@@ -96,16 +97,19 @@ async def run_live_openai_evaluation(
     results: list[LiveAICaseResult] = []
     try:
         for case in dataset.cases:
-            results.append(
-                await _run_case(
-                    case=case,
-                    provider=provider,
-                    view=view,
-                    references=references,
-                    resolver_config=resolver_config,
-                    min_confidence=min_confidence,
-                )
+            if progress_callback is not None:
+                progress_callback("start", case.case_id, _pending_case(case.case_id))
+            result = await _run_case(
+                case=case,
+                provider=provider,
+                view=view,
+                references=references,
+                resolver_config=resolver_config,
+                min_confidence=min_confidence,
             )
+            results.append(result)
+            if progress_callback is not None:
+                progress_callback("complete", case.case_id, result)
     finally:
         await provider.close()
     return LiveAIEvaluationReport(
@@ -117,6 +121,11 @@ async def run_live_openai_evaluation(
         timezone=timezone,
         results=tuple(results),
     )
+
+
+def _pending_case(case_id: str) -> LiveAICaseResult:
+    """Create a safe progress placeholder before a case starts."""
+    return LiveAICaseResult(case_id=case_id, availability=LiveAvailability.SKIPPED)
 
 
 def _credentials_available(

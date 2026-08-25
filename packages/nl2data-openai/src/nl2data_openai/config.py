@@ -35,6 +35,7 @@ class OpenAIProviderConfig(BaseModel):
     timeout_seconds: float = Field(default=30.0, gt=0.0, le=3600.0)
     base_url: str | None = Field(default=None, max_length=512)
     organization: str | None = Field(default=None, max_length=256)
+    merge_developer_into_system: bool = False
     fingerprint: str = Field(default="", pattern=_FINGERPRINT_PATTERN)
 
     @model_validator(mode="after")
@@ -52,6 +53,7 @@ class OpenAIProviderConfig(BaseModel):
             "timeout_seconds": self.timeout_seconds,
             "base_url": self.base_url,
             "organization": self.organization,
+            "merge_developer_into_system": self.merge_developer_into_system,
         }
 
     def safe_dump(self) -> dict[str, Any]:

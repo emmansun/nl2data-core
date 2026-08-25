@@ -123,7 +123,11 @@ class OpenAIModelProvider:
 
     def _check_bounds(self, request: ModelInvocationRequest) -> None:
         message_chars = sum(
-            len(message["content"]) for message in build_messages(request)
+            len(message["content"])
+            for message in build_messages(
+                request,
+                merge_developer_into_system=self._config.merge_developer_into_system,
+            )
         )
         input_chars = message_chars + len(canonical_json(request.context))
         if input_chars > self._config.max_input_chars:
@@ -230,17 +234,23 @@ class OpenAIModelProvider:
             )
         if is_status_error(error):
             status = getattr(error, "status_code", None)
+            error_details = {
+                "request_id": request_id,
+                "cause_type": type(error).__name__,
+            }
+            if isinstance(status, int):
+                error_details["status_code"] = str(status)
             if isinstance(status, int) and (status >= 500 or status == 429):
                 return ModelInvocationError(
                     ModelErrorCode.PROVIDER_UNAVAILABLE,
                     "provider service error",
-                    details={"request_id": request_id, "cause_type": type(error).__name__},
+                    details=error_details,
                     cause=error,
                 )
             return ModelInvocationError(
                 ModelErrorCode.INVALID_REQUEST,
                 "provider rejected the request",
-                details={"request_id": request_id, "cause_type": type(error).__name__},
+                details=error_details,
                 cause=error,
             )
         return ModelInvocationError(

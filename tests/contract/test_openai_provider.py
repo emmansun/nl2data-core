@@ -220,6 +220,18 @@ class TestRequestMapping:
         assert "amount: Order amount" in developer
         assert f"view={VIEW_FINGERPRINT}" in developer
 
+    async def test_gateway_mode_merges_developer_into_system(self) -> None:
+        fake = FakeOpenAIClient([fake_response(VALID_CONTENT)])
+        prov, _ = provider(fake, provider_config=config(merge_developer_into_system=True))
+        await prov.generate(request(instruction=bundle()))
+        messages = fake.chat.completions.calls[0]["messages"]
+        assert [message["role"] for message in messages] == ["system", "user"]
+        system = messages[0]["content"]
+        assert "You are a data analyst assistant." in system
+        assert "[no_secrets] Never include secrets." in system
+        assert "schema_id=structured-intent" in system
+        assert messages[1]["role"] == "user"
+
     async def test_user_prompt_stays_separate_from_instructions(self) -> None:
         fake = FakeOpenAIClient([fake_response(VALID_CONTENT)])
         prov, _ = provider(fake)
