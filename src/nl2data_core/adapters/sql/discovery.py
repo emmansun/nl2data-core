@@ -443,7 +443,7 @@ class SqlMetadataDiscoverer:
             for _constraint_name, from_column, target_table, to_column in (
                 connection.execute(
                     "SELECT c.conname, a.attname AS from_column, "
-                    "  f.attname AS to_column, f.relname AS target_table "
+                    "  fa.attname AS to_column, f.relname AS target_table "
                     "FROM pg_constraint c "
                     "JOIN pg_class t ON t.oid = c.conrelid "
                     "JOIN pg_namespace n ON n.oid = t.relnamespace "
