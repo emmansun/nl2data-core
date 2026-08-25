@@ -137,13 +137,15 @@ class PyMongoExecutor:
     ) -> tuple[dict[str, Any], ...]:
         try:
             driver_projection, renames = self._split_projection(projection)
-            cursor = self._collection(collection).find(
-                _driver_value(filter_),
-                projection=driver_projection,
-                sort=list(sort.items()) or None,
-                skip=skip,
-                limit=limit,
-            )
+            find_kwargs: dict[str, Any] = {
+                "projection": driver_projection,
+                "sort": list(sort.items()) or None,
+            }
+            if skip is not None:
+                find_kwargs["skip"] = skip
+            if limit is not None:
+                find_kwargs["limit"] = limit
+            cursor = self._collection(collection).find(_driver_value(filter_), **find_kwargs)
             documents = tuple(dict(document) for document in cursor)
             if renames:
                 documents = tuple(

@@ -414,7 +414,7 @@ class PostgreSQLStateStore:
         """Run one named statement with the bounded command timeout."""
         try:
             cursor = conn.cursor()
-            cursor.timeout = self._config.command_timeout_seconds
+            self._set_command_timeout(conn, cursor)
             return cursor.execute(self._sql[name], params)
         except Exception as error:
             raise self._map_backend_error(error, operation=name) from error
@@ -423,10 +423,18 @@ class PostgreSQLStateStore:
         """Run a raw migration statement with the bounded command timeout."""
         try:
             cursor = conn.cursor()
-            cursor.timeout = self._config.command_timeout_seconds
+            self._set_command_timeout(conn, cursor)
             return cursor.execute(statement, ())
         except Exception as error:
             raise self._map_backend_error(error, operation="migration") from error
+
+    def _set_command_timeout(self, conn: Any, cursor: Any) -> None:
+        """Apply a command timeout across fake and psycopg cursor APIs."""
+        if hasattr(cursor, "timeout"):
+            cursor.timeout = self._config.command_timeout_seconds
+            return
+        timeout_ms = int(self._config.command_timeout_seconds * 1000)
+        conn.execute("SET LOCAL statement_timeout = %s", (timeout_ms,))
 
     def _map_backend_error(
         self, error: Exception, *, operation: str

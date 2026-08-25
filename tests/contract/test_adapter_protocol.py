@@ -66,7 +66,9 @@ class TestProtocolShape:
         assert not isinstance(SqlOnlyAdapter(), QueryAdapter)
 
     def test_no_sql_or_mongodb_methods_in_core_contract(self) -> None:
-        protocol_members = set(QueryAdapter.__protocol_attrs__)
+        protocol_members = {
+            name for name, member in vars(QueryAdapter).items() if callable(member)
+        }
         assert "execute_sql" not in protocol_members
         assert "execute_mongodb" not in protocol_members
         assert "run_query" not in protocol_members

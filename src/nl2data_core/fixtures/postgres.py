@@ -227,7 +227,8 @@ class PostgresFixtureProfile(FixtureProfile):
             if not rows:
                 continue
             placeholders = _insert_placeholders(rows[0])
-            connection.executemany(f"INSERT INTO {table} VALUES ({placeholders})", rows)
+            with connection.cursor() as cursor:
+                cursor.executemany(f"INSERT INTO {table} VALUES ({placeholders})", rows)
 
     def _write_meta(self, connection: Any) -> None:
         connection.execute(
