@@ -17,7 +17,10 @@ from nl2data_core.adapters.mongodb.execution import (
 from nl2data_core.adapters.mongodb.executor import MongoExecutor
 from nl2data_core.adapters.mongodb.facts import extract_query_facts, facts_to_governance
 from nl2data_core.adapters.mongodb.fake import FakeMongoExecutor
-from nl2data_core.adapters.mongodb.metadata import discover_metadata
+from nl2data_core.adapters.mongodb.metadata import (
+    MongoMetadataDiscoverer,
+    discover_metadata,
+)
 from nl2data_core.adapters.mongodb.models import (
     MongoAdapterConfig,
     MongoAdapterError,
@@ -68,6 +71,7 @@ __all__ = [
     "MongoGuardPolicy",
     "MongoGuardResult",
     "MongoMetadataSnapshot",
+    "MongoMetadataDiscoverer",
     "MongoOperation",
     "MongoParsedArtifact",
     "MongoProfile",

@@ -71,11 +71,18 @@ def validate_bundle(
     bundle: SemanticModelBundle,
     *,
     supported_schema_versions: tuple[int, ...] = (BUNDLE_SCHEMA_VERSION,),
+    expected_snapshot_fingerprint: str | None = None,
 ) -> BundleValidationResult:
     """Validate a bundle's structure, references, and completeness.
 
     Returns a structured result; invalid bundles report bounded issues and
-    must never be published or activated by a catalog.
+    must never be published or activated by a catalog.  When an
+    ``expected_snapshot_fingerprint`` is supplied, the bundle descriptor
+    must be bound to that discovery snapshot (the descriptor catalog
+    fingerprint) or validation fails closed - bundles produced from an
+    older or unknown snapshot are never treated as compatible.  Manual
+    descriptors remain fully supported: without the expected fingerprint
+    no snapshot binding is required.
     """
     issues: list[BundleValidationIssue] = []
 
@@ -133,6 +140,31 @@ def validate_bundle(
                 message="draft bundles cannot be published or activated",
             )
         )
+
+    if expected_snapshot_fingerprint is not None:
+        bound_fingerprint = bundle.descriptor.catalog_fingerprint
+        if bound_fingerprint is None:
+            issues.append(
+                BundleValidationIssue(
+                    code="snapshot_unbound",
+                    message=(
+                        "bundle descriptor is not bound to any source snapshot; "
+                        "discovery-backed activation requires a snapshot binding"
+                    ),
+                    member_id=bundle.descriptor.descriptor_id,
+                )
+            )
+        elif bound_fingerprint != expected_snapshot_fingerprint:
+            issues.append(
+                BundleValidationIssue(
+                    code="snapshot_stale",
+                    message=(
+                        "bundle descriptor is bound to a different source snapshot "
+                        "than the active discovery snapshot"
+                    ),
+                    member_id=bundle.descriptor.descriptor_id,
+                )
+            )
 
     field_ids = bundle.field_ids()
     entity_ids = bundle.entity_ids()

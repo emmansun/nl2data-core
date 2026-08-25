@@ -24,6 +24,7 @@ from nl2data_core.adapters.models import (
     ValidatedArtifact,
     ValidationContext,
 )
+from nl2data_core.metadata.protocol import MetadataDiscoveryCapability
 
 from .client import MongoClientHandle
 from .execution import execute_mongo_spec
@@ -111,6 +112,7 @@ class MongoQueryAdapter:
             "aggregation",
             "ordering",
             "list_ops",
+            "metadata_discovery",
             "fake" if profile == MongoProfile.FAKE else "pymongo",
         }
         return AdapterCapabilities(
@@ -119,6 +121,18 @@ class MongoQueryAdapter:
             async_mode=AsyncMode.THREAD_OFFLOAD,
             features=frozenset(features),
             limits=AdapterLimits(max_result_rows=self._config.max_rows),
+        )
+
+    def metadata_discovery_capability(self) -> MetadataDiscoveryCapability:
+        """Declare the optional metadata discovery capability of this adapter."""
+        return MetadataDiscoveryCapability(
+            backend="mongodb",
+            supported=True,
+            max_objects=self._config.max_collections,
+            max_fields_per_object=self._config.max_fields_per_collection,
+            supports_statistics=False,
+            supports_sampling=True,
+            description="bounded dotted-path discovery without raw values",
         )
 
     def _parse_spec(self, query: str) -> MongoQuerySpec:

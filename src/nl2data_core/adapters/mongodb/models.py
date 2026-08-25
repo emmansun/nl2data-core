@@ -255,6 +255,8 @@ class MongoAdapterConfig(BaseModel):
     max_skip: int = Field(default=1_000_000, ge=0, le=1_000_000_000)
     max_rows: int = Field(default=100_000, ge=1, le=1_000_000_000)
     max_stages: int = Field(default=16, ge=1, le=100)
+    max_collections: int = Field(default=100, ge=1, le=10_000)
+    max_fields_per_collection: int = Field(default=200, ge=1, le=10_000)
     require_limit: bool = True
     snapshot_fingerprint: str | None = Field(default=None, pattern=_FINGERPRINT_PATTERN)
 

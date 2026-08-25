@@ -519,6 +519,62 @@ SQL/MQL/code, native objects, physical bindings, or authorization claims:
   `tests/security/test_bundle_security.py`, and
   `tests/integration/test_bundle_view_workflow.py`.
 
+## Metadata discovery and inference boundary (P2.5)
+
+An immutable, provider-neutral discovery snapshot (internal
+`nl2data_core.metadata`) captures what a source catalog looks like without
+any raw values, credentials, or unapproved identity data, and a deterministic
+inference/review boundary converts only explicitly approved facts into
+Semantic Model Bundle inputs:
+
+- **Snapshot contract**: `MetadataSnapshot` is frozen and versioned, with
+  objects (tables/views/collections), fields (bounded dotted paths),
+  constraints, relationships, safe statistics, freshness flags, and
+  provenance/evidence references. Canonical serialization and the SHA-256
+  fingerprint sort objects/relationships by id, so equivalent discovery
+  results with different mapping orders produce identical identities.
+- **Discovery permissions**: discovery is authorized per adapter - object
+  allowlists fail closed (an empty or non-intersecting allowlist raises a
+  structured `MetadataUnauthorizedError`), and tenant/source authorization
+  is enforced before any catalog read. SQL and MongoDB discoverers expose
+  one common protocol (`MetadataDiscoverer`) plus optional capability
+  declarations (`metadata_discovery_capability()`) that never leak
+  backend-specific models into the common contract.
+- **Sampling and bounds**: discovery is bounded by
+  `MetadataDiscoveryConfig` (`max_objects`, `max_fields_per_object`,
+  `include_statistics`, sampling limits); truncation is reported explicitly
+  through `MetadataFreshness.bounded_*` flags, never silently. Missing or
+  unreachable sources raise retryable `MetadataUnavailableError`s; errors
+  never leak paths, DSN material, or sampled values.
+- **Trust levels**: every fact carries `declared` (source schema),
+  `observed` (sampled, e.g. MongoDB dotted paths with
+  `observed_incomplete`), or `inferred` (derived) trust, plus bounded
+  evidence fingerprints and confidence - metadata is never authority.
+- **Review workflow**: `infer_proposals` deterministically derives entity/
+  field/relationship/measure/grain/alias/classification proposals with
+  method, evidence, confidence, trust, freshness, and source snapshot
+  attached. `SemanticProposalSet` supports explicit `approve`/`reject`/
+  `revise`; only `APPROVED` proposals convert (`convert_approved_proposals`),
+  and PENDING/REJECTED/REVISED facts never become bundle inputs, never grant
+  View visibility, and never create mandatory filters or execution
+  authorization.
+- **Schema drift**: `compare_snapshots` reports added/removed/changed
+  objects, fields, types, constraints, and relationships as safe
+  references only. `validate_bundle(..., expected_snapshot_fingerprint=...)`
+  rejects unbound (`snapshot_unbound`) or stale (`snapshot_stale`) bundles
+  before activation; View resolution fails closed with `catalog_stale`
+  when the trusted catalog fingerprint drifted; and SQL/MongoDB adapters
+  bound to a snapshot reject mismatched artifacts with
+  `SQLAdapterError`/`MongoAdapterError` before any execution.
+- **Manual fallback**: discovery is optional. Manually authored
+  descriptors/bundles and adapters without snapshot bindings keep working
+  unchanged (`expected_snapshot_fingerprint=None`); query adapters and
+  metadata discoverers are separate protocols.
+- Relevant suites: `tests/unit/test_metadata_snapshot.py`,
+  `tests/contract/test_metadata_discovery.py`,
+  `tests/security/test_metadata_security.py`, and
+  `tests/integration/test_metadata_drift.py`.
+
 ## Governed workflow runtime (P2)
 
 The P2.5 governed workflow runtime (internal `nl2data_core.workflow`) owns

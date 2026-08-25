@@ -7,5 +7,6 @@ SQL-specific behavior lives only in this package; the core protocol in
 from __future__ import annotations
 
 from .adapter import SqlQueryAdapter
+from .discovery import SqlMetadataDiscoverer
 
-__all__ = ["SqlQueryAdapter"]
+__all__ = ["SqlMetadataDiscoverer", "SqlQueryAdapter"]

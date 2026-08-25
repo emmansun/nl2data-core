@@ -26,6 +26,7 @@ from nl2data_core.adapters.models import (
     ValidatedArtifact,
     ValidationContext,
 )
+from nl2data_core.metadata.protocol import MetadataDiscoveryCapability
 
 from .execution import execute_sql
 from .guard import SQLGuardPolicy, assert_guarded
@@ -64,6 +65,7 @@ class SqlQueryAdapter:
         max_rows: int = 100_000,
         max_query_length: int = 10_000,
         require_limit: bool = True,
+        snapshot_fingerprint: str | None = None,
     ) -> None:
         if dialect not in DIALECT_PROFILES:
             raise SQLAdapterError(
@@ -79,6 +81,7 @@ class SqlQueryAdapter:
             require_limit=require_limit,
         )
         self._max_query_length = max_query_length
+        self._snapshot_fingerprint = snapshot_fingerprint
         #: artifact_id -> SQLParsedArtifact retained across the lifecycle.
         self._parsed_by_id: dict[str, SQLParsedArtifact] = {}
         #: artifact_id -> validated SQL text retained for execution.
@@ -99,6 +102,7 @@ class SqlQueryAdapter:
             "ordering",
             "list_ops",
             "contains",
+            "metadata_discovery",
             "cte" if profile.supports_cte else "no_cte",
             "grouping" if profile.supports_grouping else "no_grouping",
             "union" if profile.supports_union else "no_union",
@@ -112,6 +116,22 @@ class SqlQueryAdapter:
                 max_query_length=self._max_query_length,
                 max_result_rows=self._policy.max_rows,
             ),
+        )
+
+    def metadata_discovery_capability(self) -> MetadataDiscoveryCapability:
+        """Declare the optional metadata discovery capability of this adapter.
+
+        The declaration is provider-neutral - backend-specific discovery
+        models never leak into the common contract.
+        """
+        return MetadataDiscoveryCapability(
+            backend=f"sql:{self._dialect}",
+            supported=True,
+            max_objects=1_024,
+            max_fields_per_object=16_384,
+            supports_statistics=True,
+            supports_sampling=False,
+            description="bounded sqlite catalog introspection",
         )
 
     def parse(self, query: str, context: ValidationContext) -> ParsedArtifact:
@@ -149,6 +169,15 @@ class SqlQueryAdapter:
         if parsed is None:
             raise SQLAdapterError(
                 "cannot validate an artifact that was not parsed by this adapter",
+                details={"artifact_id": artifact.artifact_id},
+            )
+        if (
+            self._snapshot_fingerprint is not None
+            and context.snapshot_fingerprint is not None
+            and context.snapshot_fingerprint != self._snapshot_fingerprint
+        ):
+            raise SQLAdapterError(
+                "the metadata snapshot does not match the adapter's bound snapshot",
                 details={"artifact_id": artifact.artifact_id},
             )
         statement: exp.Expression | None = exp.maybe_parse(parsed.sql_text, dialect=self._dialect)

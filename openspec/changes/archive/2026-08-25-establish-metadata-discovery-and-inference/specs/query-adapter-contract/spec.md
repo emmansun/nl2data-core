@@ -1,7 +1,7 @@
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Single canonical QueryAdapter Protocol
-The core SHALL define one generic async-first `QueryAdapter` Protocol with async metadata, generation, cost, execution, and close methods plus synchronous side-effect-free parse and validate methods. SQL and MongoDB SHALL implement this contract only as specialization packages.
+The core SHALL define one generic async-first `QueryAdapter` Protocol with async metadata, generation, cost, execution, and close methods plus synchronous side-effect-free parse and validate methods. Metadata discovery SHALL be exposed through a separate optional provider-neutral capability, so adapters that do not support discovery remain valid QueryAdapter implementations. SQL and MongoDB SHALL implement query execution and discovery only as specialization packages.
 
 #### Scenario: Adapter contract has canonical operations
 - **WHEN** a contract test inspects the QueryAdapter Protocol
@@ -11,7 +11,8 @@ The core SHALL define one generic async-first `QueryAdapter` Protocol with async
 - **WHEN** an adapter does not support metadata discovery
 - **THEN** it remains a valid QueryAdapter and reports the optional capability as unavailable without affecting query execution
 
-Adapter contracts SHALL use `AsyncMode`, `AdapterCapabilities`, `GeneratedArtifact`, `ParsedArtifact`, `ValidatedArtifact`, and `ExecutionResult`, with `artifact_fingerprint` as the canonical executable identity. MongoDB-specific query models SHALL remain behind its adapter boundary. Compiler-produced artifact evidence SHALL identify the validated canonical Semantic Query IR, current governance/view/model context, and artifact fingerprint without exposing the IR's raw or physical payload through adapter models. Artifact validation SHALL be complete before authorization or execution.
+### Requirement: Canonical adapter models
+Adapter contracts SHALL use `AsyncMode`, `AdapterCapabilities`, `GeneratedArtifact`, `ParsedArtifact`, `ValidatedArtifact`, and `ExecutionResult`, with `artifact_fingerprint` as the canonical executable identity. MongoDB-specific query models SHALL remain behind its adapter boundary. Compiler-produced artifact evidence SHALL identify the validated canonical Semantic Query IR, current governance/view/model context, and artifact fingerprint without exposing the IR's raw or physical payload through adapter models. Artifact validation SHALL be complete before authorization or execution. Metadata discovery results SHALL use the separate safe snapshot contract and SHALL not enter executable artifact models.
 
 #### Scenario: Artifact lifecycle is representable
 - **WHEN** a MongoDB adapter creates, parses, validates, and executes a structured artifact from a validated Semantic Query IR
