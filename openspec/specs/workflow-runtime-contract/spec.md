@@ -4,11 +4,15 @@
 TBD - created by archiving change establish-p2-governed-workflow-runtime. Update Purpose after archive.
 ## Requirements
 ### Requirement: Core workflow runtime is framework-neutral
-The system SHALL define a provider-neutral `WorkflowRuntime` contract with typed immutable execution context, stage results, deadlines, cancellation, safe errors, and protected evidence, without requiring LangGraph or another workflow framework.
+The system SHALL define a provider-neutral `WorkflowRuntime` contract with typed immutable execution context, stage results, deadlines, cancellation, safe errors, and protected evidence, without requiring LangGraph or another workflow framework. Model invocation evidence SHALL include the validated instruction bundle version/fingerprint when a model call is performed.
 
 #### Scenario: Runtime contract imports without LangGraph
 - **WHEN** the core package is installed without LangGraph
 - **THEN** the workflow runtime contracts import and deterministic runtime composition remains usable
+
+#### Scenario: Instruction identity is safe in workflow evidence
+- **WHEN** a workflow performs a model invocation
+- **THEN** its safe evidence records the instruction identity without storing raw system instructions or user prompt content
 
 ### Requirement: Workflow stages and mandatory gates are explicit
 The runtime SHALL expose ordered stages for memory, intent, IR building, IR/view validation, deterministic compilation, artifact guarding, governance, authorization, execution, protection, persistence, and completion, and SHALL reject execution when a required prior gate is missing, stale, or inconsistent. Shared resumable execution SHALL acquire, renew, verify, and release workflow ownership around state commits and adapter work.

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .models import ModelInvocationRequest, ModelResponse
 
@@ -28,7 +28,18 @@ class ModelCapabilities(BaseModel):
     max_input_chars: int = Field(default=100_000, ge=1, le=1_000_000)
     max_output_tokens: int = Field(default=4096, ge=1, le=_MAX_OUTPUT_TOKENS)
     usage_accounting: bool = True
+    instruction_versions: frozenset[int] = frozenset({1})
     features: frozenset[str] = Field(default_factory=frozenset)
+
+    @field_validator("instruction_versions")
+    @classmethod
+    def _valid_instruction_versions(cls, value: frozenset[int]) -> frozenset[int]:
+        if not value:
+            raise ValueError("at least one supported instruction version is required")
+        for version in value:
+            if version < 1 or version > 100:
+                raise ValueError("instruction versions must be between 1 and 100")
+        return value
 
 
 @runtime_checkable

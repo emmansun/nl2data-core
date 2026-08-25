@@ -125,8 +125,10 @@ class AIProtectedEvidence(BaseModel):
     """Protected evidence: fingerprints, normalized codes, and counters.
 
     The payload never contains the raw prompt, the raw provider response,
-    credentials, or native clients; its fingerprint is the safe reference
-    that may cross the evaluation boundary.
+    raw instruction text, credentials, or native clients; its fingerprint
+    is the safe reference that may cross the evaluation boundary.  The
+    instruction and output-schema fingerprints link every model call to its
+    provider-neutral instruction contract.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -140,6 +142,10 @@ class AIProtectedEvidence(BaseModel):
     error: ModelErrorRecord | None = None
     call_count: int = Field(default=0, ge=0, le=100)
     context_fingerprint: str = Field(pattern=_FINGERPRINT_PATTERN)
+    instruction_fingerprint: str | None = Field(default=None, pattern=_FINGERPRINT_PATTERN)
+    output_schema_fingerprint: str | None = Field(
+        default=None, pattern=_FINGERPRINT_PATTERN
+    )
     fingerprint: str = Field(default="", pattern=_FINGERPRINT_PATTERN)
 
     @model_validator(mode="after")
@@ -153,6 +159,8 @@ class AIProtectedEvidence(BaseModel):
                 "error": self.error.safe_dump() if self.error is not None else None,
                 "call_count": self.call_count,
                 "context_fingerprint": self.context_fingerprint,
+                "instruction_fingerprint": self.instruction_fingerprint,
+                "output_schema_fingerprint": self.output_schema_fingerprint,
             }
         )
         object.__setattr__(self, "fingerprint", fingerprint)

@@ -211,6 +211,35 @@ how database adapters plug into the governed path:
   packages behind the `ModelProvider` port, exactly like database drivers; the
   core import boundary never loads them.
 
+### Model instruction contract
+
+System-instruction semantics are owned by the core, not by vendors:
+
+- `ModelInstructionBundle` (internal `nl2data_core.ai.instructions`) is an
+  immutable, versioned, provider-neutral instruction contract with bounded
+  typed sections - role, allowed behavior, output schema/version and response
+  mode, safety constraints, authorized context references, and safe
+  provenance fingerprints (view, model bundle, policy, tenant scope). It is
+  assembled by `assemble_instruction_bundle` from authorized context, the
+  Semantic View, policy fingerprints, and the fixed structured-intent output
+  contract - never from the user prompt.
+- The prompt and the instruction bundle always travel as separate fields of
+  `ModelInvocationRequest`; user text can never rewrite system instructions
+  through formatting, and instruction text can never leak into the prompt.
+  Vendor packages own only the transport mapping of the bundle to their own
+  system/developer/user message channels and never reconstruct governance
+  semantics from raw context.
+- Instructions are safe by construction: credentials, raw SQL/MQL,
+  executable text, native objects, raw tenant/principal claims, and hidden
+  policy material are rejected before any provider call with normalized
+  `UNSAFE_INSTRUCTION_CONTENT` / `INSTRUCTION_BOUNDS_EXCEEDED` errors, and
+  unsupported bundle versions fail closed with
+  `INSTRUCTION_VERSION_INCOMPATIBLE`.
+- Instruction identity is evidence, not text: bundle and output-schema
+  fingerprints appear in invocation metadata, workflow gate evidence, and AI
+  evaluation protected evidence, so security-context changes invalidate the
+  identity while no raw instruction or prompt text crosses any boundary.
+
 ## Trusted tenant-context boundary (P2)
 
 The P2 tenant boundary lets hosts bind query execution to a trusted tenant

@@ -66,6 +66,7 @@ class WorkflowGate(StrEnum):
     ARTIFACT_VALIDATION = "artifact_validation"
     AUTHORIZATION = "authorization"
     DEADLINE = "deadline"
+    INSTRUCTION = "instruction"
 
 
 #: Terminal statuses from which no transition is allowed.

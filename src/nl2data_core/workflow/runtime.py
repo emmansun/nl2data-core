@@ -54,6 +54,7 @@ from nl2data_core.adapters.protocol import QueryAdapter
 from nl2data_core.adapters.sql.compile import compile_sql
 from nl2data_core.ai.config import ModelConfig
 from nl2data_core.ai.context import SemanticReference
+from nl2data_core.ai.instructions import instruction_evidence_fingerprint
 from nl2data_core.ai.models import ClarificationRequired, RejectedIntent, ResolvedIntent
 from nl2data_core.ai.plan_builder import build_ir_from_intent
 from nl2data_core.ai.protocol import ModelProvider
@@ -637,13 +638,28 @@ class _IntentNode(_NodeBase):
                 outcome=_not_configured(request),
             )
         try:
-            outcome = await IntentResolver(
+            resolver = IntentResolver(
                 view=runtime.view,
                 semantic_references=runtime.references,
                 config=runtime.config,
                 min_confidence=runtime.min_confidence,
                 projection=runtime.projection,
-            ).resolve(request, provider, context_extra=self._channel.get("context_extra"))
+                policy_fingerprint=runtime.policy_scope.policy_fingerprint,
+                tenant_scope_fingerprint=(
+                    runtime.tenant_context.scope_fingerprint
+                    if runtime.tenant_context is not None
+                    else None
+                ),
+            )
+            outcome = await resolver.resolve(
+                request, provider, context_extra=self._channel.get("context_extra")
+            )
+            bundle = resolver.instruction_bundle
+            if bundle is not None:
+                gate_evidence: dict[WorkflowGate, str] = self._channel["gate_evidence"]
+                gate_evidence[WorkflowGate.INSTRUCTION] = instruction_evidence_fingerprint(
+                    bundle
+                )
         except Exception as error:
             return StageResult(
                 stage=self.stage,

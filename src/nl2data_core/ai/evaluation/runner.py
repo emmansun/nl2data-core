@@ -19,6 +19,7 @@ from nl2data_core.ai.config import ModelConfig
 from nl2data_core.ai.context import SemanticReference, assemble_model_context
 from nl2data_core.ai.errors import ModelErrorRecord, normalize_model_error
 from nl2data_core.ai.fake import FakeModelProvider
+from nl2data_core.ai.instructions import assemble_instruction_bundle
 from nl2data_core.ai.models import ClarificationRequired, RejectedIntent, ResolvedIntent
 from nl2data_core.ai.resolver import IntentResolver
 from nl2data_core.fixtures.models import FIXED_TIMEZONE, TIME_ANCHOR
@@ -61,7 +62,12 @@ def evidence_is_redacted(evidence: AIProtectedEvidence) -> bool:
         lowered = key.lower()
         if any(token in lowered for token in _SENSITIVE_TOKENS):
             return False
-    for fingerprint_key in ("intent_fingerprint", "clarification_fingerprint"):
+    for fingerprint_key in (
+        "intent_fingerprint",
+        "clarification_fingerprint",
+        "instruction_fingerprint",
+        "output_schema_fingerprint",
+    ):
         value = payload.get(fingerprint_key)
         if value is not None and (
             not isinstance(value, str) or not value.startswith("sha256:")
@@ -287,6 +293,16 @@ class AIEvaluationRunner:
             semantic_references=self._references,
             max_output_tokens=self._config.max_output_tokens,
         ).fingerprint
+        instruction = assemble_instruction_bundle(
+            request=case.request,
+            context=assemble_model_context(
+                request=case.request,
+                view=self._view,
+                semantic_references=self._references,
+                max_output_tokens=self._config.max_output_tokens,
+            ),
+            view=self._view,
+        )
         if isinstance(outcome, ResolvedIntent):
             resolution: Literal["resolved", "clarification", "rejected"] = "resolved"
             intent_fingerprint = outcome.intent.fingerprint
@@ -310,4 +326,6 @@ class AIEvaluationRunner:
             error=error,
             call_count=provider.call_count,
             context_fingerprint=context_fingerprint,
+            instruction_fingerprint=instruction.fingerprint,
+            output_schema_fingerprint=instruction.output_contract.fingerprint,
         )

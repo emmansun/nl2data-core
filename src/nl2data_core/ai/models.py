@@ -17,6 +17,7 @@ from nl2data_core.canonical import sha256_fingerprint
 from nl2data_core.planning.models import AggregationKind, FilterOperator, OrderDirection
 
 from .errors import ModelErrorRecord
+from .instructions import ModelInstructionBundle
 
 _IDENTIFIER_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_\-\.]{0,127}$"
 _FINGERPRINT_PATTERN = r"^sha256:[0-9a-f]{64}$"
@@ -58,8 +59,12 @@ def _check_json_compatible(value: Any, path: str) -> None:
 class ModelInvocationRequest(BaseModel):
     """Immutable bounded request sent to a model provider.
 
-    Carries the natural-language prompt and an authorized context payload;
-    never credentials, native clients, raw result sets, or policy state.
+    Carries the natural-language prompt, an authorized context payload, and
+    the validated provider-neutral instruction bundle (or ``None`` for the
+    legacy prompt/context-only path); never credentials, native clients,
+    raw result sets, or policy state.  The prompt and the instruction
+    bundle always travel as separate fields - user text can never rewrite
+    system instructions through formatting.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -67,6 +72,7 @@ class ModelInvocationRequest(BaseModel):
     request_id: str = Field(pattern=_IDENTIFIER_PATTERN)
     prompt: str = Field(min_length=1, max_length=_MAX_PROMPT_CHARS)
     context: dict[str, Any] = Field(default_factory=dict, max_length=_MAX_JSON_KEYS)
+    instruction: ModelInstructionBundle | None = None
     max_output_tokens: int = Field(default=4096, ge=1, le=_MAX_OUTPUT_TOKENS)
     temperature: float | None = Field(default=None, ge=0.0, le=2.0)
     metadata: dict[str, str] = Field(default_factory=dict, max_length=32)

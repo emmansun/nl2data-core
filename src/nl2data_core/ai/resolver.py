@@ -30,6 +30,13 @@ from nl2data_core.ai.errors import (
     ModelInvocationError,
     normalize_model_error,
 )
+from nl2data_core.ai.instructions import (
+    InstructionValidationError,
+    ModelInstructionBundle,
+    ResponseMode,
+    assemble_instruction_bundle,
+    scan_unsafe_instruction,
+)
 from nl2data_core.ai.models import (
     ClarificationOption,
     ClarificationRequest,
@@ -97,6 +104,50 @@ _DRIVER_REFERENCE = re.compile(
 )
 
 _MAX_OUTPUT_CHARS_PER_TOKEN = 4
+_UNSAFE_CONTEXT_KEYS = frozenset(
+    {
+        "credential",
+        "credentials",
+        "password",
+        "secret",
+        "token",
+        "dsn",
+        "query",
+        "sql",
+        "mql",
+        "command",
+        "code",
+        "instructions",
+        "system",
+    }
+)
+
+
+def _validate_context_extra(value: Any, path: str = "context_extra") -> None:
+    """Reject unsafe keys and instruction/physical-query text in extra context."""
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            key_text = str(key).lower()
+            if key_text in _UNSAFE_CONTEXT_KEYS or any(
+                marker in key_text for marker in ("password", "credential", "secret", "token")
+            ):
+                raise ValueError(f"{path}.{key_text} is not an authorized context field")
+            _validate_context_extra(item, f"{path}.{key_text}")
+        return
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            _validate_context_extra(item, f"{path}[{index}]")
+        return
+    if isinstance(value, tuple):
+        for index, item in enumerate(value):
+            _validate_context_extra(item, f"{path}[{index}]")
+        return
+    if isinstance(value, str) and (
+        scan_unsafe_instruction(value) is not None or _scan_text(value) is not None
+    ):
+        raise ValueError(f"{path} contains unsafe instruction or physical-query text")
+    if not isinstance(value, (str, int, float, bool, type(None))):
+        raise ValueError(f"{path} contains a non-JSON-compatible value")
 
 
 def scan_unsafe_output(content: Mapping[str, Any]) -> str | None:
@@ -157,6 +208,9 @@ class IntentResolver:
         config: ModelConfig | None = None,
         min_confidence: float = 0.6,
         projection: ResolvedViewProjection | None = None,
+        policy_fingerprint: str | None = None,
+        tenant_scope_fingerprint: str | None = None,
+        instruction_bundle: ModelInstructionBundle | None = None,
     ) -> None:
         self._view = view
         self._projection = projection
@@ -178,11 +232,25 @@ class IntentResolver:
             self._field_ids = view.field_ids
         self._config = config or ModelConfig()
         self._min_confidence = min_confidence
+        self._policy_fingerprint = policy_fingerprint
+        self._tenant_scope_fingerprint = tenant_scope_fingerprint
+        self._instruction_bundle = instruction_bundle
+        self._last_bundle: ModelInstructionBundle | None = None
 
     @property
     def view(self) -> AuthorizedView:
         """The authorized view every resolved intent must stay inside."""
         return self._view
+
+    @property
+    def instruction_bundle(self) -> ModelInstructionBundle | None:
+        """The validated instruction bundle of the most recent resolution.
+
+        ``None`` when assembly was skipped (for example an injected bundle
+        is absent and assembly failed); the identity is safe evidence that
+        may cross workflow and evaluation boundaries.
+        """
+        return self._last_bundle
 
     async def resolve(
         self,
@@ -207,8 +275,50 @@ class IntentResolver:
             max_output_tokens=bound_tokens,
             projection=self._projection,
         )
+        if context_extra is not None:
+            try:
+                _validate_context_extra(context_extra)
+            except ValueError as error:
+                return RejectedIntent(
+                    error=ModelInvocationError(
+                        ModelErrorCode.UNSAFE_INSTRUCTION_CONTENT,
+                        "model context contains unsafe content",
+                        details={"reason": str(error)[:256]},
+                    ).to_record()
+                )
+        try:
+            bundle = self._instruction_bundle or assemble_instruction_bundle(
+                request=request,
+                context=context,
+                view=self._view,
+                projection=self._projection,
+                policy_fingerprint=self._policy_fingerprint,
+                tenant_scope_fingerprint=self._tenant_scope_fingerprint,
+            )
+        except InstructionValidationError as error:
+            return RejectedIntent(
+                error=ModelInvocationError(
+                    ModelErrorCode.UNSAFE_INSTRUCTION_CONTENT,
+                    "instruction content is unsafe",
+                    details={"reason": error.reason},
+                ).to_record()
+            )
+        except ValidationError as error:
+            return RejectedIntent(
+                error=ModelInvocationError(
+                    ModelErrorCode.INSTRUCTION_BOUNDS_EXCEEDED,
+                    "instruction bundle exceeds its bounds",
+                    details={"errors": self._validation_summary(error)},
+                ).to_record()
+            )
+        self._last_bundle = bundle
         outcome = await self._invoke_with_budget(
-            request, provider, context, bound_tokens, context_extra=context_extra
+            request,
+            provider,
+            context,
+            bound_tokens,
+            instruction=bundle,
+            context_extra=context_extra,
         )
         if isinstance(outcome, ModelErrorRecord):
             return RejectedIntent(error=outcome)
@@ -221,24 +331,33 @@ class IntentResolver:
         context: AuthorizedModelContext,
         max_output_tokens: int,
         *,
+        instruction: ModelInstructionBundle | None = None,
         context_extra: Mapping[str, Any] | None = None,
     ) -> ModelResponse | ModelErrorRecord:
         """Invoke the provider with a bounded retry budget."""
         payload = context.safe_payload()
         if context_extra is not None:
             payload = {**payload, **context_extra}
+        metadata: dict[str, str] = {
+            "context_fingerprint": (
+                sha256_fingerprint(payload)
+                if context_extra is not None
+                else context.fingerprint
+            )
+        }
+        if instruction is not None:
+            metadata["instruction_fingerprint"] = instruction.fingerprint
+            metadata["instruction_version"] = str(instruction.bundle_version)
+            metadata["output_schema_fingerprint"] = (
+                instruction.output_contract.fingerprint
+            )
         invocation = ModelInvocationRequest(
             request_id=request.request_id,
             prompt=request.prompt,
             context=payload,
+            instruction=instruction,
             max_output_tokens=max_output_tokens,
-            metadata={
-                "context_fingerprint": (
-                    sha256_fingerprint(payload)
-                    if context_extra is not None
-                    else context.fingerprint
-                )
-            },
+            metadata=metadata,
         )
         if len(request.prompt) > self._config.max_input_chars:
             return self._reject_record(
@@ -255,6 +374,22 @@ class IntentResolver:
                 ModelErrorCode.INVALID_REQUEST,
                 "provider does not support structured output",
             )
+        if instruction is not None:
+            if instruction.bundle_version not in capabilities.instruction_versions:
+                return self._reject_record(
+                    ModelErrorCode.INSTRUCTION_VERSION_INCOMPATIBLE,
+                    "provider does not support the instruction bundle version",
+                    details={"instruction_version": str(instruction.bundle_version)},
+                )
+            if instruction.output_contract.response_mode is not ResponseMode.STRUCTURED:
+                return self._reject_record(
+                    ModelErrorCode.INVALID_REQUEST,
+                    "instruction output mode is not supported by structured intent "
+                    "resolution",
+                    details={
+                        "response_mode": instruction.output_contract.response_mode.value
+                    },
+                )
         if len(request.prompt) > capabilities.max_input_chars:
             return self._reject_record(
                 ModelErrorCode.INVALID_REQUEST,
