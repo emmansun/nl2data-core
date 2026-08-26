@@ -149,7 +149,14 @@ class TestProtectedEvidence:
         first = run().run()
         second = run().run()
         assert first.fingerprint == second.fingerprint
-        assert first.to_json() == second.to_json()
+        first_json = json.loads(first.to_json())
+        second_json = json.loads(second.to_json())
+        # Duration is environmental and must not alter the report content.
+        for result in first_json["results"]:
+            result.pop("duration_ms", None)
+        for result in second_json["results"]:
+            result.pop("duration_ms", None)
+        assert first_json == second_json
 
     def test_fingerprint_mismatch_is_recorded_without_the_presented_raw_scope(self) -> None:
         report = run().run()
