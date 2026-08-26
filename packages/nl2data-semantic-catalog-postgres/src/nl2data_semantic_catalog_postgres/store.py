@@ -469,7 +469,9 @@ class PostgreSQLSemanticCatalog:
                     )
                 for version in range(current + 1, target + 1):
                     for statement in MIGRATIONS[version]:
-                        self._execute_raw(conn, statement)
+                        self._execute_raw(
+                            conn, statement.format(schema=self._quoted_schema)
+                        )
                 if current < target:
                     self._execute(
                         conn, "write_schema_version", (str(target),)

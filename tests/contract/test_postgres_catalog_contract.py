@@ -483,6 +483,15 @@ class TestWorkflowStateSeparation:
         for table in self.WORKFLOW_TABLES:
             assert table not in statements
 
+    def test_catalog_migrations_are_namespace_rendered_before_execution(self) -> None:
+        catalog, _ = make_postgres_catalog()
+        rendered = [
+            statement.format(schema=catalog._quoted_schema)
+            for statements in MIGRATIONS.values()
+            for statement in statements
+        ]
+        assert all("{schema}" not in statement for statement in rendered)
+
     def test_catalog_lifecycle_leaves_the_workflow_store_empty(self) -> None:
         catalog, pool = make_postgres_catalog()
         snapshot = make_snapshot()
