@@ -1,8 +1,9 @@
 """Optional real-PostgreSQL metadata discovery profile (production hardening).
 
-Runs the SQL metadata discoverer against a real PostgreSQL service with an
-isolated schema: table/view/type/key/relationship/statistics assertions,
-object/field allowlists, least-privilege read-only identities, bounded
+Runs the nl2data_postgres package's discoverer against a real PostgreSQL
+service with an isolated schema: table/view/type/key/relationship/statistics
+assertions, object/field allowlists, least-privilege read-only identities,
+bounded
 timeouts, concurrent discovery, sensitive-name/value redaction, and safe
 unavailable/unauthorized classification.  When the driver is missing, the
 DSN is not configured, or the service is unreachable the outcome is
@@ -24,7 +25,6 @@ from uuid import uuid4
 
 import pytest
 
-from nl2data_core.adapters.sql.discovery import SqlMetadataDiscoverer
 from nl2data_core.metadata import (
     DiscoveryAuthorization,
     DiscoveryOutcomeCategory,
@@ -38,6 +38,7 @@ from nl2data_core.metadata import (
     ProductionDiscoveryConfig,
     run_production_discovery,
 )
+from nl2data_postgres import PostgresAdapterConfig, PostgresMetadataDiscoverer
 
 #: Service location; override with NL2DATA_POSTGRES_DSN for CI/dev services.
 DSN = os.environ.get(
@@ -46,6 +47,9 @@ DSN = os.environ.get(
 
 TENANT = "sha256:" + "a" * 64
 IDENTITY = "sha256:" + "b" * 64
+
+#: Package discoverers created during a test, closed after the test.
+_created_discoverers: list[PostgresMetadataDiscoverer] = []
 
 
 def _driver_available() -> bool:
@@ -155,14 +159,17 @@ def make_discoverer(
     *,
     allowed_objects: frozenset[str],
     dsn: str | None = None,
-) -> SqlMetadataDiscoverer:
-    """A PostgreSQL discoverer bound to the isolated fixture schema."""
-    return SqlMetadataDiscoverer(
-        dialect="postgresql",
-        dsn=dsn if dsn is not None else source["dsn"],
-        schema=source["schema"],
+) -> PostgresMetadataDiscoverer:
+    """A package discoverer bound to the isolated fixture schema."""
+    discoverer = PostgresMetadataDiscoverer(
+        PostgresAdapterConfig(
+            dsn_reference=dsn if dsn is not None else source["dsn"],
+            schema_name=source["schema"],
+        ),
         allowed_objects=allowed_objects,
     )
+    _created_discoverers.append(discoverer)
+    return discoverer
 
 
 def make_production_config(
@@ -182,8 +189,18 @@ def make_production_config(
     )
 
 
-def run_discovery(discoverer: SqlMetadataDiscoverer, config: MetadataDiscoveryConfig):
+def run_discovery(discoverer: PostgresMetadataDiscoverer, config: MetadataDiscoveryConfig):
     return asyncio.run(discoverer.discover(config))
+
+
+@pytest.fixture(autouse=True)
+def _close_discoverers() -> Iterator[None]:
+    """Close every package discoverer's connection pool after each test."""
+    yield
+    while _created_discoverers:
+        discoverer = _created_discoverers.pop()
+        with contextlib.suppress(Exception):
+            asyncio.run(discoverer.close())
 
 
 class TestDriverBoundary:
@@ -285,12 +302,7 @@ class TestCatalogStructure:
         assert [obj.object_id for obj in unknown.objects] == ["customers"]
 
     def test_empty_allowlist_fails_closed(self, postgres_source) -> None:
-        discoverer = SqlMetadataDiscoverer(
-            dialect="postgresql",
-            dsn=postgres_source["dsn"],
-            schema=postgres_source["schema"],
-            allowed_objects=frozenset(),
-        )
+        discoverer = make_discoverer(postgres_source, allowed_objects=frozenset())
         with pytest.raises(MetadataUnauthorizedError):
             run_discovery(discoverer, MetadataDiscoveryConfig())
 
@@ -364,11 +376,10 @@ class TestBoundsAndConcurrency:
         assert first.source.catalog_fingerprint == second.source.catalog_fingerprint
 
     def test_unreachable_service_classifies_safely(self, postgres_source) -> None:
-        unreachable = SqlMetadataDiscoverer(
-            dialect="postgresql",
-            dsn="postgres://postgres:postgres@127.0.0.1:1/postgres",
-            schema="public",
+        unreachable = make_discoverer(
+            postgres_source,
             allowed_objects=frozenset({"customers"}),
+            dsn="postgres://postgres:postgres@127.0.0.1:1/postgres",
         )
         with pytest.raises(MetadataUnavailableError):
             run_discovery(unreachable, MetadataDiscoveryConfig())
@@ -382,9 +393,11 @@ class TestBoundsAndConcurrency:
         assert result.outcome.snapshot_fingerprint is None
 
     def test_missing_dsn_fails_closed(self) -> None:
-        discoverer = SqlMetadataDiscoverer(
-            dialect="postgresql", allowed_objects=frozenset({"customers"})
+        discoverer = PostgresMetadataDiscoverer(
+            PostgresAdapterConfig(dsn_reference="env:NL2DATA_POSTGRES_DSN_MISSING_XYZ"),
+            allowed_objects=frozenset({"customers"}),
         )
+        _created_discoverers.append(discoverer)
         with pytest.raises(MetadataUnavailableError):
             run_discovery(discoverer, MetadataDiscoveryConfig())
 

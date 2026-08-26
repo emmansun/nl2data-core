@@ -21,14 +21,14 @@ from .config import PostgresAdapterConfig
 _AUTH_SQLSTATES = frozenset({"28P01", "42501", "42502"})
 
 
-def _driver() -> Any:
-    """Return the psycopg module, raising a safe error if absent."""
-    if find_spec("psycopg") is None:
+def _pool_module() -> Any:
+    """Return the psycopg_pool module, raising a safe error if absent."""
+    if find_spec("psycopg_pool") is None:
         raise MetadataUnavailableError(
-            "the psycopg driver is not installed; install the 'postgres' extra",
+            "the psycopg pool driver is not installed; install the 'postgres' extra",
             details={"cause_type": "ImportError"},
         )
-    return import_module("psycopg")
+    return import_module("psycopg_pool")
 
 
 def _raise_normalized_discovery_error(error: BaseException, message: str) -> None:
@@ -41,7 +41,12 @@ def _raise_normalized_discovery_error(error: BaseException, message: str) -> Non
         "PasswordMismatch",
     }:
         raise MetadataUnauthorizedError(message, details={"cause_type": cause_type}) from error
-    if cause_type in {"OperationalError", "InterfaceError", "ConnectionError"}:
+    if cause_type in {
+        "OperationalError",
+        "InterfaceError",
+        "ConnectionError",
+        "PoolTimeout",
+    }:
         raise MetadataUnavailableError(message, details={"cause_type": cause_type}) from error
     raise MetadataDiscoveryError(message, details={"cause_type": cause_type}) from error
 
@@ -68,16 +73,23 @@ class PostgresPool:
         with self._lock:
             if self._pool is not None:
                 return self._pool
-            driver = _driver()
-            dsn = self._config.resolve_dsn()
+            pool_module = _pool_module()
             try:
-                self._pool = driver.pool.ConnectionPool(
+                dsn = self._config.resolve_dsn()
+            except ValueError as error:
+                raise MetadataUnavailableError(
+                    "postgresql dsn reference could not be resolved",
+                    details={"cause_type": type(error).__name__},
+                ) from error
+            try:
+                self._pool = pool_module.ConnectionPool(
                     dsn,
                     min_size=self._config.pool_min_size,
                     max_size=self._config.pool_max_size,
-                    connect_timeout=self._connect_timeout(),
+                    open=True,
+                    kwargs={"connect_timeout": self._connect_timeout()},
                 )
-                self._pool.wait()
+                self._pool.wait(timeout=self._connect_timeout())
             except Exception as error:
                 self._pool = None
                 _raise_normalized_discovery_error(error, "could not connect to postgresql")

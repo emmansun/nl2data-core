@@ -26,7 +26,7 @@ class FakePool:
     def __init__(self) -> None:
         self.closed = False
 
-    def wait(self) -> None:
+    def wait(self, timeout: float = 30.0) -> None:
         pass
 
     @contextlib.contextmanager
@@ -37,12 +37,11 @@ class FakePool:
         self.closed = True
 
 
-def _fake_driver(pool: Any) -> Any:
-    """A driver module whose pool namespace returns one fixed pool."""
-    namespace = type(
-        "_FakePoolNS", (), {"ConnectionPool": staticmethod(lambda *args, **kwargs: pool)}
-    )
-    return type("_FakeDriver", (), {"pool": namespace})()
+def _fake_pool_module(pool: Any) -> Any:
+    """A pool module whose ConnectionPool factory returns one fixed pool."""
+    return type(
+        "_FakePoolModule", (), {"ConnectionPool": staticmethod(lambda *args, **kwargs: pool)}
+    )()
 
 
 def _client() -> PostgresPool:
@@ -55,7 +54,7 @@ class TestPostgresPoolClient:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         pool = FakePool()
-        monkeypatch.setattr("nl2data_postgres.client._driver", lambda: _fake_driver(pool))
+        monkeypatch.setattr("nl2data_postgres.client._pool_module", lambda: _fake_pool_module(pool))
         client = _client()
         with client.connection() as connection:
             assert connection.executed == ["SET TRANSACTION READ ONLY"]
@@ -64,7 +63,7 @@ class TestPostgresPoolClient:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         class ExplodingPool:
-            def wait(self) -> None:
+            def wait(self, timeout: float = 30.0) -> None:
                 pass
 
             @contextlib.contextmanager
@@ -75,7 +74,7 @@ class TestPostgresPoolClient:
                 yield None  # pragma: no cover
 
         monkeypatch.setattr(
-            "nl2data_postgres.client._driver", lambda: _fake_driver(ExplodingPool())
+            "nl2data_postgres.client._pool_module", lambda: _fake_pool_module(ExplodingPool())
         )
         client = _client()
         with pytest.raises(MetadataDiscoveryError) as excinfo, client.connection():
@@ -95,7 +94,7 @@ class TestPostgresPoolClient:
                     created["count"] += 1
 
         monkeypatch.setattr(
-            "nl2data_postgres.client._driver", lambda: _fake_driver(CountingPool())
+            "nl2data_postgres.client._pool_module", lambda: _fake_pool_module(CountingPool())
         )
         client = _client()
         barrier = threading.Barrier(8)

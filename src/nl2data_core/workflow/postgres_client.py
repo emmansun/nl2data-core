@@ -54,6 +54,7 @@ def build_pool(
             dsn,
             min_size=1,
             max_size=pool_size,
+            open=True,
             timeout=acquire_timeout_seconds,
             kwargs={
                 "connect_timeout": connect_timeout_seconds,
