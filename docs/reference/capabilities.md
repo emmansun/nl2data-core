@@ -30,6 +30,7 @@
 | AI intent resolution + instruction contract | Implemented + conformant | Evaluation suite (fake provider) | — |
 | OpenAI structured-output provider | Implemented; live-verified on demand | `run_openai_live.py` | `nl2data-openai` + credentials |
 | Tenant isolation + scope fingerprints | Implemented + conformant | Conformance suite | — |
+| Admin control-plane service (transport-neutral) | Implemented + conformant | Contract + security suites | `nl2data-admin-service` |
 | Telemetry/audit ports (in-memory sinks) | Implemented + conformant | Contract suite | — |
 
 ## What is not supported today
@@ -52,8 +53,9 @@
 - The public `nl2data` API is the only supported application surface;
   `nl2data_core` is contributor-only and changes without notice.
 - Optional sibling distributions (`nl2data-openai`,
-  `nl2data-semantic-catalog-postgres`) are supported through their
-  documented package surfaces; their internals change without notice.
+  `nl2data-semantic-catalog-postgres`, `nl2data-admin-service`) are
+  supported through their documented package surfaces; their internals change
+  without notice.
 - Real-service and live-provider results are **environment-dependent**:
   `skipped`/`unavailable` outcomes are never verification. Only
   `verified` counts as evidence of service compatibility.

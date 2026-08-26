@@ -1,0 +1,90 @@
+"""Framework-neutral admin service protocols and injected dependencies."""
+
+from __future__ import annotations
+
+from typing import Any, Protocol
+
+from nl2data_core.metadata.catalog import SemanticSnapshotCatalog
+from nl2data_core.metadata.models import MetadataSnapshot
+
+from .auth import AuthContext
+
+
+class MetadataDiscoverer(Protocol):
+    """Host-provided metadata discovery port.
+
+    A discoverer returns bounded canonical snapshots and never exposes raw
+    values, credentials, or native driver objects.
+    """
+
+    def discover(
+        self,
+        source_id: str,
+        *,
+        auth_context: AuthContext,
+        bounds: dict[str, Any] | None = None,
+    ) -> MetadataSnapshot | None:
+        """Return a discovered snapshot, or ``None`` when denied/unavailable."""
+        ...
+
+    def supports_source(self, source_id: str) -> bool:
+        """Whether this discoverer can inspect the given source."""
+        ...
+
+
+class JobRecord(Protocol):
+    """Opaque job record returned by a job runner."""
+
+    @property
+    def job_id(self) -> str: ...
+
+    @property
+    def status(self) -> str: ...
+
+    @property
+    def command(self) -> str: ...
+
+
+class JobRunner(Protocol):
+    """Host-provided job runner for long-running discovery/catalog operations.
+
+    The runner is responsible for durable execution, polling, and
+    cancellation.  It returns an opaque job handle immediately and updates
+    status durably.
+    """
+
+    def submit(
+        self,
+        command: str,
+        *,
+        payload: dict[str, Any],
+        auth_context: AuthContext,
+        idempotency_key: str,
+    ) -> JobRecord:
+        """Submit a job and return its handle."""
+        ...
+
+    def status(self, job_id: str) -> JobRecord:
+        """Return the current job status."""
+        ...
+
+    def cancel(self, job_id: str) -> JobRecord:
+        """Request cancellation of a job."""
+        ...
+
+
+class AdminServiceDependencies(Protocol):
+    """Collection of dependencies injected into the admin service.
+
+    Every dependency is optional at construction time, but the service will
+    fail closed when a required dependency is missing for a given operation.
+    """
+
+    catalog: SemanticSnapshotCatalog | None
+    discoverer: MetadataDiscoverer | None
+    job_runner: JobRunner | None
+
+    @property
+    def audit_reference(self) -> str:
+        """Host-provided audit reference for mutating operations."""
+        ...

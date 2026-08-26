@@ -228,6 +228,24 @@ class SemanticProposalSet(BaseModel):
                 )
         return self
 
+    def canonical_payload(self) -> dict[str, object]:
+        """The canonical payload used for set identity."""
+        return {
+            "snapshot_fingerprint": self.snapshot_fingerprint,
+            "proposals": [
+                proposal.canonical_payload()
+                for proposal in sorted(
+                    self.proposals, key=lambda p: p.proposal_id
+                )
+            ],
+        }
+
+    def evidence_fingerprint_of(self) -> str:
+        """Stable fingerprint of this proposal set's canonical form."""
+        from nl2data_core.canonical import sha256_fingerprint
+
+        return sha256_fingerprint(self.canonical_payload())
+
     def proposal(self, proposal_id: str) -> SemanticProposal | None:
         """The proposal with the given id, or ``None`` when absent."""
         for proposal in self.proposals:

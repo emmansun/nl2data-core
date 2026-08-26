@@ -1,4 +1,4 @@
-## ADDED Requirements
+## MODIFIED Requirements
 
 ### Requirement: Versioned strict configuration
 The configuration loader SHALL require a supported schema version, reject unknown core fields, and validate required service and runtime configuration before activation. It SHALL support optional admin API settings for route version, request/job bounds, CORS/network policy references, and host-provided authentication integration without making HTTP or authentication mandatory for core activation.

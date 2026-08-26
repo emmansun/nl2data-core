@@ -32,6 +32,7 @@
 | AI 意图解析 + 指令契约 | Implemented + conformant | 评估套件（fake provider） | — |
 | OpenAI 结构化输出提供方 | Implemented；按需实时验证 | `run_openai_live.py` | `nl2data-openai` + 凭据 |
 | 租户隔离 + 范围指纹 | Implemented + conformant | 一致性套件 | — |
+| 管理控制平面服务（传输中立） | Implemented + conformant | 契约 + 安全套件 | `nl2data-admin-service` |
 | 遥测/审计端口（in-memory 汇点） | Implemented + conformant | 契约套件 | — |
 
 ## 当前不支持的内容
@@ -50,8 +51,9 @@
 
 - 公共 `nl2data` API 是唯一受支持的应用程序表面；`nl2data_core` 仅限
   贡献者使用，恕不另行通知即可变更。
-- 可选兄弟发行包（`nl2data-openai`、`nl2data-semantic-catalog-postgres`）
-  通过其文档化的包表面受支持；其内部实现恕不另行通知即可变更。
+- 可选兄弟发行包（`nl2data-openai`、`nl2data-semantic-catalog-postgres`、
+  `nl2data-admin-service`）通过其文档化的包表面受支持；其内部实现恕不另行通知
+  即可变更。
 - 真实服务与实时提供方结果**依赖环境**：`skipped`/`unavailable` 结果
   绝不是验证。只有 `verified` 才算服务兼容性的证据。
 - 受支持的 Python 版本：3.11、3.12、3.13（CI 矩阵）。

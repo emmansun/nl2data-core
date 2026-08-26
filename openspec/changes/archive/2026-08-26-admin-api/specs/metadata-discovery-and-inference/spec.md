@@ -1,9 +1,4 @@
-# metadata-discovery-and-inference Specification
-
-## Purpose
-Define safe, bounded metadata discovery, deterministic semantic inference, review, and schema drift handling without granting authorization.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Metadata discovery is bounded, scoped, and provider-neutral
 The system SHALL define a replaceable metadata discovery capability that returns immutable, versioned snapshots containing only authorized structural metadata, normalized types/constraints, bounded protected statistics, source/catalog fingerprints, freshness, completeness/partial status, and safe provenance. Production discovery SHALL require an explicit trusted source/tenant authorization context and read-only discovery identity. It SHALL never return credentials, connection strings, native driver objects, raw rows/documents, or unrestricted sample values. An admin API MAY orchestrate discovery but SHALL preserve these bounds and scopes.

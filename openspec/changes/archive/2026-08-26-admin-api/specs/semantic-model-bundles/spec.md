@@ -1,9 +1,4 @@
-# semantic-model-bundles Specification
-
-## Purpose
-Define versioned, immutable, validated Semantic Model Bundles and their safe catalog lifecycle, including reviewed metadata-discovery inputs.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Semantic Model Bundles are immutable and versioned
 The system SHALL represent a Semantic Model Bundle as an immutable, versioned artifact containing bounded semantic entities, fields, relationships, measures/aggregation metadata, source/catalog references, compatibility metadata, and safe provenance. Bundle semantic facts MAY originate from approved discovery proposals, but a bundle SHALL contain no unapproved authority, credentials, connection strings, raw executable SQL/MQL/code, native objects, or authorization claims. The admin API SHALL expose only safe metadata and opaque references for Bundle content.
@@ -76,7 +71,7 @@ Bundle catalog publication SHALL validate source snapshot compatibility and prod
 - **THEN** the catalog rejects publication or activation and preserves the current active bundle
 
 ### Requirement: Semantic Views consume bundle snapshots
-When bundle-backed catalog resolution is configured, Semantic Views SHALL resolve against an active validated Semantic Model Bundle snapshot, include the bundle identity/version/fingerprint in provenance, and invalidate when the active bundle changes. Descriptor-only resolution MAY remain as an explicit compatibility mode until the migration window ends. A worker loading from a shared catalog SHALL resolve only after active content has been revalidated. The admin API SHALL return references suitable for a host to construct or reload the authorized View, but SHALL not bypass View resolution.
+When bundle-backed catalog resolution is configured, Semantic Views SHALL resolve against an active validated Semantic Model Bundle snapshot, include the bundle identity/version/fingerprint in provenance, and invalidate when the active bundle changes. Descriptor-only resolution MAY remain as an explicit compatibility mode until the migration window ends. The admin API SHALL return references suitable for a host to construct or reload the authorized View, but SHALL not bypass View resolution.
 
 #### Scenario: View binds active bundle
 - **WHEN** a view resolves while bundle-backed catalog resolution is active

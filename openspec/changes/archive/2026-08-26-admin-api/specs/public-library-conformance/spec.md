@@ -1,4 +1,4 @@
-## ADDED Requirements
+## MODIFIED Requirements
 
 ### Requirement: Public import boundary is enforced
 The conformance suite SHALL verify that documented library usage imports only `nl2data` public symbols and does not require HTTP, database-driver, model-provider, or workflow-framework dependencies. The admin API SHALL remain an optional external transport package and SHALL not expand the core public import boundary.
