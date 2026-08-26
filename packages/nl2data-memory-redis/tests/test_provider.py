@@ -15,8 +15,6 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
-from pydantic import ValidationError
-
 from nl2data._redact import REDACTED_VALUE
 from nl2data_core.canonical import canonical_json
 from nl2data_core.memory.errors import MemoryErrorCode, MemoryInvocationError
@@ -27,6 +25,8 @@ from nl2data_core.memory.models import (
     QueryReference,
     QueryReferencePayload,
 )
+from pydantic import ValidationError
+
 from nl2data_memory_redis import RedisMemoryConfig, RedisMemoryProvider
 from nl2data_memory_redis.fake import FakeRedisClient
 from nl2data_memory_redis.serialization import (

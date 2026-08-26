@@ -9,6 +9,7 @@ from __future__ import annotations
 import sys
 
 import pytest
+from nl2data_core.memory.errors import MemoryInvocationError
 
 
 class TestRedisImportBoundary:
@@ -54,7 +55,7 @@ class TestRedisImportBoundary:
         monkeypatch.setattr(client_module, "driver_available", lambda: True)
         # Without a real driver installed, building will fail, but the lazy
         # import path should at least be exercised.
-        with pytest.raises(Exception):
+        with pytest.raises(MemoryInvocationError):
             client_module.build_redis_client(
                 "redis://localhost:6379",
                 connect_timeout_seconds=1.0,

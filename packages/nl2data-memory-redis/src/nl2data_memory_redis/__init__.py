@@ -13,6 +13,8 @@ from typing import Any
 
 from .config import RedisMemoryConfig
 
+__version__ = "0.1.0"
+
 __all__ = ["RedisMemoryConfig", "RedisMemoryProvider"]
 
 

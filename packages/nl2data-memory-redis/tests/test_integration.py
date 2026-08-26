@@ -15,7 +15,6 @@ import time
 from uuid import uuid4
 
 import pytest
-
 from nl2data_core.memory.errors import MemoryErrorCode, MemoryInvocationError
 from nl2data_core.memory.models import (
     MemoryRecord,
@@ -23,6 +22,7 @@ from nl2data_core.memory.models import (
     QueryReference,
     QueryReferencePayload,
 )
+
 from nl2data_memory_redis import RedisMemoryConfig, RedisMemoryProvider
 from nl2data_memory_redis.client import build_redis_client, driver_available
 

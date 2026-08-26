@@ -11,8 +11,6 @@ import json
 from datetime import UTC, datetime
 
 import pytest
-from pydantic import ValidationError
-
 from nl2data_core.memory.errors import MemoryErrorCode, MemoryInvocationError
 from nl2data_core.memory.models import (
     MemoryRecord,
@@ -21,9 +19,10 @@ from nl2data_core.memory.models import (
     QueryReferencePayload,
     WorkingPayload,
 )
+from pydantic import ValidationError
+
 from nl2data_memory_redis import RedisMemoryConfig, RedisMemoryProvider
 from nl2data_memory_redis.fake import FakeRedisClient
-from nl2data_memory_redis.serialization import serialize_record
 
 FP = "sha256:" + "ab" * 32
 NOW = datetime(2026, 1, 15, 12, 0, 0, tzinfo=UTC)
@@ -94,7 +93,9 @@ class TestRawPayloadBoundary:
 
 
 class TestCredentialAndUrlBoundary:
-    def test_redis_url_never_appears_in_error_messages(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_redis_url_never_appears_in_error_messages(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.setattr(
             "nl2data_memory_redis.provider.driver_available", lambda: True
         )
