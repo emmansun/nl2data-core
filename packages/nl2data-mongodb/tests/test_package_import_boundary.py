@@ -26,8 +26,3 @@ class TestImportBoundary:
         from nl2data_mongodb.pymongo_executor import PyMongoExecutor  # noqa: F401
 
         assert "pymongo" not in sys.modules
-
-    def test_in_core_shim_does_not_load_pymongo(self) -> None:
-        import nl2data_core.adapters.mongodb  # noqa: F401
-
-        assert "pymongo" not in sys.modules

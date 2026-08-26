@@ -15,22 +15,18 @@ from __future__ import annotations
 import pytest
 
 from nl2data_core.adapters.models import ValidationContext
-from nl2data_core.adapters.mongodb.adapter import MongoQueryAdapter
-from nl2data_core.adapters.mongodb.models import (
-    MongoAdapterConfig,
-    MongoAdapterError,
-    mongo_spec_json,
-)
 from nl2data_core.adapters.sql.execution import execute_sql
-from nl2data_core.fixtures import (
+from nl2data_core.fixtures import RESULT_ASSERTIONS, SQLiteFixtureProfile
+from nl2data_core.fixtures.models import FixtureVerificationError
+from nl2data_mongodb.adapter import MongoQueryAdapter
+from nl2data_mongodb.config import MongoAdapterConfig
+from nl2data_mongodb.fixtures import (
     MONGO_FIXTURE_SETUP_FINGERPRINT,
     MONGO_RESULT_ASSERTIONS,
     MONGO_SCHEMA,
-    RESULT_ASSERTIONS,
     MongoFixtureProfile,
-    SQLiteFixtureProfile,
 )
-from nl2data_core.fixtures.models import FixtureVerificationError
+from nl2data_mongodb.models import MongoAdapterError, mongo_spec_json
 
 CTX = ValidationContext()
 

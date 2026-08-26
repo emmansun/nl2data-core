@@ -133,7 +133,7 @@ rejections, not retries.
 
 ## MongoDB (query adapter + discovery)
 
-**Extra**: `mongodb` (`pymongo>=4.6,<5`).
+**Package**: `nl2data-mongodb` (`pymongo>=4.6,<5`).
 
 **Endpoint injection**: `NL2DATA_MONGO_URI` and `NL2DATA_MONGO_DATABASE`
 (CI defaults: `mongodb://127.0.0.1:27017`, `nl2data_mongo_test`), read

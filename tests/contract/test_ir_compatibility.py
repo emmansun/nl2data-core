@@ -19,15 +19,6 @@ from nl2data_core.adapters.models import (
     ValidatedArtifact,
     ValidationContext,
 )
-from nl2data_core.adapters.mongodb.adapter import MongoQueryAdapter
-from nl2data_core.adapters.mongodb.compile import (
-    COMPILER_IDENTITY as MONGO_COMPILER_IDENTITY,
-)
-from nl2data_core.adapters.mongodb.compile import (
-    COMPILER_VERSION as MONGO_COMPILER_VERSION,
-)
-from nl2data_core.adapters.mongodb.compile import compile_mongo_ir
-from nl2data_core.adapters.mongodb.models import MongoAdapterConfig
 from nl2data_core.adapters.sql.adapter import SqlQueryAdapter
 from nl2data_core.adapters.sql.compile import (
     COMPILER_IDENTITY as SQL_COMPILER_IDENTITY,
@@ -43,6 +34,17 @@ from nl2data_core.planning.ir.fixtures import (
 )
 from nl2data_core.planning.ir.models import SemanticQueryIR
 from nl2data_core.planning.ir.validation import validate_ir, verify_ir_fingerprint
+from nl2data_mongodb.adapter import MongoQueryAdapter
+from nl2data_mongodb.compile import (
+    COMPILER_IDENTITY as MONGO_COMPILER_IDENTITY,
+)
+from nl2data_mongodb.compile import (
+    COMPILER_VERSION as MONGO_COMPILER_VERSION,
+)
+from nl2data_mongodb.compile import (
+    compile_mongo_ir,
+)
+from nl2data_mongodb.config import MongoAdapterConfig
 
 
 class TestLegacySurfaceAbsent:

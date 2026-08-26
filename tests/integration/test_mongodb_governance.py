@@ -9,7 +9,6 @@ never reached.  A spy executor records every driver call.
 from __future__ import annotations
 
 from nl2data import ErrorCode, OutcomeStatus, QueryRequest
-from nl2data_core.fixtures import MONGO_SEED
 from nl2data_core.governance.models import PolicyScope
 from nl2data_core.planning.ir.models import (
     IRFilter,
@@ -25,6 +24,7 @@ from nl2data_mongodb.adapter import MongoQueryAdapter
 from nl2data_mongodb.compile import compile_mongo_ir
 from nl2data_mongodb.config import MongoAdapterConfig, MongoProfile
 from nl2data_mongodb.fake import FakeMongoExecutor
+from nl2data_mongodb.fixtures import MONGO_SEED
 from nl2data_mongodb.normalize import predicate_fingerprint
 
 FIELDS = frozenset(

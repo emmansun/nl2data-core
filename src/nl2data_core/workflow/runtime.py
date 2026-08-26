@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import inspect
+import json
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -284,10 +285,11 @@ class _BoundCompiler:
             dialect = binding.dialect if binding is not None else "sqlite"
             return sql_artifact_fingerprint(artifact, dialect)
         if adapter_type == "mongodb":
-            from nl2data_core.adapters.mongodb.models import MongoQuerySpec
-            from nl2data_core.adapters.mongodb.normalize import mql_spec_fingerprint
-
-            return mql_spec_fingerprint(MongoQuerySpec.model_validate_json(artifact))
+            # Canonical JSON keeps the identity stable across equivalent MQL
+            # artifact serializations without depending on the backend package.
+            return sha256_fingerprint(
+                {"artifact": json.loads(artifact), "adapter_type": adapter_type}
+            )
         return sha256_fingerprint({"artifact": artifact, "adapter_type": adapter_type})
 
 

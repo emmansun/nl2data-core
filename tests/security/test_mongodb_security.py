@@ -14,16 +14,12 @@ import json
 import pytest
 
 from nl2data_core.adapters.models import ValidationContext
-from nl2data_core.adapters.mongodb.adapter import MongoQueryAdapter
-from nl2data_core.adapters.mongodb.fake import FakeMongoExecutor
-from nl2data_core.adapters.mongodb.models import (
-    MongoAdapterConfig,
-    MongoAdapterError,
-    MongoProfile,
-    MongoUnavailableError,
-)
-from nl2data_core.adapters.mongodb.normalize import predicate_fingerprint
-from nl2data_core.adapters.mongodb.pymongo_executor import PyMongoExecutor
+from nl2data_mongodb.adapter import MongoQueryAdapter
+from nl2data_mongodb.config import MongoAdapterConfig, MongoProfile
+from nl2data_mongodb.fake import FakeMongoExecutor
+from nl2data_mongodb.models import MongoAdapterError, MongoUnavailableError
+from nl2data_mongodb.normalize import predicate_fingerprint
+from nl2data_mongodb.pymongo_executor import PyMongoExecutor
 
 CTX = ValidationContext()
 

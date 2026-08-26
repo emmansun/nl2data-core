@@ -27,7 +27,6 @@ from nl2data_core.adapters.models import (
     ValidatedArtifact,
     ValidationContext,
 )
-from nl2data_core.adapters.mongodb.compile import MongoCompileError, compile_mongo_ir
 from nl2data_core.adapters.sql.adapter import SqlQueryAdapter
 from nl2data_core.adapters.sql.compile import SQLCompileError, compile_ir
 from nl2data_core.ai.context import SemanticReference
@@ -42,6 +41,7 @@ from nl2data_core.planning.models import ColumnBinding, PhysicalBinding
 from nl2data_core.planning.validation import AuthorizedView
 from nl2data_core.workflow.runner import QueryExecutionRunner, StaticPlanResolver
 from nl2data_core.workflow.runtime import DeterministicWorkflowRuntime
+from nl2data_mongodb.compile import MongoCompileError, compile_mongo_ir
 
 SRC_ROOT = Path(__file__).resolve().parents[2] / "src"
 IR_DIR = SRC_ROOT / "nl2data_core" / "planning" / "ir"

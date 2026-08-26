@@ -21,19 +21,18 @@ from nl2data_core.adapters.models import (
     ValidatedArtifact,
     ValidationContext,
 )
-from nl2data_core.adapters.mongodb.adapter import MongoQueryAdapter
-from nl2data_core.adapters.mongodb.execution import execute_mongo_spec
-from nl2data_core.adapters.mongodb.fake import FakeMongoExecutor
-from nl2data_core.adapters.mongodb.models import (
-    MongoAdapterConfig,
+from nl2data_core.adapters.protocol import QueryAdapter
+from nl2data_mongodb.adapter import MongoQueryAdapter
+from nl2data_mongodb.config import MongoAdapterConfig, MongoProfile
+from nl2data_mongodb.execution import execute_mongo_spec
+from nl2data_mongodb.fake import FakeMongoExecutor
+from nl2data_mongodb.models import (
     MongoAdapterError,
     MongoExecutionError,
-    MongoProfile,
     MongoQuerySpec,
     MongoUnavailableError,
 )
-from nl2data_core.adapters.mongodb.pymongo_executor import PyMongoExecutor
-from nl2data_core.adapters.protocol import QueryAdapter
+from nl2data_mongodb.pymongo_executor import PyMongoExecutor
 
 DIGEST = "sha256:" + "ab" * 32
 CTX = ValidationContext()

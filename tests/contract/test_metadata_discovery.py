@@ -12,17 +12,6 @@ import sqlite3
 
 import pytest
 
-from nl2data_core.adapters.mongodb import (
-    FakeMongoExecutor,
-    MongoAdapterConfig,
-    MongoClientHandle,
-    MongoMetadataDiscoverer,
-    MongoProfile,
-    MongoQueryAdapter,
-)
-from nl2data_core.adapters.mongodb import (
-    discover_metadata as mongo_discover,
-)
 from nl2data_core.adapters.sql import SqlMetadataDiscoverer, SqlQueryAdapter
 from nl2data_core.metadata import (
     MetadataDiscoverer,
@@ -33,6 +22,16 @@ from nl2data_core.metadata import (
     MetadataTrustLevel,
     MetadataUnauthorizedError,
     MetadataUnavailableError,
+)
+from nl2data_mongodb.adapter import MongoQueryAdapter
+from nl2data_mongodb.client import MongoClientHandle
+from nl2data_mongodb.config import MongoAdapterConfig, MongoProfile
+from nl2data_mongodb.fake import FakeMongoExecutor
+from nl2data_mongodb.metadata import (
+    MongoMetadataDiscoverer,
+)
+from nl2data_mongodb.metadata import (
+    discover_metadata as mongo_discover,
 )
 
 MONGO_SEED = {
@@ -213,7 +212,7 @@ class TestMongoDiscovery:
     async def test_discovery_returns_common_snapshot_with_dotted_paths(
         self, mongo_handle
     ) -> None:
-        snapshot = await MongoMetadataDiscoverer(handle=mongo_handle).discover(
+        snapshot = await MongoMetadataDiscoverer(mongo_handle).discover(
             MetadataDiscoveryConfig()
         )
         assert isinstance(snapshot, MetadataSnapshot)
@@ -235,7 +234,7 @@ class TestMongoDiscovery:
 
     @pytest.mark.asyncio
     async def test_system_collections_never_discovered(self, mongo_handle) -> None:
-        snapshot = await MongoMetadataDiscoverer(handle=mongo_handle).discover(
+        snapshot = await MongoMetadataDiscoverer(mongo_handle).discover(
             MetadataDiscoveryConfig()
         )
         assert "system.users" not in snapshot.object_ids()
@@ -251,14 +250,14 @@ class TestMongoDiscovery:
     @pytest.mark.asyncio
     async def test_allowlist_denies_empty_intersection(self, mongo_handle) -> None:
         discoverer = MongoMetadataDiscoverer(
-            handle=mongo_handle,
+            mongo_handle,
             allowed_collections=frozenset({"orders"}),
         )
         with pytest.raises(MetadataUnauthorizedError):
             await discoverer.discover(
                 MetadataDiscoveryConfig(allowed_objects=frozenset({"other"}))
             )
-        closed = MongoMetadataDiscoverer(handle=mongo_handle, allowed_collections=frozenset())
+        closed = MongoMetadataDiscoverer(mongo_handle, allowed_collections=frozenset())
         with pytest.raises(MetadataUnauthorizedError):
             await closed.discover(MetadataDiscoveryConfig())
 
@@ -266,16 +265,16 @@ class TestMongoDiscovery:
     async def test_closed_handle_is_unavailable(self) -> None:
         executor = FakeMongoExecutor(MONGO_SEED)
         executor.close()
-        discoverer = MongoMetadataDiscoverer(handle=MongoClientHandle(executor))
+        discoverer = MongoMetadataDiscoverer(MongoClientHandle(executor))
         with pytest.raises(MetadataUnavailableError):
             await discoverer.discover(MetadataDiscoveryConfig())
 
     @pytest.mark.asyncio
     async def test_max_objects_bounds_discovery(self, mongo_handle) -> None:
         discoverer = MongoMetadataDiscoverer(
-            handle=mongo_handle,
+            MongoAdapterConfig(profile=MongoProfile.FAKE, max_collections=1),
+            executor=mongo_handle.executor,
             allowed_collections=frozenset({"orders"}),
-            max_collections=1,
         )
         snapshot = await discoverer.discover(MetadataDiscoveryConfig(max_objects=1))
         assert len(snapshot.objects) == 1
@@ -310,7 +309,7 @@ class TestCapabilityDeclarations:
             db_path=sql_db,
             allowed_objects=frozenset({"orders"}),
         )
-        mongo = MongoMetadataDiscoverer(handle=mongo_handle)
+        mongo = MongoMetadataDiscoverer(mongo_handle)
         assert isinstance(sql, MetadataDiscoverer)
         assert isinstance(mongo, MetadataDiscoverer)
         # The protocol declares no backend-specific models.

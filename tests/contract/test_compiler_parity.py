@@ -15,9 +15,6 @@ import json
 import pytest
 
 from nl2data_core.adapters.models import AdapterCapabilities, AsyncMode, ValidationContext
-from nl2data_core.adapters.mongodb.adapter import MongoQueryAdapter
-from nl2data_core.adapters.mongodb.compile import MongoCompileError, compile_mongo
-from nl2data_core.adapters.mongodb.models import MongoAdapterConfig, MongoAdapterError
 from nl2data_core.adapters.sql.adapter import SqlQueryAdapter
 from nl2data_core.adapters.sql.compile import compile_sql
 from nl2data_core.adapters.sql.guard import SQLGuardError
@@ -40,6 +37,10 @@ from nl2data_core.planning.ir.models import (
     IRSelection,
     SemanticQueryIR,
 )
+from nl2data_mongodb.adapter import MongoQueryAdapter
+from nl2data_mongodb.compile import MongoCompileError, compile_mongo
+from nl2data_mongodb.config import MongoAdapterConfig
+from nl2data_mongodb.models import MongoAdapterError
 
 SECOND = "sha256:" + "cd" * 32
 BINDING = golden_binding()

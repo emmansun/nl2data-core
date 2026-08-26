@@ -113,10 +113,9 @@ URIs, raw BSON, native exceptions, and credentials never cross the boundary.
 
 ## Compatibility
 
-The in-core `nl2data_core.adapters.mongodb` module remains available as a
-temporary compatibility path. It delegates to this package when installed and
-emits a deprecation warning; behavior is equivalent for existing hosts. New
-code should import from `nl2data_mongodb` directly.
+The in-core `nl2data_core.adapters.mongodb` module was removed. All MongoDB
+integration ships from this package; import from `nl2data_mongodb` directly.
+The core distribution no longer ships a MongoDB adapter or `mongodb` extra.
 
 ## More documentation
 

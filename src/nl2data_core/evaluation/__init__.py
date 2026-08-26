@@ -18,7 +18,6 @@ from nl2data_core.evaluation.models import (
     EvaluationRunContext,
     MandatoryAssertion,
 )
-from nl2data_core.evaluation.mongo_executor import MongoCaseExecutor
 from nl2data_core.evaluation.reporting import render_report, write_report
 from nl2data_core.evaluation.runner import (
     CaseExecutor,
@@ -40,7 +39,6 @@ __all__ = [
     "EvaluationRunContext",
     "EvaluationRunner",
     "MandatoryAssertion",
-    "MongoCaseExecutor",
     "SqliteCaseExecutor",
     "evaluate_assertions",
     "evidence_is_redacted",

@@ -52,7 +52,7 @@ gates**. It must never bypass:
    `metadata_discovery_capability()` and never leaks backend-specific
    models into the common contract.
 4. **Ship the driver as an optional extra** (`pyproject.toml`), exactly
-   like `postgres`, `mongodb`, and `redis` today. The import-boundary
+   like `postgres` and `redis` today. The import-boundary
    tests (AST scans + `sys.modules` checks) enforce that no driver type
    enters the public `nl2data` API or the framework-neutral contracts.
 5. **Provide conformance coverage**: reuse the deterministic suites
@@ -62,8 +62,8 @@ gates**. It must never bypass:
 
 ### Example: MongoDB adapter profile
 
-The MongoDB adapter (`mongodb` extra, PyMongo 4.6+) is the reference
-example: strict JSON wire-form specifications validated against
+The MongoDB adapter (sibling package `nl2data-mongodb`, PyMongo 4.6+)
+is the reference example: strict JSON wire-form specifications validated against
 collection/field/operator/stage allowlists; bounded results (document,
 column, byte, wall-clock); supported BSON values normalized into scalar
 `ExecutionResult` rows; `find`, bounded `aggregate`, and `count_documents`
@@ -91,9 +91,8 @@ returns core `MetadataSnapshot` values with canonical dotted paths;
 execution enforces pipeline/stage/operator validation, tenant scope,
 and result bounds. The `pymongo` driver is loaded lazily at first use
 and never imported at package import time. The legacy in-core
-`nl2data_core.adapters.mongodb` path remains self-contained with
-equivalent behavior and emits a `DeprecationWarning`; migrate to the
-package.
+`nl2data_core.adapters.mongodb` path was removed; all MongoDB
+integration ships from this package.
 
 ## Adding a model provider
 

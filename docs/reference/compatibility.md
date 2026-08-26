@@ -41,12 +41,10 @@
   - Configuration still loads through public `load_config`; the typed
     configuration model remains internal until a public configuration
     API ships.
-- **MongoDB adapter moved to `nl2data-mongodb`**: the in-core
-  `nl2data_core.adapters.mongodb` module remains as a temporary
-  self-contained compatibility path with equivalent behavior,
-  deprecated and emitting `DeprecationWarning`. New code should import
-  from `nl2data_mongodb`; the legacy path will be removed in a future
-  major release.
+- **MongoDB adapter lives in `nl2data-mongodb`**: the in-core
+  `nl2data_core.adapters.mongodb` module is removed. Import MongoDB
+  symbols from the `nl2data_mongodb` package; the core distribution no
+  longer ships a MongoDB adapter or a `mongodb` extra.
 - **Raw payloads never become part of any contract**: SQL/MQL, prompts,
   results, and credentials have no serialized form anywhere — nothing
   depends on them, so nothing can be "compatible" with them.
@@ -69,7 +67,7 @@
 | PyYAML | `>=6.0` | Core dependency |
 | sqlglot | `>=25.0,<30` | `sql` extra |
 | psycopg | `>=3.1,<4` (binary + pool) | `postgres` extra |
-| pymongo | `>=4.6,<5` | `mongodb` extra |
+| pymongo | `>=4.6,<5` | `nl2data-mongodb` |
 | redis | `>=5.0,<7` | `redis` extra |
 | openai | `>=1.40,<3` | `nl2data-openai` |
 

@@ -28,7 +28,7 @@
 | SQL 适配器（SQLite fixtures） | Implemented + conformant | 一致性套件 | `sql` extra |
 | SQL 适配器（PostgreSQL） | Implemented + verified | 真实服务 CI 配置 | `postgres` extra + 服务 |
 | MongoDB 适配器 | Implemented + verified | 真实服务 CI 配置 | `nl2data-mongodb` + 服务 |
-| 元数据发现 + 生产配置 | Implemented + verified | 真实服务 CI 配置 | `nl2data-postgres`/`nl2data-mongodb` extra + 服务 |
+| 元数据发现 + 生产配置 | Implemented + verified | 真实服务 CI 配置 | `nl2data-postgres`/`nl2data-mongodb` 包 + 服务 |
 | AI 意图解析 + 指令契约 | Implemented + conformant | 评估套件（fake provider） | — |
 | OpenAI 结构化输出提供方 | Implemented；按需实时验证 | `run_openai_live.py` | `nl2data-openai` + 凭据 |
 | 租户隔离 + 范围指纹 | Implemented + conformant | 一致性套件 | — |

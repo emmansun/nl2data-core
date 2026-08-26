@@ -21,7 +21,6 @@ pip install nl2data-core
 | --- | --- | --- |
 | `sql` | SQL 查询适配器（SQLite fixtures 使用标准库；`sqlglot` 提供有界 SQL 编译） | `sqlglot>=25.0,<30` |
 | `postgres` | 共享工作流状态后端（`PostgreSQLStateStore`）与 PostgreSQL 发现/一致性配置 | `psycopg[binary,pool]>=3.1,<4` |
-| `mongodb` | MongoDB 查询适配器与元数据发现配置 | `pymongo>=4.6,<5` |
 | `redis` | Redis 支持的 Memory 提供方 | `redis>=5.0,<7` |
 
 ```bash

@@ -142,14 +142,13 @@ class TestAiProviderBoundary:
 
 
 class TestMongoImportBoundary:
-    def test_importing_the_mongodb_package_loads_no_pymongo(self) -> None:
-        before = _loaded_top_levels()
-        import nl2data_core.adapters.mongodb  # noqa: F401
-        import nl2data_core.adapters.mongodb.adapter  # noqa: F401
-        import nl2data_core.adapters.mongodb.execution  # noqa: F401
-        import nl2data_core.adapters.mongodb.pymongo_executor  # noqa: F401
-
-        _assert_no_new_forbidden(before)
+    def test_in_core_mongodb_module_is_removed(self) -> None:
+        """The legacy in-core MongoDB adapter was removed; only the package remains."""
+        try:
+            import nl2data_core.adapters.mongodb  # noqa: F401
+        except ImportError:
+            return
+        raise AssertionError("nl2data_core.adapters.mongodb must be removed")
 
     def test_no_mongo_types_enter_public_contracts(self) -> None:
         """MongoDB is a specialization: no Mongo type name may appear in the

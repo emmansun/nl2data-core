@@ -39,15 +39,11 @@ The adapter SHALL keep `pymongo` optional and lazily loaded, require a read-only
 - **THEN** discovery returns bounded/partial evidence or a normalized failure without continuing unbounded work
 
 ### Requirement: MongoDB package is independently installable and compatible
-The adapter SHALL expose package-owned configuration and discoverer entry points, depend on the core contract, provide a temporary compatibility path for existing in-core imports where required, and document installation and migration.
+The adapter SHALL expose package-owned configuration and discoverer entry points, depend on the core contract, and document installation and migration.
 
 #### Scenario: Package output composes with core
 - **WHEN** a host installs the adapter and passes its discoverer to the core lifecycle
 - **THEN** the discoverer satisfies the core protocol without a second metadata model
-
-#### Scenario: Compatibility path preserves behavior
-- **WHEN** an existing host uses the documented in-core discoverer path during the migration window
-- **THEN** it receives equivalent normalized snapshots and safe errors while the package path is adopted
 
 ### Requirement: MongoDB package executes governed read-only pipelines
 The MongoDB backend package SHALL implement the core `QueryAdapter` contract for validated read-only MongoDB pipelines, including lazy client lifecycle, collection/path scope checks, stage/operator validation, bounded results, protected scalar mapping, and normalized execution errors. It SHALL reuse core IR, compiler, guard, governance, authorization, and result-protection boundaries.

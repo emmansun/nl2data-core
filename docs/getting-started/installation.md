@@ -21,7 +21,6 @@ you compose them explicitly.
 | --- | --- | --- |
 | `sql` | SQL query adapter (SQLite fixtures use the standard library; `sqlglot` powers bounded SQL compilation) | `sqlglot>=25.0,<30` |
 | `postgres` | Shared workflow state backend (`PostgreSQLStateStore`) and in-core PostgreSQL discovery/conformance profiles | `psycopg[binary,pool]>=3.1,<4` |
-| `mongodb` | Legacy in-core MongoDB adapter driver (deprecated); install `nl2data-mongodb` for the adapter package | `pymongo>=4.6,<5` |
 | `redis` | Redis-backed Memory provider | `redis>=5.0,<7` |
 
 ```bash

@@ -11,16 +11,17 @@ leave this boundary.
 from __future__ import annotations
 
 from nl2data.models import OutcomeStatus, QueryRequest
-from nl2data_core.adapters.mongodb.adapter import MongoQueryAdapter
-from nl2data_core.adapters.mongodb.compile import compile_mongo_ir
-from nl2data_core.adapters.mongodb.models import MongoAdapterConfig, MongoProfile
 from nl2data_core.evaluation.models import CaseEvidence, EvaluationRunContext
-from nl2data_core.fixtures.mongo import MongoFixtureProfile
 from nl2data_core.governance.models import EffectiveLimits, PolicyScope
 from nl2data_core.planning.ir.models import SemanticQueryIR
 from nl2data_core.planning.models import PhysicalBinding
 from nl2data_core.planning.validation import AuthorizedView
 from nl2data_core.workflow.runner import QueryExecutionRunner, StaticPlanResolver
+
+from .adapter import MongoQueryAdapter
+from .compile import compile_mongo_ir
+from .config import MongoAdapterConfig, MongoProfile
+from .fixtures import MongoFixtureProfile
 
 
 class MongoCaseExecutor:

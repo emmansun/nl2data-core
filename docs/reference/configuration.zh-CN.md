@@ -112,7 +112,7 @@ model 分区绝不携带凭据；提供方秘密仍是 `secrets` 中的 `SecretR
 | PostgreSQL 共享状态 | `postgres` | `PostgreSQLStateStore` 设置 + `NL2DATA_POSTGRES_DSN` |
 | PostgreSQL 语义目录 | `nl2data-semantic-catalog-postgres` | `SemanticCatalogConfig`（命名空间 + 边界）+ 宿主注入的 DSN |
 | Redis Memory | `redis` | `RedisMemoryConfig`（命名空间 + 边界）+ 连接 URL |
-| MongoDB 适配器/发现 | `mongodb` | `ProductionDiscoveryConfig.bounds` + `NL2DATA_MONGO_URI` |
+| MongoDB 适配器/发现 | `nl2data-mongodb` | `ProductionDiscoveryConfig.bounds` + `NL2DATA_MONGO_URI` |
 | OpenAI 提供方 | `nl2data-openai` | `OpenAIProviderConfig` + `OPENAI_API_KEY`/`base_url` |
 
 宿主拥有的端点/秘密注入绝不会把供应商凭据呈现为核心配置字段。

@@ -34,7 +34,8 @@ The architecture answers three questions for every request:
 | --- | --- | --- |
 | Public facade | `nl2data` | Public, stable |
 | Internal implementation | `nl2data_core` (config, adapters, ai, workflow, memory, metadata, views, bundles, governance, tenancy, telemetry, plugins) | Contributor-only |
-| Optional query adapters | `nl2data_core.adapters` (SQL, MongoDB) | Optional extras (`sql`, `mongodb`) |
+| Optional query adapters | `nl2data_core.adapters` (SQL) | Optional extra (`sql`) |
+| Optional MongoDB adapter | `nl2data_mongodb` (sibling distribution) | Separate package |
 | Optional shared state | `nl2data_core.workflow.PostgreSQLStateStore` | Optional extra (`postgres`) |
 | Optional Memory backend | `nl2data_core.memory.RedisMemoryProvider` | Optional extra (`redis`) |
 | Optional model provider | `nl2data_openai` (sibling distribution) | Separate package |

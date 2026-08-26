@@ -116,7 +116,7 @@ document, by host-owned endpoints:
 | PostgreSQL shared state | `postgres` | `PostgreSQLStateStore` settings + `NL2DATA_POSTGRES_DSN` |
 | PostgreSQL semantic catalog | `nl2data-semantic-catalog-postgres` | `SemanticCatalogConfig` (namespace + bounds) + host-injected DSN |
 | Redis Memory | `redis` | `RedisMemoryConfig` (namespace + bounds) + connection URL |
-| MongoDB adapter/discovery | `mongodb` | `ProductionDiscoveryConfig.bounds` + `NL2DATA_MONGO_URI` |
+| MongoDB adapter/discovery | `nl2data-mongodb` | `ProductionDiscoveryConfig.bounds` + `NL2DATA_MONGO_URI` |
 | OpenAI provider | `nl2data-openai` | `OpenAIProviderConfig` + `OPENAI_API_KEY`/`base_url` |
 
 Host-owned endpoint/secret injection never presents vendor credentials

@@ -35,10 +35,10 @@
   - 将组合输入移入 `CompositionProfile`。
   - 配置仍通过公共的 `load_config` 加载；类型化配置模型在公共配置 API
     发布前保持内部。
-- **MongoDB 适配器已迁移至 `nl2data-mongodb`**：核心中的
-  `nl2data_core.adapters.mongodb` 模块作为自包含的临时兼容路径保留，
-  行为等价并发出 `DeprecationWarning`。新代码应直接从 `nl2data_mongodb`
-  导入；该兼容路径将在未来主版本中移除。
+- **MongoDB 适配器位于 `nl2data-mongodb`**：核心中的
+  `nl2data_core.adapters.mongodb` 模块已移除。请从 `nl2data_mongodb`
+  包导入 MongoDB 符号；核心发行版不再包含 MongoDB 适配器或
+  `mongodb` extra。
 - **原始载荷绝不成为任何契约的一部分**：SQL/MQL、提示词、结果与凭据
   在任何地方都没有序列化形式——没有任何东西依赖它们，因此也没有任何
   东西可以与它们“兼容”。
@@ -61,7 +61,7 @@
 | PyYAML | `>=6.0` | 核心依赖 |
 | sqlglot | `>=25.0,<30` | `sql` extra |
 | psycopg | `>=3.1,<4`（binary + pool） | `postgres` extra |
-| pymongo | `>=4.6,<5` | `mongodb` extra |
+| pymongo | `>=4.6,<5` | `nl2data-mongodb` |
 | redis | `>=5.0,<7` | `redis` extra |
 | openai | `>=1.40,<3` | `nl2data-openai` |
 

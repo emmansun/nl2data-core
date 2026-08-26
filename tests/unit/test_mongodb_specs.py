@@ -12,26 +12,22 @@ from datetime import UTC, datetime
 import pytest
 from pydantic import ValidationError
 
-from nl2data_core.adapters.mongodb.models import (
-    MongoAdapterConfig,
+from nl2data_core.governance.models import MandatoryFilterObligation
+from nl2data_mongodb.config import MongoAdapterConfig, MongoProfile
+from nl2data_mongodb.models import (
     MongoOperation,
-    MongoProfile,
     MongoQuerySpec,
     MongoUnavailableError,
     TenantObligation,
     mongo_spec_json,
 )
-from nl2data_core.adapters.mongodb.normalize import (
+from nl2data_mongodb.normalize import (
     assert_json_compatible,
     mql_spec_fingerprint,
     normalize_mql_value,
     predicate_fingerprint,
 )
-from nl2data_core.adapters.mongodb.validation import (
-    MongoGuardPolicy,
-    run_guard,
-)
-from nl2data_core.governance.models import MandatoryFilterObligation
+from nl2data_mongodb.validation import MongoGuardPolicy, run_guard
 
 
 def make_spec(**overrides) -> MongoQuerySpec:
@@ -491,7 +487,7 @@ class TestTenantValidation:
         assert run_guard(spec, policy).rejected
 
     def test_isolated_profile_requires_matching_routing_evidence(self) -> None:
-        from nl2data_core.adapters.mongodb.models import RoutingEvidence, RoutingKind
+        from nl2data_mongodb.models import RoutingEvidence, RoutingKind
 
         policy = make_policy(tenant_profile="schema_isolated")
         assert run_guard(make_spec(), policy).rejected
@@ -507,7 +503,7 @@ class TestTenantValidation:
         assert run_guard(matching, policy).accepted
 
     def test_database_and_deployment_profiles(self) -> None:
-        from nl2data_core.adapters.mongodb.models import RoutingEvidence, RoutingKind
+        from nl2data_mongodb.models import RoutingEvidence, RoutingKind
 
         database_policy = make_policy(tenant_profile="database_isolated")
         deployment_policy = make_policy(tenant_profile="deployment_isolated")

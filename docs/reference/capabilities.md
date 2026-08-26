@@ -26,7 +26,7 @@
 | SQL adapter (SQLite fixtures) | Implemented + conformant | Conformance suite | `sql` extra |
 | SQL adapter (PostgreSQL) | Implemented + verified | Real-service CI profile | `nl2data-postgres` + service |
 | MongoDB adapter | Implemented + verified | Real-service CI profile | `nl2data-mongodb` + service |
-| Metadata discovery + production profile | Implemented + verified | Real-service CI profile | `nl2data-postgres`/`nl2data-mongodb` extra + service |
+| Metadata discovery + production profile | Implemented + verified | Real-service CI profile | `nl2data-postgres`/`nl2data-mongodb` package + service |
 | AI intent resolution + instruction contract | Implemented + conformant | Evaluation suite (fake provider) | — |
 | OpenAI structured-output provider | Implemented; live-verified on demand | `run_openai_live.py` | `nl2data-openai` + credentials |
 | Tenant isolation + scope fingerprints | Implemented + conformant | Conformance suite | — |

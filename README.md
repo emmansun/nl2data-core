@@ -18,8 +18,8 @@ backend is ever loaded unless you compose it explicitly.
 | Distribution | `nl2data-core` (Python 3.11+) |
 | Public API | `import nl2data` |
 | Internal API | `nl2data_core` — contributor-only, applications must not import it |
-| Optional extras | `sql`, `postgres`, `mongodb`, `redis` |
-| Optional sibling | `nl2data-openai` (OpenAI structured-output provider) |
+| Optional extras | `sql`, `postgres`, `redis` |
+| Optional sibling | `nl2data-openai` (OpenAI structured-output provider), `nl2data-mongodb` (MongoDB adapter) |
 
 ## Install
 
@@ -74,12 +74,12 @@ execute real work. See the [quickstart](docs/getting-started/quickstart.md).
 | Governed workflow runtime (deterministic) | Implemented + conformant | None |
 | SQL adapter (SQLite fixtures) | Implemented + conformant | `sql` extra (`sqlglot`) |
 | SQL adapter (PostgreSQL) | Implemented; service-verified in CI | `postgres` extra + service |
-| MongoDB adapter | Implemented; service-verified in CI | `mongodb` extra + service |
+| MongoDB adapter | Implemented; service-verified in CI | `nl2data-mongodb` package + service |
 | Durable workflow state (SQLite) | Implemented + conformant | None |
 | Shared workflow state (PostgreSQL) | Implemented; service-verified in CI | `postgres` extra + service |
 | Memory (in-memory) | Implemented + conformant | None |
 | Memory (Redis) | Implemented; service-verified in CI | `redis` extra + service |
-| Metadata discovery (PostgreSQL/MongoDB) | Implemented; service-verified in CI | `postgres`/`mongodb` extra + service |
+| Metadata discovery (PostgreSQL/MongoDB) | Implemented; service-verified in CI | `nl2data-postgres`/`nl2data-mongodb` package + service |
 | AI intent resolution + evaluation | Implemented + conformant | `nl2data-openai` for live provider |
 | OpenAI structured-output provider | Implemented; live-verified on demand | `nl2data-openai` + credentials |
 

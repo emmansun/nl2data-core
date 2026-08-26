@@ -14,7 +14,6 @@ import os
 import pytest
 
 from nl2data_core.adapters.models import AdapterLimits, ValidationContext
-from nl2data_core.fixtures import MONGO_RESULT_ASSERTIONS, MONGO_SEED
 from nl2data_core.planning.ir.models import (
     IRFilter,
     IROrdering,
@@ -27,6 +26,7 @@ from nl2data_mongodb.adapter import MongoQueryAdapter
 from nl2data_mongodb.compile import compile_mongo_ir
 from nl2data_mongodb.config import MongoAdapterConfig, MongoProfile
 from nl2data_mongodb.fake import FakeMongoExecutor
+from nl2data_mongodb.fixtures import MONGO_RESULT_ASSERTIONS, MONGO_SEED
 from nl2data_mongodb.models import mongo_spec_json
 from nl2data_mongodb.pymongo_executor import PyMongoExecutor
 

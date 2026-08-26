@@ -36,7 +36,7 @@ flowchart TD
         EN["engine ports"]
         WF["workflow<br/>runtime + state stores"]
         AI["ai<br/>protocol, resolver, instructions, evaluation"]
-        AD["adapters<br/>SQL, MongoDB"]
+        AD["adapters<br/>SQL"]
         MEM["memory"]
         META["metadata"]
         VIEW["views"]

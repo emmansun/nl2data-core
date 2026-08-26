@@ -39,7 +39,7 @@ pip install -e packages/nl2data-semantic-catalog-postgres  # optional semantic c
 installed by default; add extras when you work on those profiles:
 
 ```bash
-pip install -e ".[dev,postgres,redis,mongodb]"
+pip install -e ".[dev,postgres,redis]"
 ```
 
 ## Run tests

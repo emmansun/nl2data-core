@@ -383,7 +383,6 @@ def check_packages(checker: Checker) -> None:
     expected_extras = {
         "sql": ["sqlglot>=25.0,<30"],
         "postgres": ["psycopg[binary,pool]>=3.1,<4"],
-        "mongodb": ["pymongo>=4.6,<5"],
         "redis": ["redis>=5.0,<7"],
     }
     for name, deps in expected_extras.items():
