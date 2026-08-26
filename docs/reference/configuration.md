@@ -114,12 +114,45 @@ document, by host-owned endpoints:
 | --- | --- | --- |
 | SQL adapter | `sql` | `sqlglot` compiled bounded SQL; SQLite fixtures need no service |
 | PostgreSQL shared state | `postgres` | `PostgreSQLStateStore` settings + `NL2DATA_POSTGRES_DSN` |
+| PostgreSQL semantic catalog | `nl2data-semantic-catalog-postgres` | `SemanticCatalogConfig` (namespace + bounds) + host-injected DSN |
 | Redis Memory | `redis` | `RedisMemoryConfig` (namespace + bounds) + connection URL |
 | MongoDB adapter/discovery | `mongodb` | `ProductionDiscoveryConfig.bounds` + `NL2DATA_MONGO_URI` |
 | OpenAI provider | `nl2data-openai` | `OpenAIProviderConfig` + `OPENAI_API_KEY`/`base_url` |
 
 Host-owned endpoint/secret injection never presents vendor credentials
 as core configuration fields.
+
+## PostgreSQL semantic catalog (optional package)
+
+The durable catalog ships as `nl2data-semantic-catalog-postgres` and is
+configured by the immutable `SemanticCatalogConfig` model. The model
+carries only behavior bounds and a safe secret *reference* — never the
+DSN itself. The host injects the DSN into the catalog constructor from
+its own secret management (`dsn_secret_ref` names that host-side
+secret).
+
+| Field | Type | Bounds | Default |
+| --- | --- | --- | --- |
+| `namespace` | string | `^[A-Za-z][A-Za-z0-9_]{0,63}$`, **required** | — |
+| `dsn_secret_ref` | string | 1–128 chars | `None` |
+| `pool_size` | int | 1–64 | 5 |
+| `connect_timeout_seconds` | float | 0.1–30 | 5.0 |
+| `command_timeout_seconds` | float | 0.1–120 | 10.0 |
+| `pool_acquire_timeout_seconds` | float | 0.1–60 | 5.0 |
+| `schema_version` | int | 1 (supported) | 1 |
+| `snapshot_retention_seconds` | float | 60 – 31,536,000 | 604,800 |
+| `event_retention_seconds` | float | 60 – 31,536,000 | 604,800 |
+| `cleanup_batch_size` | int | 1–10,000 | 500 |
+| `max_envelope_bytes` | int | 4 KiB – 16 MiB | 1,048,576 |
+| `max_payload_bytes` | int | 1 KiB – 8 MiB (≤ envelope) | 524,288 |
+| `max_bundle_history` | int | 1–10,000 | 100 |
+| `max_active_pointers_per_scope` | int | 1–1,024 | 256 |
+
+The `namespace` is the PostgreSQL schema that owns every catalog table;
+it must be unique per application and environment so deployments sharing
+one database service never observe each other's records. A newer
+`schema_version` than the runtime supports fails closed. See
+[Services](../operations/services.md) for the runbook.
 
 ## Fingerprint stability
 

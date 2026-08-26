@@ -64,6 +64,22 @@ def _imported_names(module_path: Path) -> set[str]:
     return names
 
 
+def _loaded_top_levels() -> set[str]:
+    return {name.split(".")[0] for name in sys.modules}
+
+
+def _assert_no_new_forbidden(before: set[str]) -> None:
+    """Assert the imports under test loaded none of the forbidden providers.
+
+    Comparing against a pre-import snapshot keeps the dynamic checks
+    order-independent: a real-service test earlier in the process may have
+    legitimately loaded an optional provider.
+    """
+    loaded = _loaded_top_levels() - before
+    for forbidden in FORBIDDEN_IMPORTS:
+        assert forbidden not in loaded, f"optional provider loaded: {forbidden}"
+
+
 class TestStaticImportBoundary:
     def test_no_core_module_imports_optional_providers(self) -> None:
         offenders: list[str] = []
@@ -77,9 +93,10 @@ class TestStaticImportBoundary:
 
 class TestDynamicImportBoundary:
     def test_importing_nl2data_loads_no_optional_provider(self) -> None:
-        loaded = {name.split(".")[0] for name in sys.modules}
-        for forbidden in FORBIDDEN_IMPORTS:
-            assert forbidden not in loaded, f"optional provider loaded: {forbidden}"
+        before = _loaded_top_levels()
+        import nl2data  # noqa: F401
+
+        _assert_no_new_forbidden(before)
 
     def test_public_api_is_constructible_without_providers(self) -> None:
         # Instantiating the engine skeleton must not require any provider.
@@ -92,11 +109,10 @@ class TestDynamicImportBoundary:
 
 class TestAiImportBoundary:
     def test_importing_the_ai_package_loads_no_optional_provider(self) -> None:
+        before = _loaded_top_levels()
         import nl2data_core.ai  # noqa: F401
 
-        loaded = {name.split(".")[0] for name in sys.modules}
-        for forbidden in FORBIDDEN_IMPORTS:
-            assert forbidden not in loaded, f"optional provider loaded: {forbidden}"
+        _assert_no_new_forbidden(before)
 
     def test_ai_modules_never_import_optional_providers(self) -> None:
         ai_root = SRC_ROOT / "nl2data_core" / "ai"
@@ -127,13 +143,13 @@ class TestAiProviderBoundary:
 
 class TestMongoImportBoundary:
     def test_importing_the_mongodb_package_loads_no_pymongo(self) -> None:
+        before = _loaded_top_levels()
         import nl2data_core.adapters.mongodb  # noqa: F401
         import nl2data_core.adapters.mongodb.adapter  # noqa: F401
         import nl2data_core.adapters.mongodb.execution  # noqa: F401
         import nl2data_core.adapters.mongodb.pymongo_executor  # noqa: F401
 
-        loaded = {name.split(".")[0] for name in sys.modules}
-        assert "pymongo" not in loaded, "pymongo loaded with the mongodb package"
+        _assert_no_new_forbidden(before)
 
     def test_no_mongo_types_enter_public_contracts(self) -> None:
         """MongoDB is a specialization: no Mongo type name may appear in the
@@ -156,6 +172,7 @@ class TestMongoImportBoundary:
 
 class TestRedisImportBoundary:
     def test_importing_the_memory_package_loads_no_redis(self) -> None:
+        before = _loaded_top_levels()
         import nl2data_core.memory  # noqa: F401
         import nl2data_core.memory.fake_redis  # noqa: F401
         import nl2data_core.memory.redis_client  # noqa: F401
@@ -163,8 +180,7 @@ class TestRedisImportBoundary:
         import nl2data_core.memory.redis_provider  # noqa: F401
         import nl2data_core.memory.redis_serialization  # noqa: F401
 
-        loaded = {name.split(".")[0] for name in sys.modules}
-        assert "redis" not in loaded, "redis loaded with the memory package"
+        _assert_no_new_forbidden(before)
 
     def test_no_redis_types_enter_public_contracts(self) -> None:
         """Redis is a specialization: no Redis type name may appear in the
@@ -182,6 +198,7 @@ class TestRedisImportBoundary:
 
 class TestPostgresImportBoundary:
     def test_importing_the_workflow_package_loads_no_psycopg(self) -> None:
+        before = _loaded_top_levels()
         import nl2data_core.workflow  # noqa: F401
         import nl2data_core.workflow.fake_postgres  # noqa: F401
         import nl2data_core.workflow.lease  # noqa: F401
@@ -191,9 +208,7 @@ class TestPostgresImportBoundary:
         import nl2data_core.workflow.shared_config  # noqa: F401
         import nl2data_core.workflow.shared_errors  # noqa: F401
 
-        loaded = {name.split(".")[0] for name in sys.modules}
-        assert "psycopg" not in loaded, "psycopg loaded with the workflow package"
-        assert "psycopg_pool" not in loaded, "psycopg_pool loaded with the workflow package"
+        _assert_no_new_forbidden(before)
 
     def test_shared_store_modules_never_import_optional_providers(self) -> None:
         """The shared-state modules use only importlib; a static scan must

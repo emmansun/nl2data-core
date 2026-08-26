@@ -12,6 +12,7 @@
 | `src/nl2data/` | Public API: models, errors, facade, composition, engine. |
 | `src/nl2data_core/` | Internal implementation: config, adapters, ai, workflow, memory, metadata, views, bundles, governance, tenancy, telemetry, plugins. |
 | `packages/nl2data-openai/` | Optional sibling distribution: OpenAI structured-output provider. |
+| `packages/nl2data-semantic-catalog-postgres/` | Optional sibling distribution: durable PostgreSQL semantic catalog. |
 | `tests/` | `unit/` (deterministic), `contract/` (boundary contracts), `integration/` (composition), `security/` (threat cases), `conformance/` (reusable profiles), `evaluation/` (AI evaluation). |
 | `openspec/` | OpenSpec change artifacts (design history, not end-user docs). |
 
@@ -30,6 +31,7 @@ source .venv/bin/activate
 ```bash
 pip install -e ".[dev]"              # core + test/lint/type tooling
 pip install -e packages/nl2data-openai  # optional OpenAI provider (editable)
+pip install -e packages/nl2data-semantic-catalog-postgres  # optional semantic catalog (editable)
 ```
 
 `.[dev]` installs `pytest`, `pytest-asyncio`, `mypy`, `ruff`,
@@ -57,8 +59,8 @@ python -m pytest -rs             # show every skip reason (real-service profiles
 ## Lint and type checking
 
 ```bash
-python -m ruff check src tests packages/nl2data-openai/src
-python -m mypy src packages/nl2data-openai/src
+python -m ruff check src tests packages/nl2data-openai/src packages/nl2data-semantic-catalog-postgres/src
+python -m mypy src packages/nl2data-openai/src packages/nl2data-semantic-catalog-postgres/src
 ```
 
 Ruff and mypy configuration live in `pyproject.toml` (line length 100,
@@ -70,15 +72,17 @@ optionals). Keep both clean before pushing.
 ```bash
 python -m build --wheel --outdir dist/core .
 python -m build --wheel --outdir dist/openai packages/nl2data-openai
+python -m build --wheel --outdir dist/postgres-catalog packages/nl2data-semantic-catalog-postgres
 ```
 
-CI verifies wheel names (`nl2data_core`, `nl2data_openai`) and metadata.
+CI verifies wheel names (`nl2data_core`, `nl2data_openai`,
+`nl2data_semantic_catalog_postgres`) and metadata.
 
 ## Service prerequisites for optional profiles
 
 | Service | Env var(s) | Needed for |
 | --- | --- | --- |
-| PostgreSQL | `NL2DATA_POSTGRES_DSN` (default `postgresql://localhost:5432/nl2data_test`) | Shared workflow state, PostgreSQL conformance and discovery |
+| PostgreSQL | `NL2DATA_POSTGRES_DSN` (default `postgresql://localhost:5432/nl2data_test`) | Shared workflow state, durable semantic catalog, PostgreSQL conformance and discovery |
 | Redis | `NL2DATA_REDIS_URL` | Redis Memory provider |
 | MongoDB | `NL2DATA_MONGO_URI`, `NL2DATA_MONGO_DATABASE` | MongoDB adapter conformance and discovery |
 | OpenAI | `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_MODEL` | Live provider evaluation (never in CI by default) |

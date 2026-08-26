@@ -14,6 +14,16 @@
 | `MONGO_UNAVAILABLE` / `METADATA_UNAVAILABLE` | PyMongo missing or MongoDB unreachable | Install the `mongodb` extra; check `NL2DATA_MONGO_URI` and `mongosh ping` |
 | Tests report `skipped` | Driver or service unavailable | Expected for real-service profiles; surface reasons with `-rs`. A skip is never a pass — do not treat it as verification |
 
+## Semantic catalog errors
+
+| Symptom | Likely cause | Action |
+| --- | --- | --- |
+| `CATALOG_UNAVAILABLE` / `CATALOG_TIMEOUT` | Catalog service unreachable, pool acquisition timeout, or `psycopg` not installed | Install `nl2data-semantic-catalog-postgres`; check `pg_isready` and the injected DSN; the error is retryable |
+| `SCHEMA_MISMATCH` | Runtime is older than the catalog database schema | Upgrade the runtime or align the deployment; newer schema versions fail closed, never silently downgraded |
+| `ENVELOPE_REJECTED` / `FINGERPRINT_MISMATCH` / `BOUNDS_EXCEEDED` | Tampered, mislabeled, or oversized persisted artifact | Fail-closed by design; re-register the artifact from trusted metadata — never bypass validation |
+| `UNAUTHORIZED` | Cross-scope access attempt | A scope fingerprint never reads another scope's records; verify the tenant/source scope |
+| `CONFLICT` | Duplicate Bundle version or serialization collision | Publish under a new version; retry after a serialization conflict |
+
 ## Stale snapshots and drift
 
 | Symptom | Likely cause | Action |

@@ -46,11 +46,26 @@ It depends on `nl2data-core>=0.1.0` and `openai>=1.40,<3`. The OpenAI SDK
 is never imported at package import time; the client is built lazily from
 injected credentials on first use.
 
-From a source checkout, both packages install with:
+## Install the optional PostgreSQL semantic catalog
+
+The durable semantic catalog is a separate distribution implementing the
+`SemanticSnapshotCatalog` boundary with PostgreSQL storage for snapshots,
+proposal sets, Bundle publications, and active pointers:
+
+```bash
+pip install nl2data-semantic-catalog-postgres
+```
+
+It depends on `nl2data-core>=0.1.0` and `psycopg[binary,pool]>=3.1,<4`.
+The driver is never imported at package import time; it is loaded lazily
+only when a catalog is constructed from a DSN.
+
+From a source checkout, all three packages install with:
 
 ```bash
 pip install -e ".[dev]"
 pip install -e packages/nl2data-openai
+pip install -e packages/nl2data-semantic-catalog-postgres
 ```
 
 ## Install for development

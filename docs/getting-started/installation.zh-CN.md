@@ -43,11 +43,24 @@ pip install nl2data-openai
 它依赖 `nl2data-core>=0.1.0` 与 `openai>=1.40,<3`。OpenAI SDK 在包导入时
 绝不会被导入；客户端在首次使用时由注入的凭据惰性构建。
 
-从源码检出安装时，两个包一起安装：
+## 安装可选的 PostgreSQL 语义目录
+
+持久化语义目录是一个独立发行包，实现了 `SemanticSnapshotCatalog` 边界，
+使用 PostgreSQL 存储快照、提案集、Bundle 发布与活动指针：
+
+```bash
+pip install nl2data-semantic-catalog-postgres
+```
+
+它依赖 `nl2data-core>=0.1.0` 与 `psycopg[binary,pool]>=3.1,<4`。驱动在包
+导入时绝不会被导入；只有从 DSN 构造目录时才会惰性加载。
+
+从源码检出安装时，三个包一起安装：
 
 ```bash
 pip install -e ".[dev]"
 pip install -e packages/nl2data-openai
+pip install -e packages/nl2data-semantic-catalog-postgres
 ```
 
 ## 为开发而安装

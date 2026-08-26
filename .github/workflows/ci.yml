@@ -36,6 +36,7 @@ jobs:
           cache-dependency-path: |
             pyproject.toml
             packages/nl2data-openai/pyproject.toml
+            packages/nl2data-semantic-catalog-postgres/pyproject.toml
 
       - name: Install core development dependencies
         run: python -m pip install --upgrade pip && python -m pip install -e ".[dev]"
@@ -43,14 +44,17 @@ jobs:
       - name: Install OpenAI provider package
         run: python -m pip install -e packages/nl2data-openai
 
+      - name: Install semantic catalog package
+        run: python -m pip install -e packages/nl2data-semantic-catalog-postgres
+
       - name: Run tests
         run: python -m pytest -q
 
       - name: Run Ruff
-        run: python -m ruff check src tests packages/nl2data-openai/src scripts
+        run: python -m ruff check src tests packages/nl2data-openai/src packages/nl2data-semantic-catalog-postgres/src scripts
 
       - name: Run Mypy
-        run: python -m mypy src packages/nl2data-openai/src
+        run: python -m mypy src packages/nl2data-openai/src packages/nl2data-semantic-catalog-postgres/src
 
   docs:
     name: Documentation quality gates
@@ -69,6 +73,9 @@ jobs:
 
       - name: Install core development dependencies
         run: python -m pip install --upgrade pip && python -m pip install -e ".[dev]"
+
+      - name: Install semantic catalog package
+        run: python -m pip install -e packages/nl2data-semantic-catalog-postgres
 
       - name: Run documentation checks
         run: python scripts/check_docs.py
@@ -89,6 +96,7 @@ jobs:
           cache-dependency-path: |
             pyproject.toml
             packages/nl2data-openai/pyproject.toml
+            packages/nl2data-semantic-catalog-postgres/pyproject.toml
 
       - name: Install build tooling
         run: python -m pip install --upgrade pip build
@@ -99,6 +107,9 @@ jobs:
       - name: Build OpenAI provider distribution
         run: python -m build --wheel --outdir dist/openai packages/nl2data-openai
 
+      - name: Build semantic catalog distribution
+        run: python -m build --wheel --outdir dist/postgres-catalog packages/nl2data-semantic-catalog-postgres
+
       - name: Verify wheel metadata
         run: |
           python - <<'PY'
@@ -107,6 +118,7 @@ jobs:
           wheels = sorted(Path("dist").rglob("*.whl"))
           assert any("nl2data_core" in wheel.name for wheel in wheels)
           assert any("nl2data_openai" in wheel.name for wheel in wheels)
+          assert any("nl2data_semantic_catalog_postgres" in wheel.name for wheel in wheels)
           print("Built wheels:")
           for wheel in wheels:
               print(wheel)

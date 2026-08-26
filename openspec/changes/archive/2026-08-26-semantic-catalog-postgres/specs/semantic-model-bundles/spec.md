@@ -1,9 +1,4 @@
-# semantic-model-bundles Specification
-
-## Purpose
-Define versioned, immutable, validated Semantic Model Bundles and their safe catalog lifecycle, including reviewed metadata-discovery inputs.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Semantic Model Bundles are immutable and versioned
 The system SHALL represent a Semantic Model Bundle as an immutable, versioned artifact containing bounded semantic entities, fields, relationships, measures/aggregation metadata, source/catalog references, compatibility metadata, and safe provenance. Bundle semantic facts MAY originate from approved discovery proposals, but a bundle SHALL contain no unapproved authority, credentials, connection strings, raw executable SQL/MQL/code, native objects, or authorization claims. A durable catalog SHALL store only its safe canonical representation.
@@ -14,7 +9,7 @@ The system SHALL represent a Semantic Model Bundle as an immutable, versioned ar
 
 #### Scenario: Unsafe model content is rejected
 - **WHEN** a bundle contains physical credentials, connection material, executable query text, native driver values, or unapproved semantic proposals
-- **THEN** validation rejects the bundle before publication
+- **THEN** validation rejects the bundle before publication or persistence
 
 ### Requirement: Bundle structure and references are validated
 Bundle validation SHALL enforce bounded collection sizes, unique entity/field/relationship identifiers, valid field types and aggregations, valid relationship endpoints, source identity matching the wrapped descriptor, semantic grain constraints, dependency references, self-dependency rejection, and supported schema/version compatibility. Declared catalog compatibility SHALL include the wrapped descriptor's catalog fingerprint when one is present, and approved discovery proposal references SHALL match the source snapshot fingerprint.
@@ -32,14 +27,14 @@ Bundle validation SHALL enforce bounded collection sizes, unique entity/field/re
 - **THEN** bundle publication rejects it as stale before activation
 
 ### Requirement: Bundle provenance and trust metadata are preserved
-A bundle SHALL record safe provenance including bundle identity/version, source/catalog references, owner or origin references, compatibility information, quality status, and discovery proposal references. Authored, inferred, and human-approved semantic facts SHALL remain distinguishable, and inferred facts SHALL NOT become authorization decisions by themselves.
+A bundle SHALL record safe provenance including bundle identity/version, source/catalog references, owner or origin references, compatibility information, quality status, and discovery proposal references. Authored, inferred, and human-approved semantic facts SHALL remain distinguishable, and inferred facts SHALL NOT become authorization decisions by themselves. Durable reload SHALL preserve these distinctions.
 
 #### Scenario: Inference is not authorization
 - **WHEN** a bundle marks a relationship or description as inferred without trusted approval
 - **THEN** the fact may be retained as metadata but cannot independently grant View visibility or execution authority
 
 #### Scenario: Provenance is safe
-- **WHEN** bundle provenance is serialized for evidence
+- **WHEN** bundle provenance is serialized for evidence or persistence
 - **THEN** it contains bounded opaque references and status metadata without raw identities, secrets, or physical source details
 
 ### Requirement: Catalog publication is atomic and replaceable
@@ -58,7 +53,7 @@ The system SHALL define a replaceable catalog protocol and implementations suppo
 - **THEN** the catalog changes the active pointer to that version without mutating either bundle artifact
 
 ### Requirement: Bundle loading and compatibility are explicit
-Bundle loaders SHALL validate schema version, model version, source identity, dependency fingerprints, source snapshot fingerprint, freshness, completeness, and compatibility constraints before returning or activating a bundle. Incompatible, stale, expired, unauthorized, or blocking-drift bundles SHALL fail closed and SHALL not be silently downgraded. A partial discovery snapshot SHALL not satisfy production activation by default.
+Bundle loaders SHALL validate schema version, model version, source identity, dependency fingerprints, source snapshot fingerprint, freshness, completeness, and compatibility constraints before returning or activating a bundle. Incompatible, stale, expired, unauthorized, or blocking-drift bundles SHALL fail closed and SHALL not be silently downgraded. A partial discovery snapshot SHALL not satisfy production activation by default. Shared catalog reload SHALL apply the same checks.
 
 #### Scenario: Stale dependency blocks activation
 - **WHEN** a bundle depends on an unavailable or incompatible catalog/model fingerprint

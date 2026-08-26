@@ -54,6 +54,50 @@ Lease-busy conditions surface as retryable `LEASE_BUSY`.
 | Stale owner committing after takeover | `FENCING_REJECTED` (never retried) |
 | CAS/status/schema conflict | Public rejection (e.g. `STALE_CHECKPOINT`, `UNSUPPORTED_SCHEMA_VERSION`) |
 
+## PostgreSQL (durable semantic catalog)
+
+**Distribution**: `nl2data-semantic-catalog-postgres`
+(`psycopg[binary,pool]>=3.1,<4`).
+
+**Endpoint injection**: the DSN is injected by the host into the catalog
+constructor from its own secret management (`dsn_secret_ref` names that
+host-side secret; the dev/CI profile uses `NL2DATA_POSTGRES_DSN`). The
+DSN is never stored in `SemanticCatalogConfig` and never included in
+errors.
+
+**Key settings** (`SemanticCatalogConfig`, all validated before any
+connection):
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| Deployment namespace | required | One bounded schema per deployment (`^[A-Za-z][A-Za-z0-9_]{0,63}$`); deployments sharing one database service never observe each other's records |
+| `pool_size` / timeouts | 5 / 5 s / 10 s | Bounded pool and per-command timeouts; pool checkout bounded at 5 s |
+| `snapshot_retention_seconds` / `event_retention_seconds` | 604,800 | Cleanup keeps active content and dependencies; bounded passes remove only expired records |
+| Envelope bounds | 1 MiB / 512 KiB | Max envelope and canonical payload bytes; oversized artifacts are rejected before persistence |
+| Migration target | 1 | Additive migrations applied transactionally up to target; newer-than-runtime schema rejected with `SCHEMA_MISMATCH` |
+
+**Health checks**: `pg_isready` is the CI health gate (`integration.yml`).
+Unreachable services report retryable `CATALOG_UNAVAILABLE`;
+`CATALOG_TIMEOUT` covers canceled statements. Availability is never
+assumed.
+
+**Schema and isolation**: the catalog owns its tables inside the
+configured schema namespace — it never shares workflow checkpoint
+tables. Every lifecycle record is scoped by tenant/source fingerprint;
+cross-scope reads and activation fail closed (`UNAUTHORIZED`), and
+tampered or newer-schema artifacts fail closed on read
+(`ENVELOPE_REJECTED` / `FINGERPRINT_MISMATCH` / `SCHEMA_MISMATCH`).
+
+**Failure classification**:
+
+| Condition | Result |
+| --- | --- |
+| Unreachable service, timeout, missing driver | Retryable `CATALOG_UNAVAILABLE` / `CATALOG_TIMEOUT` |
+| Cross-scope read/activation/rollback | `UNAUTHORIZED`, never retried |
+| Schema/migration newer than runtime | `SCHEMA_MISMATCH`, never retried |
+| Envelope/fingerprint/bound violation | `ENVELOPE_REJECTED` / `FINGERPRINT_MISMATCH` / `BOUNDS_EXCEEDED`, never retried |
+| Unique-key/version conflict | `CONFLICT`, never retried |
+
 ## Redis (shared Memory)
 
 **Extra**: `redis` (`redis>=5.0,<7`).
@@ -160,7 +204,7 @@ attempt budget).
 | Profile | Services | Command |
 | --- | --- | --- |
 | Deterministic (default) | None | `python -m pytest` |
-| Real services | PostgreSQL 16, Redis 7, MongoDB 7 (containers with health checks) | integration workflow: `python -m pytest -q -rs tests/integration/test_postgres_shared_real.py tests/integration/test_postgres_discovery_real.py tests/integration/test_redis_memory_real.py tests/integration/test_mongodb_real.py tests/integration/test_mongodb_discovery_real.py tests/conformance/test_postgres_conformance.py tests/conformance/test_mongodb_conformance.py` |
+| Real services | PostgreSQL 16, Redis 7, MongoDB 7 (containers with health checks) | integration workflow: `python -m pytest -q -rs tests/integration/test_postgres_shared_real.py tests/integration/test_postgres_discovery_real.py tests/integration/test_postgres_catalog_integration.py tests/integration/test_redis_memory_real.py tests/integration/test_mongodb_real.py tests/integration/test_mongodb_discovery_real.py tests/conformance/test_postgres_conformance.py tests/conformance/test_mongodb_conformance.py` |
 
 Every skip reason is surfaced with `-rs`; a reachable service that fails
 its tests fails the job.

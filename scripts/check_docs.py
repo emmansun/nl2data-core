@@ -47,6 +47,7 @@ DOC_FILES = [
     ROOT / "README.md",
     *sorted((DOCS).rglob("*.md")),
     ROOT / "packages" / "nl2data-openai" / "README.md",
+    ROOT / "packages" / "nl2data-semantic-catalog-postgres" / "README.md",
 ]
 
 ZH_SUFFIX = ".zh-CN.md"
@@ -127,7 +128,7 @@ def _check_mermaid_flowchart(lines: list[str], path: Path, start: int, errors: l
         errors.append(f"{path.relative_to(ROOT)}: mermaid line {line_no}: {message}")
 
     edge_re = re.compile(
-        r"([A-Za-z0-9_]+)(\[[^\]]*\])?\s*-{1,2}[^>]*->\s*([A-Za-z0-9_]+)(\[[^\]]*\])?"
+        r"([A-Za-z0-9_]+)(\[[^\]]*\])?\s*-{1,2}[^>]*->\s*(?:\|[^|]*\|\s*)?([A-Za-z0-9_]+)(\[[^\]]*\])?"
     )
 
     defined: set[str] = set()
@@ -359,6 +360,14 @@ def check_packages(checker: Checker) -> None:
     openai_py = tomllib.loads(
         (ROOT / "packages" / "nl2data-openai" / "pyproject.toml").read_text(encoding="utf-8")
     )
+    catalog_py = tomllib.loads(
+        (
+            ROOT
+            / "packages"
+            / "nl2data-semantic-catalog-postgres"
+            / "pyproject.toml"
+        ).read_text(encoding="utf-8")
+    )
 
     project = root_py["project"]
     if project["name"] != "nl2data-core":
@@ -405,13 +414,37 @@ def check_packages(checker: Checker) -> None:
             "dependencies must include nl2data-core>=0.1.0 and openai>=1.40,<3",
         )
 
+    catalog_project = catalog_py["project"]
+    if catalog_project["name"] != "nl2data-semantic-catalog-postgres":
+        checker.report(
+            ROOT / "packages" / "nl2data-semantic-catalog-postgres" / "pyproject.toml",
+            f"unexpected project name {catalog_project['name']!r}",
+        )
+    if catalog_project["version"] != "0.1.0":
+        checker.report(
+            ROOT / "packages" / "nl2data-semantic-catalog-postgres" / "pyproject.toml",
+            f"unexpected version {catalog_project['version']!r}",
+        )
+    catalog_deps = {_normalize(d) for d in catalog_project["dependencies"]}
+    if (
+        "nl2data-core>=0.1.0" not in catalog_deps
+        or "psycopg[binary,pool]>=3.1,<4" not in catalog_deps
+    ):
+        checker.report(
+            ROOT / "packages" / "nl2data-semantic-catalog-postgres" / "pyproject.toml",
+            "dependencies must include nl2data-core>=0.1.0 and "
+            "psycopg[binary,pool]>=3.1,<4",
+        )
+
     install = (DOCS / "getting-started" / "installation.md").read_text(encoding="utf-8")
     for command in (
         "pip install nl2data-core",
         'pip install "nl2data-core[sql,redis]"',
         "pip install nl2data-openai",
+        "pip install nl2data-semantic-catalog-postgres",
         'pip install -e ".[dev]"',
         "pip install -e packages/nl2data-openai",
+        "pip install -e packages/nl2data-semantic-catalog-postgres",
     ):
         if command not in install:
             checker.report(
@@ -423,6 +456,8 @@ def check_packages(checker: Checker) -> None:
     for command in (
         "python -m build --wheel --outdir dist/core .",
         "python -m build --wheel --outdir dist/openai packages/nl2data-openai",
+        "python -m build --wheel --outdir dist/postgres-catalog "
+        "packages/nl2data-semantic-catalog-postgres",
     ):
         if command not in local_dev:
             checker.report(
@@ -528,6 +563,9 @@ def check_reconciliation(checker: Checker) -> None:
         "run_live_openai_evaluation",
         "RedisMemoryConfig",
         "SharedStoreConfig",
+        "SemanticSnapshotCatalog",
+        "PostgreSQLSemanticCatalog",
+        "SemanticCatalogConfig",
         "INSTRUCTION_VERSION_INCOMPATIBLE",
         "safe_dump",
         "load_config",
@@ -565,6 +603,9 @@ def check_reconciliation(checker: Checker) -> None:
         )
         from nl2data_core.workflow.shared_config import (
             SharedStoreConfig,  # type: ignore[import-not-found]
+        )
+        from nl2data_semantic_catalog_postgres.config import (  # type: ignore[import-not-found]
+            SemanticCatalogConfig,
         )
     except Exception as exc:  # noqa: BLE001
         checker.report(ROOT, f"cannot import configuration models for reconciliation: {exc}")
@@ -659,6 +700,61 @@ def check_reconciliation(checker: Checker) -> None:
             "SharedStoreConfig.clock_tolerance_seconds",
             field_default(SharedStoreConfig, "clock_tolerance_seconds"),
             2.0,
+        ),
+        (
+            "SemanticCatalogConfig.pool_size",
+            field_default(SemanticCatalogConfig, "pool_size"),
+            5,
+        ),
+        (
+            "SemanticCatalogConfig.connect_timeout_seconds",
+            field_default(SemanticCatalogConfig, "connect_timeout_seconds"),
+            5.0,
+        ),
+        (
+            "SemanticCatalogConfig.command_timeout_seconds",
+            field_default(SemanticCatalogConfig, "command_timeout_seconds"),
+            10.0,
+        ),
+        (
+            "SemanticCatalogConfig.pool_acquire_timeout_seconds",
+            field_default(SemanticCatalogConfig, "pool_acquire_timeout_seconds"),
+            5.0,
+        ),
+        (
+            "SemanticCatalogConfig.snapshot_retention_seconds",
+            field_default(SemanticCatalogConfig, "snapshot_retention_seconds"),
+            604_800.0,
+        ),
+        (
+            "SemanticCatalogConfig.event_retention_seconds",
+            field_default(SemanticCatalogConfig, "event_retention_seconds"),
+            604_800.0,
+        ),
+        (
+            "SemanticCatalogConfig.cleanup_batch_size",
+            field_default(SemanticCatalogConfig, "cleanup_batch_size"),
+            500,
+        ),
+        (
+            "SemanticCatalogConfig.max_envelope_bytes",
+            field_default(SemanticCatalogConfig, "max_envelope_bytes"),
+            1_048_576,
+        ),
+        (
+            "SemanticCatalogConfig.max_payload_bytes",
+            field_default(SemanticCatalogConfig, "max_payload_bytes"),
+            524_288,
+        ),
+        (
+            "SemanticCatalogConfig.max_bundle_history",
+            field_default(SemanticCatalogConfig, "max_bundle_history"),
+            100,
+        ),
+        (
+            "SemanticCatalogConfig.max_active_pointers_per_scope",
+            field_default(SemanticCatalogConfig, "max_active_pointers_per_scope"),
+            256,
         ),
     ]
     for label, actual, expected in defaults:

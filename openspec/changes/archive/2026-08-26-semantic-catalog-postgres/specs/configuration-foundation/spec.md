@@ -1,4 +1,4 @@
-## ADDED Requirements
+## MODIFIED Requirements
 
 ### Requirement: Versioned strict configuration
 The configuration loader SHALL require a supported schema version, reject unknown core fields, and validate required service and runtime configuration before activation. It SHALL support an optional PostgreSQL semantic catalog profile with strict typed bounds, migration/schema settings, retention, and safe connection secret references.

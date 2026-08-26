@@ -18,6 +18,7 @@
 | Semantic IR + 规范指纹 | Implemented + conformant | 契约套件 | — |
 | Semantic View 解析（fail-closed） | Implemented + conformant | 契约 + 安全套件 | — |
 | Semantic Model Bundles + 目录 | Implemented + conformant | 契约 + 安全套件 | — |
+| 持久化语义目录（PostgreSQL） | Implemented + verified | 真实服务 CI 配置 | `nl2data-semantic-catalog-postgres` + 服务 |
 | 受治理工作流运行时（确定性） | Implemented + conformant | 一致性套件 | — |
 | 查询生命周期：澄清、取消、句柄、能力/健康 | Implemented + conformant | 集成套件 | — |
 | 持久工作流状态（SQLite） | Implemented + conformant | 契约套件 | — |
@@ -41,8 +42,6 @@
 - **公共的审批必需结果状态**（仅为内部运行时事件）。
 - **工作流状态除 PostgreSQL 之外的服务后端**（MongoDB/HTTP 状态后端
   未实现）。
-- **元数据跨进程生命周期协调**（快照账本是进程本地的；未来的共享目录
-  必须实现相同的宿主拥有语义）。
 - **恰好一次的外部执行**——恢复按设计是 at-least-once。
 - MongoDB 适配器中的 **$lookup/跨集合连接、Atlas Search/向量阶段、
   map-reduce、变更流与写入**。
@@ -51,6 +50,8 @@
 
 - 公共 `nl2data` API 是唯一受支持的应用程序表面；`nl2data_core` 仅限
   贡献者使用，恕不另行通知即可变更。
+- 可选兄弟发行包（`nl2data-openai`、`nl2data-semantic-catalog-postgres`）
+  通过其文档化的包表面受支持；其内部实现恕不另行通知即可变更。
 - 真实服务与实时提供方结果**依赖环境**：`skipped`/`unavailable` 结果
   绝不是验证。只有 `verified` 才算服务兼容性的证据。
 - 受支持的 Python 版本：3.11、3.12、3.13（CI 矩阵）。

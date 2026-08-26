@@ -110,11 +110,41 @@ model 分区绝不携带凭据；提供方秘密仍是 `secrets` 中的 `SecretR
 | --- | --- | --- |
 | SQL 适配器 | `sql` | `sqlglot` 编译的有界 SQL；SQLite fixtures 无需服务 |
 | PostgreSQL 共享状态 | `postgres` | `PostgreSQLStateStore` 设置 + `NL2DATA_POSTGRES_DSN` |
+| PostgreSQL 语义目录 | `nl2data-semantic-catalog-postgres` | `SemanticCatalogConfig`（命名空间 + 边界）+ 宿主注入的 DSN |
 | Redis Memory | `redis` | `RedisMemoryConfig`（命名空间 + 边界）+ 连接 URL |
 | MongoDB 适配器/发现 | `mongodb` | `ProductionDiscoveryConfig.bounds` + `NL2DATA_MONGO_URI` |
 | OpenAI 提供方 | `nl2data-openai` | `OpenAIProviderConfig` + `OPENAI_API_KEY`/`base_url` |
 
 宿主拥有的端点/秘密注入绝不会把供应商凭据呈现为核心配置字段。
+
+## PostgreSQL 语义目录（可选包）
+
+持久化目录以 `nl2data-semantic-catalog-postgres` 发行，并由不可变的
+`SemanticCatalogConfig` 模型配置。该模型只携带行为边界与安全的秘密
+*引用*——绝不携带 DSN 本身。宿主从其自身的秘密管理向目录构造函数注入
+DSN（`dsn_secret_ref` 命名宿主侧的该秘密）。
+
+| 字段 | 类型 | 边界 | 默认值 |
+| --- | --- | --- | --- |
+| `namespace` | string | `^[A-Za-z][A-Za-z0-9_]{0,63}$`，**必填** | — |
+| `dsn_secret_ref` | string | 1–128 字符 | `None` |
+| `pool_size` | int | 1–64 | 5 |
+| `connect_timeout_seconds` | float | 0.1–30 | 5.0 |
+| `command_timeout_seconds` | float | 0.1–120 | 10.0 |
+| `pool_acquire_timeout_seconds` | float | 0.1–60 | 5.0 |
+| `schema_version` | int | 1（受支持） | 1 |
+| `snapshot_retention_seconds` | float | 60 – 31,536,000 | 604,800 |
+| `event_retention_seconds` | float | 60 – 31,536,000 | 604,800 |
+| `cleanup_batch_size` | int | 1–10,000 | 500 |
+| `max_envelope_bytes` | int | 4 KiB – 16 MiB | 1,048,576 |
+| `max_payload_bytes` | int | 1 KiB – 8 MiB（≤ 信封） | 524,288 |
+| `max_bundle_history` | int | 1–10,000 | 100 |
+| `max_active_pointers_per_scope` | int | 1–1,024 | 256 |
+
+`namespace` 是拥有每个目录表的 PostgreSQL schema；它在每个应用程序与
+环境中必须唯一，以便共享同一数据库服务的部署永远不会观察到彼此的记录。
+比运行时受支持版本更新的 `schema_version` 会 fail-closed（安全失败）。
+参见[服务](../operations/services.md)获取运维手册。
 
 ## 指纹稳定性
 

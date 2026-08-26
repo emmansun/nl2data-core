@@ -9,6 +9,7 @@
 | --- | --- | --- |
 | `nl2data-core` | 0.1.0 (Alpha) | Public API is stable within the documented surface; `Development Status :: 3 - Alpha` classifier |
 | `nl2data-openai` | 0.1.0 (Alpha) | Depends on `nl2data-core>=0.1.0`; `openai>=1.40,<3` |
+| `nl2data-semantic-catalog-postgres` | 0.1.0 (Alpha) | Depends on `nl2data-core>=0.1.0`; `psycopg[binary,pool]>=3.1,<4` |
 | Configuration schema | `schema_version: 1` (literal) | Unsupported versions fail closed — never silently downgraded |
 | Workflow state snapshots | explicit `schema_version` | Additive migrations only; newer-than-runtime schema rejected |
 | Instruction contract | versioned `ModelInstructionBundle` | Unsupported bundle versions fail closed (`INSTRUCTION_VERSION_INCOMPATIBLE`) |

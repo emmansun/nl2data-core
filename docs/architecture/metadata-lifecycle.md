@@ -150,6 +150,8 @@ marker but never names them in evidence.
 
 ## Next steps
 
+- [Metadata to active Bundle](../guides/metadata-to-bundle.md) — user-facing
+  walkthrough of ownership, review, storage, and references.
 - [Evidence and fingerprints](evidence-and-fingerprints.md) — how
   snapshot and bundle fingerprints are computed.
 - [Service configuration](../operations/services.md) — real discovery

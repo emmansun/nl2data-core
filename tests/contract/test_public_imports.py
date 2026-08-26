@@ -70,10 +70,15 @@ class TestPublicImportSurface:
             assert name in nl2data.__all__, f"{name} missing from __all__"
 
     def test_importing_nl2data_requires_no_provider_dependencies(self) -> None:
+        # Real-service profiles may have loaded a provider earlier in the
+        # process; assert on the delta so the claim stays order-independent.
+        before = {name.split(".")[0] for name in sys.modules}
+
         import nl2data  # noqa: F401
 
+        loaded = {name.split(".")[0] for name in sys.modules} - before
         for module in OPTIONAL_PROVIDER_MODULES:
-            assert module not in sys.modules, f"optional provider imported: {module}"
+            assert module not in loaded, f"optional provider imported: {module}"
 
     def test_internal_package_not_required_for_public_import(self) -> None:
         import nl2data  # noqa: F401

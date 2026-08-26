@@ -16,6 +16,7 @@
 | Semantic IR + canonical fingerprints | Implemented + conformant | Contract suite | — |
 | Semantic View resolution (fail-closed) | Implemented + conformant | Contract + security suites | — |
 | Semantic Model Bundles + catalog | Implemented + conformant | Contract + security suites | — |
+| Durable semantic catalog (PostgreSQL) | Implemented + verified | Real-service CI profile | `nl2data-semantic-catalog-postgres` + service |
 | Governed workflow runtime (deterministic) | Implemented + conformant | Conformance suite | — |
 | Query lifecycle: clarification, cancellation, handles, capabilities/health | Implemented + conformant | Integration suite | — |
 | Durable workflow state (SQLite) | Implemented + conformant | Contract suite | — |
@@ -41,9 +42,6 @@
   only).
 - **Service-backed stores beyond PostgreSQL** for workflow state
   (MongoDB/HTTP state backends are not implemented).
-- **Metadata cross-process lifecycle coordination** (the snapshot ledger
-  is process-local; a later shared catalog must implement the same
-  host-owned semantics).
 - **Exactly-once external execution** — recovery is at-least-once by
   design.
 - **$lookup/cross-collection joins, Atlas Search/vector stages,
@@ -53,6 +51,9 @@
 
 - The public `nl2data` API is the only supported application surface;
   `nl2data_core` is contributor-only and changes without notice.
+- Optional sibling distributions (`nl2data-openai`,
+  `nl2data-semantic-catalog-postgres`) are supported through their
+  documented package surfaces; their internals change without notice.
 - Real-service and live-provider results are **environment-dependent**:
   `skipped`/`unavailable` outcomes are never verification. Only
   `verified` counts as evidence of service compatibility.
