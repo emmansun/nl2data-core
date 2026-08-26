@@ -18,10 +18,9 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from pydantic import ValidationError
-
 from nl2data_core.memory.errors import MemoryErrorCode, MemoryInvocationError
 from nl2data_core.memory.models import MemoryRecord
+from pydantic import ValidationError
 
 #: The only supported serialization schema version.
 SERIALIZATION_SCHEMA_VERSION = 1

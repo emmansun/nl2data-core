@@ -22,16 +22,27 @@ you compose them explicitly.
 | `sql` | SQL query adapter (SQLite fixtures use the standard library; `sqlglot` powers bounded SQL compilation) | `sqlglot>=25.0,<30` |
 | `postgres` | In-core PostgreSQL discovery/conformance profiles | `psycopg[binary,pool]>=3.1,<4` |
 | `nl2data-workflow-postgres` | Shared workflow state backend (`PostgreSQLStateStore`) as a separate package | `psycopg[binary,pool]>=3.1,<4` |
-| `redis` | Redis-backed Memory provider | `redis>=5.0,<7` |
 
 ```bash
-# For example: SQL adapter plus Redis Memory
-pip install "nl2data-core[sql,redis]"
+# For example: SQL adapter
+pip install "nl2data-core[sql]"
 ```
 
 Extras are lazy: installing them does not import anything at package
 import time. Drivers are loaded only when a real service client is
 first built.
+
+## Install the optional Redis memory backend
+
+The Redis memory backend is a separate distribution implementing the core
+`MemoryProvider` contract using Redis:
+
+```bash
+pip install nl2data-memory-redis
+```
+
+It depends on `nl2data-core>=0.1.0` and `redis>=5.0,<7`. The driver is loaded
+lazily at first use; importing the package does not import `redis`.
 
 ## Install the optional PostgreSQL workflow state backend
 
@@ -109,6 +120,7 @@ pip install -e packages/nl2data-openai
 pip install -e packages/nl2data-semantic-catalog-postgres
 pip install -e packages/nl2data-postgres
 pip install -e packages/nl2data-mongodb
+pip install -e packages/nl2data-memory-redis
 ```
 
 ## Install for development

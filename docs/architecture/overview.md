@@ -37,7 +37,7 @@ The architecture answers three questions for every request:
 | Optional query adapters | `nl2data_core.adapters` (SQL) | Optional extra (`sql`) |
 | Optional MongoDB adapter | `nl2data_mongodb` (sibling distribution) | Separate package |
 | Optional workflow state backend | `nl2data_workflow_postgres` (sibling distribution) | Separate package |
-| Optional Memory backend | `nl2data_core.memory.RedisMemoryProvider` | Optional extra (`redis`) |
+| Optional Memory backend | `nl2data_memory_redis` (sibling distribution) | Separate package |
 | Optional model provider | `nl2data_openai` (sibling distribution) | Separate package |
 
 ## Boundary map

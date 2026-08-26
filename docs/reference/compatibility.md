@@ -12,6 +12,7 @@
 | `nl2data-semantic-catalog-postgres` | 0.1.0 (Alpha) | Depends on `nl2data-core>=0.1.0`; `psycopg[binary,pool]>=3.1,<4` |
 | `nl2data-mongodb` | 0.1.0 (Alpha) | Depends on `nl2data-core>=0.1.0`; `pymongo>=4.6,<5` |
 | `nl2data-workflow-postgres` | 0.1.0 (Alpha) | Depends on `nl2data-core>=0.1.0`; `psycopg[binary,pool]>=3.1,<4` |
+| `nl2data-memory-redis` | 0.1.0 (Alpha) | Depends on `nl2data-core>=0.1.0`; `redis>=5.0,<7` |
 | Configuration schema | `schema_version: 1` (literal) | Unsupported versions fail closed — never silently downgraded |
 | Workflow state snapshots | explicit `schema_version` | Additive migrations only; newer-than-runtime schema rejected |
 | Instruction contract | versioned `ModelInstructionBundle` | Unsupported bundle versions fail closed (`INSTRUCTION_VERSION_INCOMPATIBLE`) |
@@ -46,6 +47,11 @@
   `nl2data_core.adapters.mongodb` module is removed. Import MongoDB
   symbols from the `nl2data_mongodb` package; the core distribution no
   longer ships a MongoDB adapter or a `mongodb` extra.
+- **Redis memory backend lives in `nl2data-memory-redis`**: the in-core
+  `nl2data_core.memory.redis_*` modules and `RedisMemoryProvider` are
+  removed. Import `RedisMemoryProvider` / `RedisMemoryConfig` from
+  `nl2data_memory_redis`; the core distribution no longer ships the Redis
+  memory implementation.
 - **PostgreSQL workflow state lives in `nl2data-workflow-postgres`**: the
   in-core `nl2data_core.workflow.postgres_*` modules are removed. Import
   `PostgreSQLStateStore` / `WorkflowPostgresConfig` from the
@@ -74,7 +80,7 @@
 | sqlglot | `>=25.0,<30` | `sql` extra |
 | psycopg | `>=3.1,<4` (binary + pool) | `postgres` extra, `nl2data-workflow-postgres` |
 | pymongo | `>=4.6,<5` | `nl2data-mongodb` |
-| redis | `>=5.0,<7` | `redis` extra |
+| redis | `>=5.0,<7` | `nl2data-memory-redis` |
 | openai | `>=1.40,<3` | `nl2data-openai` |
 
 ## Next steps

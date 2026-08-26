@@ -16,7 +16,6 @@ import pytest
 from pydantic import ValidationError
 
 from nl2data_core.memory.errors import MemoryErrorCode, MemoryInvocationError
-from nl2data_core.memory.fake_redis import FakeRedisClient
 from nl2data_core.memory.models import (
     MemoryRecallBudget,
     MemoryRecord,
@@ -24,9 +23,9 @@ from nl2data_core.memory.models import (
     QueryReference,
     QueryReferencePayload,
 )
-from nl2data_core.memory.redis_config import RedisMemoryConfig
-from nl2data_core.memory.redis_provider import RedisMemoryProvider
-from nl2data_core.memory.redis_serialization import serialize_record
+from nl2data_memory_redis import RedisMemoryConfig, RedisMemoryProvider
+from nl2data_memory_redis.fake import FakeRedisClient
+from nl2data_memory_redis.serialization import serialize_record
 
 FP = "sha256:" + "ab" * 32
 FP2 = "sha256:" + "cd" * 32

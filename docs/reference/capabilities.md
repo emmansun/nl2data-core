@@ -22,7 +22,7 @@
 | Durable workflow state (SQLite) | Implemented + conformant | Contract suite | — |
 | Durable workflow state (PostgreSQL, leases + fencing) | Implemented + verified | Real-service CI profile | `nl2data-workflow-postgres` + service |
 | Memory (in-memory) | Implemented + conformant | Conformance suite | — |
-| Memory (Redis) | Implemented + verified | Real-service CI profile | `redis` extra + service |
+| Memory (Redis) | Implemented + verified | Real-service CI profile | `nl2data-memory-redis` package + service |
 | SQL adapter (SQLite fixtures) | Implemented + conformant | Conformance suite | `sql` extra |
 | SQL adapter (PostgreSQL) | Implemented + verified | Real-service CI profile | `nl2data-postgres` + service |
 | MongoDB adapter | Implemented + verified | Real-service CI profile | `nl2data-mongodb` + service |
@@ -54,7 +54,7 @@
   `nl2data_core` is contributor-only and changes without notice.
 - Optional sibling distributions (`nl2data-openai`,
   `nl2data-semantic-catalog-postgres`, `nl2data-admin-service`,
-  `nl2data-postgres`, `nl2data-mongodb`) are supported through their
+  `nl2data-postgres`, `nl2data-mongodb`, `nl2data-memory-redis`) are supported through their
   documented package surfaces; their internals change without notice.
 - Real-service and live-provider results are **environment-dependent**:
   `skipped`/`unavailable` outcomes are never verification. Only

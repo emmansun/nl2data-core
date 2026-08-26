@@ -115,7 +115,7 @@ document, by host-owned endpoints:
 | SQL adapter | `sql` | `sqlglot` compiled bounded SQL; SQLite fixtures need no service |
 | PostgreSQL shared state | `nl2data-workflow-postgres` | `WorkflowPostgresConfig` settings + `NL2DATA_POSTGRES_DSN` |
 | PostgreSQL semantic catalog | `nl2data-semantic-catalog-postgres` | `SemanticCatalogConfig` (namespace + bounds) + host-injected DSN |
-| Redis Memory | `redis` | `RedisMemoryConfig` (namespace + bounds) + connection URL |
+| Redis Memory | `nl2data-memory-redis` | `RedisMemoryConfig` (namespace + bounds) + connection URL |
 | MongoDB adapter/discovery | `nl2data-mongodb` | `ProductionDiscoveryConfig.bounds` + `NL2DATA_MONGO_URI` |
 | OpenAI provider | `nl2data-openai` | `OpenAIProviderConfig` + `OPENAI_API_KEY`/`base_url` |
 

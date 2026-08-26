@@ -33,7 +33,7 @@ Bundle、确定性的受治理工作流运行时，以及可选的数据库、�
 | 可选查询适配器 | `nl2data_core.adapters`（SQL） | 可选 extra（`sql`） |
 | 可选 MongoDB 适配器 | `nl2data_mongodb`（兄弟发行包） | 独立包 |
 | 可选工作流状态后端 | `nl2data_workflow_postgres`（兄弟发行包） | 独立包 |
-| 可选内存后端 | `nl2data_core.memory.RedisMemoryProvider` | 可选 extra（`redis`） |
+| 可选内存后端 | `nl2data_memory_redis`（兄弟发行包） | 独立包 |
 | 可选模型提供方 | `nl2data_openai`（兄弟发行包） | 独立包 |
 
 ## 边界图

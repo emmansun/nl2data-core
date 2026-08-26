@@ -1,7 +1,7 @@
 """Lazy optional Redis driver boundary for the shared memory provider.
 
 The ``redis`` client package is loaded only inside this module through
-:func:`importlib.import_module`, so importing ``nl2data``,
+:func:`importlib.import_module`, so importing ``nl2data_memory_redis``,
 ``nl2data_core.memory``, or the in-memory provider never imports Redis.
 The provider accepts an injected client (fake or host-managed pool) or a
 connection ``url``; both paths are constructed here with bounded socket

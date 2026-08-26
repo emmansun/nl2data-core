@@ -30,8 +30,6 @@ dependencies = [
 sql = ["sqlglot>=25.0,<30"]
 # Optional PostgreSQL conformance profile driver (lazy; never imported by the base package).
 postgres = ["psycopg[binary,pool]>=3.1,<4"]
-# Optional Redis shared memory backend driver (lazy; never imported by the base package).
-redis = ["redis>=5.0,<7"]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
@@ -53,10 +51,11 @@ testpaths = [
     "packages/nl2data-postgres/tests",
     "packages/nl2data-mongodb/tests",
     "packages/nl2data-workflow-postgres/tests",
+    "packages/nl2data-memory-redis/tests",
 ]
 asyncio_mode = "auto"
 addopts = "-q"
-pythonpath = ["src", "packages/nl2data-openai/src", "packages/nl2data-semantic-catalog-postgres/src", "packages/nl2data-admin-service/src", "packages/nl2data-postgres/src", "packages/nl2data-mongodb/src", "packages/nl2data-workflow-postgres/src"]
+pythonpath = ["src", "packages/nl2data-openai/src", "packages/nl2data-semantic-catalog-postgres/src", "packages/nl2data-admin-service/src", "packages/nl2data-postgres/src", "packages/nl2data-mongodb/src", "packages/nl2data-workflow-postgres/src", "packages/nl2data-memory-redis/src"]
 
 [tool.mypy]
 python_version = "3.11"
@@ -72,7 +71,7 @@ exclude = ["tests"]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
-src = ["src", "tests", "packages/nl2data-openai/src", "packages/nl2data-semantic-catalog-postgres/src", "packages/nl2data-admin-service/src", "packages/nl2data-postgres/src", "packages/nl2data-mongodb/src", "packages/nl2data-workflow-postgres/src"]
+src = ["src", "tests", "packages/nl2data-openai/src", "packages/nl2data-semantic-catalog-postgres/src", "packages/nl2data-admin-service/src", "packages/nl2data-postgres/src", "packages/nl2data-mongodb/src", "packages/nl2data-workflow-postgres/src", "packages/nl2data-memory-redis/src"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]

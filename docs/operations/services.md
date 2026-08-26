@@ -100,7 +100,7 @@ tampered or newer-schema artifacts fail closed on read
 
 ## Redis (shared Memory)
 
-**Extra**: `redis` (`redis>=5.0,<7`).
+**Package**: `nl2data-memory-redis` (`redis>=5.0,<7`).
 
 **Endpoint injection**: connection URL passed to the provider
 constructor (e.g. `NL2DATA_REDIS_URL`) — never part of the
@@ -204,7 +204,7 @@ attempt budget).
 | Profile | Services | Command |
 | --- | --- | --- |
 | Deterministic (default) | None | `python -m pytest` |
-| Real services | PostgreSQL 16, Redis 7, MongoDB 7 (containers with health checks) | integration workflow: `python -m pytest -q -rs tests/integration/test_postgres_discovery_real.py tests/integration/test_postgres_catalog_integration.py tests/integration/test_redis_memory_real.py tests/integration/test_mongodb_real.py tests/integration/test_mongodb_discovery_real.py tests/conformance/test_postgres_conformance.py tests/conformance/test_mongodb_conformance.py packages/nl2data-workflow-postgres/tests/test_workflow_postgres_integration.py` |
+| Real services | PostgreSQL 16, Redis 7, MongoDB 7 (containers with health checks) | integration workflow: `python -m pytest -q -rs tests/integration/test_postgres_discovery_real.py tests/integration/test_postgres_catalog_integration.py tests/integration/test_redis_memory_real.py packages/nl2data-memory-redis/tests/test_integration.py tests/integration/test_mongodb_real.py tests/integration/test_mongodb_discovery_real.py tests/conformance/test_postgres_conformance.py tests/conformance/test_mongodb_conformance.py packages/nl2data-workflow-postgres/tests/test_workflow_postgres_integration.py` |
 
 Every skip reason is surfaced with `-rs`; a reachable service that fails
 its tests fails the job.

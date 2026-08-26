@@ -1,14 +1,15 @@
-"""Unit tests for the Redis shared memory provider building blocks.
+"""Unit/contract tests for the Redis shared memory provider.
 
-Covers the versioned serialization envelope, validated configuration
-bounds, namespaced key isolation, error normalization, TTL/retention
-behavior, recall budgets, and injected fake-client behavior - all
-deterministic and free of the optional ``redis`` driver.
+Covers safe round trips, validated configuration, namespaced key isolation,
+error normalization, TTL/retention behavior, recall budgets, injected fake
+client behavior, and optimistic compare-and-set - all deterministic and free
+of the optional ``redis`` driver.
 """
 
 from __future__ import annotations
 
 import json
+import sys
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -375,6 +376,20 @@ class TestErrorNormalization:
         assert exc.value.code is MemoryErrorCode.UNKNOWN_MEMORY_ERROR
         assert exc.value.message == REDACTED_VALUE
         assert "secret internals" not in str(exc.value)
+
+    def test_lazy_exports_never_import_redis(self) -> None:
+        import nl2data_memory_redis
+
+        # Snapshot-diff so an earlier test that legitimately triggered the
+        # lazy driver build (only possible when the extra is installed)
+        # cannot cause a false negative: the exports themselves must add
+        # nothing new to the process.
+        before = {name.split(".")[0] for name in sys.modules}
+        assert nl2data_memory_redis.RedisMemoryConfig is RedisMemoryConfig
+        assert nl2data_memory_redis.RedisMemoryProvider is RedisMemoryProvider
+        loaded = {name.split(".")[0] for name in sys.modules}
+        assert loaded - before == set(), f"lazy exports imported: {loaded - before}"
+
 
 class TestTtl:
     def test_ttl_above_provider_bound_rejected(self) -> None:

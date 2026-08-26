@@ -22,15 +22,25 @@ pip install nl2data-core
 | `sql` | SQL 查询适配器（SQLite fixtures 使用标准库；`sqlglot` 提供有界 SQL 编译） | `sqlglot>=25.0,<30` |
 | `postgres` | PostgreSQL 发现/一致性配置 | `psycopg[binary,pool]>=3.1,<4` |
 | `nl2data-workflow-postgres` | 共享工作流状态后端（`PostgreSQLStateStore`）作为独立包 | `psycopg[binary,pool]>=3.1,<4` |
-| `redis` | Redis 支持的 Memory 提供方 | `redis>=5.0,<7` |
 
 ```bash
-# 例如：SQL 适配器 + Redis Memory
-pip install "nl2data-core[sql,redis]"
+# 例如：SQL 适配器
+pip install "nl2data-core[sql]"
 ```
 
 Extras 是惰性的：安装它们不会在包导入时导入任何东西。驱动只在首次构建
 真实服务客户端时才被加载。
+
+## 安装可选的 Redis 内存后端
+
+Redis 内存后端是一个独立发行包，使用 Redis 实现核心 `MemoryProvider` 契约：
+
+```bash
+pip install nl2data-memory-redis
+```
+
+它依赖 `nl2data-core>=0.1.0` 与 `redis>=5.0,<7`。驱动在包导入时不会被加载，
+仅在首次使用时惰性加载。
 
 ## 安装可选的 OpenAI 提供方
 
@@ -55,12 +65,15 @@ pip install nl2data-semantic-catalog-postgres
 它依赖 `nl2data-core>=0.1.0` 与 `psycopg[binary,pool]>=3.1,<4`。驱动在包
 导入时绝不会被导入；只有从 DSN 构造目录时才会惰性加载。
 
-从源码检出安装时，三个包一起安装：
+从源码检出安装时，所有可选包一起安装：
 
 ```bash
 pip install -e ".[dev]"
 pip install -e packages/nl2data-openai
 pip install -e packages/nl2data-semantic-catalog-postgres
+pip install -e packages/nl2data-postgres
+pip install -e packages/nl2data-mongodb
+pip install -e packages/nl2data-memory-redis
 ```
 
 ## 为开发而安装

@@ -48,6 +48,7 @@ DOC_FILES = [
     *sorted((DOCS).rglob("*.md")),
     ROOT / "packages" / "nl2data-openai" / "README.md",
     ROOT / "packages" / "nl2data-semantic-catalog-postgres" / "README.md",
+    ROOT / "packages" / "nl2data-memory-redis" / "README.md",
 ]
 
 ZH_SUFFIX = ".zh-CN.md"
@@ -368,6 +369,11 @@ def check_packages(checker: Checker) -> None:
             / "pyproject.toml"
         ).read_text(encoding="utf-8")
     )
+    memory_py = tomllib.loads(
+        (ROOT / "packages" / "nl2data-memory-redis" / "pyproject.toml").read_text(
+            encoding="utf-8"
+        )
+    )
 
     project = root_py["project"]
     if project["name"] != "nl2data-core":
@@ -383,7 +389,6 @@ def check_packages(checker: Checker) -> None:
     expected_extras = {
         "sql": ["sqlglot>=25.0,<30"],
         "postgres": ["psycopg[binary,pool]>=3.1,<4"],
-        "redis": ["redis>=5.0,<7"],
     }
     for name, deps in expected_extras.items():
         if name not in extras:
@@ -435,15 +440,35 @@ def check_packages(checker: Checker) -> None:
             "psycopg[binary,pool]>=3.1,<4",
         )
 
+    memory_project = memory_py["project"]
+    if memory_project["name"] != "nl2data-memory-redis":
+        checker.report(
+            ROOT / "packages" / "nl2data-memory-redis" / "pyproject.toml",
+            f"unexpected project name {memory_project['name']!r}",
+        )
+    if memory_project["version"] != "0.1.0":
+        checker.report(
+            ROOT / "packages" / "nl2data-memory-redis" / "pyproject.toml",
+            f"unexpected version {memory_project['version']!r}",
+        )
+    memory_deps = {_normalize(d) for d in memory_project["dependencies"]}
+    if "nl2data-core>=0.1.0" not in memory_deps:
+        checker.report(
+            ROOT / "packages" / "nl2data-memory-redis" / "pyproject.toml",
+            "dependencies must include nl2data-core>=0.1.0",
+        )
+
     install = (DOCS / "getting-started" / "installation.md").read_text(encoding="utf-8")
     for command in (
         "pip install nl2data-core",
-        'pip install "nl2data-core[sql,redis]"',
+        'pip install "nl2data-core[sql]"',
         "pip install nl2data-openai",
         "pip install nl2data-semantic-catalog-postgres",
+        "pip install nl2data-memory-redis",
         'pip install -e ".[dev]"',
         "pip install -e packages/nl2data-openai",
         "pip install -e packages/nl2data-semantic-catalog-postgres",
+        "pip install -e packages/nl2data-memory-redis",
     ):
         if command not in install:
             checker.report(
@@ -573,7 +598,7 @@ def check_reconciliation(checker: Checker) -> None:
             checker.report(ROOT, f"documented identifier {identifier} not found in codebase")
 
     redis_source = (
-        ROOT / "src" / "nl2data_core" / "memory" / "redis_config.py"
+        ROOT / "packages" / "nl2data-memory-redis" / "src" / "nl2data_memory_redis" / "config.py"
     ).read_text(encoding="utf-8")
     shared_source = (
         ROOT
@@ -602,7 +627,7 @@ def check_reconciliation(checker: Checker) -> None:
             SecretReference,
             ServiceIdentity,
         )
-        from nl2data_core.memory.redis_config import (
+        from nl2data_memory_redis.config import (
             RedisMemoryConfig,  # type: ignore[import-not-found]
         )
         from nl2data_semantic_catalog_postgres.config import (  # type: ignore[import-not-found]

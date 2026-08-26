@@ -170,16 +170,20 @@ class TestMongoImportBoundary:
 
 
 class TestRedisImportBoundary:
-    def test_importing_the_memory_package_loads_no_redis(self) -> None:
-        before = _loaded_top_levels()
-        import nl2data_core.memory  # noqa: F401
-        import nl2data_core.memory.fake_redis  # noqa: F401
-        import nl2data_core.memory.redis_client  # noqa: F401
-        import nl2data_core.memory.redis_config  # noqa: F401
-        import nl2data_core.memory.redis_provider  # noqa: F401
-        import nl2data_core.memory.redis_serialization  # noqa: F401
-
-        _assert_no_new_forbidden(before)
+    def test_in_core_redis_modules_are_removed(self) -> None:
+        """The Redis memory backend was extracted to nl2data-memory-redis."""
+        for name in (
+            "nl2data_core.memory.fake_redis",
+            "nl2data_core.memory.redis_client",
+            "nl2data_core.memory.redis_config",
+            "nl2data_core.memory.redis_provider",
+            "nl2data_core.memory.redis_serialization",
+        ):
+            try:
+                __import__(name)
+            except ImportError:
+                continue
+            raise AssertionError(f"{name} must be removed from the core distribution")
 
     def test_no_redis_types_enter_public_contracts(self) -> None:
         """Redis is a specialization: no Redis type name may appear in the

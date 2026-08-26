@@ -39,18 +39,10 @@ from nl2data_core.memory.models import (
     MemoryRecord,
     MemoryScope,
 )
-from nl2data_core.memory.redis_client import (
-    build_redis_client,
-    driver_available,
-    is_redis_error,
-    is_watch_error,
-)
-from nl2data_core.memory.redis_config import RedisMemoryConfig
-from nl2data_core.memory.redis_serialization import (
-    deserialize_record_value,
-    serialize_record,
-    serialize_tombstone,
-)
+
+from .client import build_redis_client, driver_available, is_redis_error, is_watch_error
+from .config import RedisMemoryConfig
+from .serialization import deserialize_record_value, serialize_record, serialize_tombstone
 
 #: Approximate token size used to enforce the recall token budget.
 _MAX_CHARS_PER_TOKEN = 4

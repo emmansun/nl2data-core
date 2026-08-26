@@ -72,14 +72,16 @@ jobs:
             packages/nl2data-semantic-catalog-postgres/pyproject.toml
             packages/nl2data-mongodb/pyproject.toml
             packages/nl2data-workflow-postgres/pyproject.toml
+            packages/nl2data-memory-redis/pyproject.toml
 
       - name: Install integration dependencies
         run: >-
           python -m pip install --upgrade pip
-          && python -m pip install -e ".[dev,postgres,redis]"
+          && python -m pip install -e ".[dev,postgres]"
           && python -m pip install -e packages/nl2data-semantic-catalog-postgres
           && python -m pip install -e packages/nl2data-mongodb
           && python -m pip install -e packages/nl2data-workflow-postgres
+          && python -m pip install -e "packages/nl2data-memory-redis[redis]"
 
       - name: Run real service integration tests
         # Discovery profiles are classified explicitly: an unreachable service
@@ -91,6 +93,7 @@ jobs:
           tests/integration/test_postgres_discovery_real.py
           tests/integration/test_postgres_catalog_integration.py
           tests/integration/test_redis_memory_real.py
+          packages/nl2data-memory-redis/tests/test_integration.py
           tests/integration/test_mongodb_real.py
           tests/integration/test_mongodb_discovery_real.py
           tests/conformance/test_postgres_conformance.py

@@ -1,11 +1,11 @@
-"""Optional real Redis integration profile (task 4.3).
+"""Optional real Redis integration tests for nl2data-memory-redis.
 
 Runs the shared memory provider against a real Redis service through two
 lazily built clients, proving records, expiry, and deletion are durable
-across connections.  When the driver is missing, the URL is not
-configured, or the service is unreachable the outcome is skipped - never
-a pass.  Every run uses a unique namespace with best-effort cleanup so
-runs never observe each other's records.
+across connections. When the driver is missing, the URL is not configured,
+or the service is unreachable the outcome is skipped - never a pass. Every run
+uses a unique namespace with best-effort cleanup so runs never observe each
+other's records.
 """
 
 from __future__ import annotations
@@ -152,4 +152,37 @@ class TestRealRedisProfile:
             assert provider.recall(scope=short_lived.scope).record_count == 0
         finally:
             provider.close()
+            _cleanup(client, namespace)
+
+    def test_concurrent_append_preserves_uniqueness(self) -> None:
+        """Concurrent appenders with the same id observe exactly one winner."""
+        client = _require_service()
+        namespace = f"nl2data-test-{uuid4().hex[:12]}"
+        provider_a = RedisMemoryProvider(RedisMemoryConfig(namespace=namespace), url=REDIS_URL)
+        provider_b = RedisMemoryProvider(RedisMemoryConfig(namespace=namespace), url=REDIS_URL)
+        try:
+            record = make_record("mem-1")
+            results: list[bool | MemoryInvocationError] = []
+            from threading import Thread
+
+            def append(provider: RedisMemoryProvider) -> None:
+                try:
+                    provider.append(record)
+                    results.append(True)
+                except MemoryInvocationError as exc:
+                    results.append(exc)
+
+            t1 = Thread(target=append, args=(provider_a,))
+            t2 = Thread(target=append, args=(provider_b,))
+            t1.start()
+            t2.start()
+            t1.join()
+            t2.join()
+            assert sum(1 for r in results if r is True) == 1
+            errors = [r for r in results if isinstance(r, MemoryInvocationError)]
+            assert len(errors) == 1
+            assert errors[0].code is MemoryErrorCode.RECORD_REJECTED
+        finally:
+            provider_a.close()
+            provider_b.close()
             _cleanup(client, namespace)

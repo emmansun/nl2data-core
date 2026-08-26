@@ -13,6 +13,7 @@
 | `nl2data-openai` | 0.1.0（Alpha） | 依赖 `nl2data-core>=0.1.0`；`openai>=1.40,<3` |
 | `nl2data-mongodb` | 0.1.0（Alpha） | 依赖 `nl2data-core>=0.1.0`；`pymongo>=4.6,<5` |
 | `nl2data-workflow-postgres` | 0.1.0（Alpha） | 依赖 `nl2data-core>=0.1.0`；`psycopg[binary,pool]>=3.1,<4` |
+| `nl2data-memory-redis` | 0.1.0（Alpha） | 依赖 `nl2data-core>=0.1.0`；`redis>=5.0,<7` |
 | 配置 schema | `schema_version: 1`（字面量） | 不支持的版本 fail-closed——绝不静默降级 |
 | 工作流状态快照 | 显式 `schema_version` | 仅加法迁移；比运行时更新的 schema 被拒绝 |
 | 指令契约 | 带版本的 `ModelInstructionBundle` | 不支持的 bundle 版本 fail-closed（`INSTRUCTION_VERSION_INCOMPATIBLE`） |
@@ -40,6 +41,10 @@
   `nl2data_core.adapters.mongodb` 模块已移除。请从 `nl2data_mongodb`
   包导入 MongoDB 符号；核心发行版不再包含 MongoDB 适配器或
   `mongodb` extra。
+- **Redis 内存后端位于 `nl2data-memory-redis`**：核心中的
+  `nl2data_core.memory.redis_*` 模块与 `RedisMemoryProvider` 已移除。请从
+  `nl2data_memory_redis` 导入 `RedisMemoryProvider` / `RedisMemoryConfig`；
+  核心发行版不再包含 Redis 内存实现。
 - **PostgreSQL 工作流状态位于 `nl2data-workflow-postgres`**：核心中的
   `nl2data_core.workflow.postgres_*` 模块已移除。请从
   `nl2data_workflow_postgres` 包导入 `PostgreSQLStateStore` /
@@ -67,7 +72,7 @@
 | sqlglot | `>=25.0,<30` | `sql` extra |
 | psycopg | `>=3.1,<4`（binary + pool） | `postgres` extra、`nl2data-workflow-postgres` |
 | pymongo | `>=4.6,<5` | `nl2data-mongodb` |
-| redis | `>=5.0,<7` | `redis` extra |
+| redis | `>=5.0,<7` | `nl2data-memory-redis` |
 | openai | `>=1.40,<3` | `nl2data-openai` |
 
 ## 下一步

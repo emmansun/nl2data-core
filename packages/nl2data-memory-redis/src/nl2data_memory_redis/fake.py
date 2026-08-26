@@ -21,7 +21,7 @@ from typing import Any
 
 
 class WatchError(Exception):
-    """Raised when a watched key changes before ``execute()``."""
+    """Raised when a watched key changes before ``execute()`` ."""
 
 
 def _utc_now() -> datetime:
