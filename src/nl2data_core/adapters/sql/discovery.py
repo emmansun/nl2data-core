@@ -19,6 +19,7 @@ import asyncio
 import re
 import sqlite3
 import time
+import warnings
 from importlib import import_module
 from pathlib import Path
 from typing import Any
@@ -169,6 +170,13 @@ class SqlMetadataDiscoverer:
             raise MetadataUnavailableError(
                 "postgresql discovery requires a configured read-only DSN",
                 details={"cause_type": "MissingDSN"},
+            )
+        if self._dialect == "postgresql":
+            warnings.warn(
+                "nl2data_core.adapters.sql.SqlMetadataDiscoverer(dialect='postgresql') "
+                "is deprecated; migrate to nl2data_postgres.PostgresMetadataDiscoverer.",
+                DeprecationWarning,
+                stacklevel=2,
             )
         effective_objects = (
             self._allowed_objects & config.allowed_objects

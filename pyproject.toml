@@ -52,10 +52,11 @@ testpaths = [
     "packages/nl2data-openai/tests",
     "packages/nl2data-semantic-catalog-postgres/tests",
     "packages/nl2data-admin-service/tests",
+    "packages/nl2data-postgres/tests",
 ]
 asyncio_mode = "auto"
 addopts = "-q"
-pythonpath = ["src", "packages/nl2data-openai/src", "packages/nl2data-semantic-catalog-postgres/src", "packages/nl2data-admin-service/src"]
+pythonpath = ["src", "packages/nl2data-openai/src", "packages/nl2data-semantic-catalog-postgres/src", "packages/nl2data-admin-service/src", "packages/nl2data-postgres/src"]
 
 [tool.mypy]
 python_version = "3.11"
@@ -71,7 +72,7 @@ exclude = ["tests"]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
-src = ["src", "tests", "packages/nl2data-openai/src", "packages/nl2data-semantic-catalog-postgres/src", "packages/nl2data-admin-service/src"]
+src = ["src", "tests", "packages/nl2data-openai/src", "packages/nl2data-semantic-catalog-postgres/src", "packages/nl2data-admin-service/src", "packages/nl2data-postgres/src"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]

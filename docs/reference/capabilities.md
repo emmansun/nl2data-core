@@ -24,9 +24,9 @@
 | Memory (in-memory) | Implemented + conformant | Conformance suite | — |
 | Memory (Redis) | Implemented + verified | Real-service CI profile | `redis` extra + service |
 | SQL adapter (SQLite fixtures) | Implemented + conformant | Conformance suite | `sql` extra |
-| SQL adapter (PostgreSQL) | Implemented + verified | Real-service CI profile | `postgres` extra + service |
+| SQL adapter (PostgreSQL) | Implemented + verified | Real-service CI profile | `nl2data-postgres` + service |
 | MongoDB adapter | Implemented + verified | Real-service CI profile | `mongodb` extra + service |
-| Metadata discovery + production profile | Implemented + verified | Real-service CI profile | `postgres`/`mongodb` extra + service |
+| Metadata discovery + production profile | Implemented + verified | Real-service CI profile | `nl2data-postgres`/`mongodb` extra + service |
 | AI intent resolution + instruction contract | Implemented + conformant | Evaluation suite (fake provider) | — |
 | OpenAI structured-output provider | Implemented; live-verified on demand | `run_openai_live.py` | `nl2data-openai` + credentials |
 | Tenant isolation + scope fingerprints | Implemented + conformant | Conformance suite | — |
@@ -53,9 +53,9 @@
 - The public `nl2data` API is the only supported application surface;
   `nl2data_core` is contributor-only and changes without notice.
 - Optional sibling distributions (`nl2data-openai`,
-  `nl2data-semantic-catalog-postgres`, `nl2data-admin-service`) are
-  supported through their documented package surfaces; their internals change
-  without notice.
+  `nl2data-semantic-catalog-postgres`, `nl2data-admin-service`,
+  `nl2data-postgres`) are supported through their documented package
+  surfaces; their internals change without notice.
 - Real-service and live-provider results are **environment-dependent**:
   `skipped`/`unavailable` outcomes are never verification. Only
   `verified` counts as evidence of service compatibility.

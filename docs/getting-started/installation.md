@@ -20,7 +20,7 @@ you compose them explicitly.
 | Extra | Provides | Dependency |
 | --- | --- | --- |
 | `sql` | SQL query adapter (SQLite fixtures use the standard library; `sqlglot` powers bounded SQL compilation) | `sqlglot>=25.0,<30` |
-| `postgres` | Shared workflow state backend (`PostgreSQLStateStore`) and PostgreSQL discovery/conformance profiles | `psycopg[binary,pool]>=3.1,<4` |
+| `postgres` | Shared workflow state backend (`PostgreSQLStateStore`) and in-core PostgreSQL discovery/conformance profiles | `psycopg[binary,pool]>=3.1,<4` |
 | `mongodb` | MongoDB query adapter and metadata discovery profile | `pymongo>=4.6,<5` |
 | `redis` | Redis-backed Memory provider | `redis>=5.0,<7` |
 
@@ -46,6 +46,20 @@ It depends on `nl2data-core>=0.1.0` and `openai>=1.40,<3`. The OpenAI SDK
 is never imported at package import time; the client is built lazily from
 injected credentials on first use.
 
+## Install the optional PostgreSQL adapter
+
+The PostgreSQL adapter is a separate distribution implementing the
+provider-neutral metadata discovery and `QueryAdapter` contracts for
+PostgreSQL:
+
+```bash
+pip install nl2data-postgres
+```
+
+It depends on `nl2data-core>=0.1.0` and
+`psycopg[binary,pool]>=3.1,<4`. The driver is loaded lazily at first
+use; importing the package does not import `psycopg`.
+
 ## Install the optional PostgreSQL semantic catalog
 
 The durable semantic catalog is a separate distribution implementing the
@@ -60,12 +74,13 @@ It depends on `nl2data-core>=0.1.0` and `psycopg[binary,pool]>=3.1,<4`.
 The driver is never imported at package import time; it is loaded lazily
 only when a catalog is constructed from a DSN.
 
-From a source checkout, all three packages install with:
+From a source checkout, all optional packages install with:
 
 ```bash
 pip install -e ".[dev]"
 pip install -e packages/nl2data-openai
 pip install -e packages/nl2data-semantic-catalog-postgres
+pip install -e packages/nl2data-postgres
 ```
 
 ## Install for development

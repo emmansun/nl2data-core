@@ -70,6 +70,17 @@ column, byte, wall-clock); supported BSON values normalized into scalar
 only — writes, administrative commands, JavaScript, `$where`, regex
 evaluation, and wildcard projections are rejected before any driver call.
 
+### Example: PostgreSQL adapter package (`nl2data-postgres`)
+
+The PostgreSQL adapter is a sibling distribution (`nl2data-postgres`)
+implementing both the `MetadataDiscoverer` and `QueryAdapter` ports.
+`PostgresAdapterConfig` carries a host-injected DSN reference, bounded
+object/field/statistics limits, and read-only pool settings. Discovery
+returns core `MetadataSnapshot` values; execution uses a read-only
+connection pool, statement timeout, and result bounds. The `psycopg`
+driver is loaded lazily at first use and never imported at package
+import time.
+
 ## Adding a model provider
 
 1. **Implement the `ModelProvider` port** (internal
