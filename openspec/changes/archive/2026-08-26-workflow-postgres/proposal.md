@@ -9,7 +9,7 @@ The repository already implements PostgreSQL-backed workflow checkpoints, leases
 - Provide PostgreSQL client/pool, schema migrations, safe snapshot serialization, leases, fencing, idempotency, compare-and-set, cleanup, and normalized errors in the package.
 - Keep psycopg optional and lazy; base `nl2data` imports remain PostgreSQL-free.
 - Preserve tenant scope fingerprints, IR/View compatibility fingerprints, at-least-once semantics, and fail-closed stale-owner behavior.
-- Provide an in-core compatibility path during migration, independent package tests, and PostgreSQL service integration tests.
+- Remove the in-core PostgreSQL workflow modules (`postgres_client`, `postgres_schema`, `postgres_store`, `shared_config`, `fake_postgres`) and their exports once the package is verified; hosts import `PostgreSQLStateStore` / `WorkflowPostgresConfig` from `nl2data_workflow_postgres` directly. Provide independent package tests and PostgreSQL service integration tests.
 - Keep semantic catalog PostgreSQL persistence separate from workflow state tables and migrations.
 
 ## Capabilities

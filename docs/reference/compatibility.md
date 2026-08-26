@@ -46,6 +46,11 @@
   `nl2data_core.adapters.mongodb` module is removed. Import MongoDB
   symbols from the `nl2data_mongodb` package; the core distribution no
   longer ships a MongoDB adapter or a `mongodb` extra.
+- **PostgreSQL workflow state lives in `nl2data-workflow-postgres`**: the
+  in-core `nl2data_core.workflow.postgres_*` modules are removed. Import
+  `PostgreSQLStateStore` / `WorkflowPostgresConfig` from the
+  `nl2data_workflow_postgres` package; the core distribution no longer
+  ships a PostgreSQL workflow backend.
 - **Raw payloads never become part of any contract**: SQL/MQL, prompts,
   results, and credentials have no serialized form anywhere — nothing
   depends on them, so nothing can be "compatible" with them.

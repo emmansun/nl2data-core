@@ -40,6 +40,10 @@
   `nl2data_core.adapters.mongodb` 模块已移除。请从 `nl2data_mongodb`
   包导入 MongoDB 符号；核心发行版不再包含 MongoDB 适配器或
   `mongodb` extra。
+- **PostgreSQL 工作流状态位于 `nl2data-workflow-postgres`**：核心中的
+  `nl2data_core.workflow.postgres_*` 模块已移除。请从
+  `nl2data_workflow_postgres` 包导入 `PostgreSQLStateStore` /
+  `WorkflowPostgresConfig`；核心发行版不再包含 PostgreSQL 工作流后端。
 - **原始载荷绝不成为任何契约的一部分**：SQL/MQL、提示词、结果与凭据
   在任何地方都没有序列化形式——没有任何东西依赖它们，因此也没有任何
   东西可以与它们“兼容”。
