@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+Define deterministic, protected MongoDB conformance coverage for the adapter foundation.
+
+## Requirements
 
 ### Requirement: MongoDB conformance is deterministic and protected
 The conformance suite SHALL cover typed find, aggregate, count, invalid stages/operators, collection/field scope, BSON normalization, limits, tenant obligations, and safe evidence using fixed fake-driver fixtures.

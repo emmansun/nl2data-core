@@ -1,3 +1,7 @@
+## Purpose
+
+Define the immutable, versioned, backend-neutral Semantic Query IR with strict validation, provenance, and view/fingerprint binding.
+
 ## Requirements
 
 ### Requirement: Canonical Semantic Query IR remains versioned and backend-neutral

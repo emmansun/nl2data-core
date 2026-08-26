@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+Define the shared Memory backend preserving the core MemoryProvider contract across processes.
+
+## Requirements
 
 ### Requirement: Shared provider preserves the MemoryProvider contract
 The shared memory backend SHALL provide an implementation of the existing `MemoryProvider` protocol with the same append, recall, compare-and-set, compact, expire, delete, and availability semantics as the in-memory provider.

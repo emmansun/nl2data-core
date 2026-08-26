@@ -1,3 +1,7 @@
+## Purpose
+
+Define deterministic, bounded controlled SQL fixtures for repeatable query adapter testing.
+
 ## Requirements
 
 ### Requirement: Controlled SQL fixture is deterministic

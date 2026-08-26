@@ -1,3 +1,7 @@
+## Purpose
+
+Define the SQL adapter implementing the canonical adapter lifecycle with bounded SQL compilation.
+
 ## Requirements
 
 ### Requirement: SQL adapter implements the canonical adapter lifecycle

@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+Define the explicit engine lifecycle with startup, health, capability, and shutdown semantics.
+
+## Requirements
 
 ### Requirement: Engine lifecycle is explicit
 `NL2DataEngine` SHALL expose creation, readiness, draining, and close behavior through a defined lifecycle, and query operations SHALL require ready state.

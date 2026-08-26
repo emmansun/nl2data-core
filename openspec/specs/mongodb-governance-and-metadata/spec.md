@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+Define adapter-neutral, scope-bounded MongoDB metadata facts with governance enforcement.
+
+## Requirements
 
 ### Requirement: MongoDB facts are adapter-neutral and scope bounded
 The adapter SHALL extract collection, nested field, operator, stage, tenant obligation, and result-shape facts for the common Governance and Workflow Runtime without exposing native driver objects or raw values.

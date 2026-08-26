@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+Define the transport-neutral workflow API exposing safe status, outcomes, and lifecycle operations.
+
+## Requirements
 
 ### Requirement: Workflow handles expose safe status and outcomes
 The public API SHALL expose a transport-neutral workflow handle/status contract containing only workflow identity, bounded stage/status, fingerprints, cancellation state, and protected outcome references.

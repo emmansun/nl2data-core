@@ -1,3 +1,7 @@
+## Purpose
+
+Define the deterministic evaluation runner with isolated fixture lifecycles and controlled execution.
+
 ## Requirements
 
 ### Requirement: Evaluation runner isolates fixture lifecycle

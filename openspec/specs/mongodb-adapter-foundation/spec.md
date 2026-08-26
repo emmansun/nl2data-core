@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+Define an independently installable MongoDB backend integration implementing the core provider-neutral contracts.
+
+## Requirements
 
 ### Requirement: MongoDB adapter implements the generic lifecycle
 The MongoDB adapter SHALL implement the canonical `QueryAdapter` lifecycle with `adapter_type="mongodb"`, `query_language="mql"`, explicit async mode, and backend-specific models confined to the specialization package.

@@ -1,3 +1,7 @@
+## Purpose
+
+Define the single canonical QueryAdapter protocol shared by all query adapters.
+
 ## Requirements
 
 ### Requirement: Single canonical QueryAdapter Protocol

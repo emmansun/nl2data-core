@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+Define the public Python facade through which library users compose the system.
+
+## Requirements
 
 ### Requirement: Library users can compose through the public package
 The library SHALL provide a stable public facade/factory that composes configured workflow runtime, AI provider, Memory, tenant context, adapter, governance, and state-store capabilities without requiring application code to import `nl2data_core` implementation modules.

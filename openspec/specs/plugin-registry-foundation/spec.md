@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+Define the validated plugin manifest registry with bounded discovery and lifecycle rules.
+
+## Requirements
 
 ### Requirement: Plugin manifests are validated
 The plugin foundation SHALL validate manifest schema version, identity, package entry point, categories, compatibility declarations, capabilities, permissions, and content digest format.

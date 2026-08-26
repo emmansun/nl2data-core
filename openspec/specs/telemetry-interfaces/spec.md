@@ -1,4 +1,8 @@
-## ADDED Requirements
+## Purpose
+
+Define vendor-neutral telemetry ports for structured logs, spans, metrics, audit events, and correlation.
+
+## Requirements
 
 ### Requirement: Vendor-neutral telemetry ports
 The telemetry foundation SHALL define typed ports for structured logs, spans, metrics, audit events, and request correlation without requiring a commercial or vendor-specific backend.

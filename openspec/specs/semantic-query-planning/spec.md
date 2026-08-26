@@ -1,3 +1,7 @@
+## Purpose
+
+Define immutable, backend-neutral semantic query planning with capability checks and provenance.
+
 ## Requirements
 
 ### Requirement: Immutable backend-neutral semantic query representation
