@@ -11,6 +11,7 @@
 | `nl2data-openai` | 0.1.0 (Alpha) | Depends on `nl2data-core>=0.1.0`; `openai>=1.40,<3` |
 | `nl2data-semantic-catalog-postgres` | 0.1.0 (Alpha) | Depends on `nl2data-core>=0.1.0`; `psycopg[binary,pool]>=3.1,<4` |
 | `nl2data-mongodb` | 0.1.0 (Alpha) | Depends on `nl2data-core>=0.1.0`; `pymongo>=4.6,<5` |
+| `nl2data-workflow-postgres` | 0.1.0 (Alpha) | Depends on `nl2data-core>=0.1.0`; `psycopg[binary,pool]>=3.1,<4` |
 | Configuration schema | `schema_version: 1` (literal) | Unsupported versions fail closed — never silently downgraded |
 | Workflow state snapshots | explicit `schema_version` | Additive migrations only; newer-than-runtime schema rejected |
 | Instruction contract | versioned `ModelInstructionBundle` | Unsupported bundle versions fail closed (`INSTRUCTION_VERSION_INCOMPATIBLE`) |
@@ -66,7 +67,7 @@
 | pydantic | `>=2.0,<3` | Core dependency |
 | PyYAML | `>=6.0` | Core dependency |
 | sqlglot | `>=25.0,<30` | `sql` extra |
-| psycopg | `>=3.1,<4` (binary + pool) | `postgres` extra |
+| psycopg | `>=3.1,<4` (binary + pool) | `postgres` extra, `nl2data-workflow-postgres` |
 | pymongo | `>=4.6,<5` | `nl2data-mongodb` |
 | redis | `>=5.0,<7` | `redis` extra |
 | openai | `>=1.40,<3` | `nl2data-openai` |

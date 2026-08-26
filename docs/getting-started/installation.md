@@ -20,7 +20,8 @@ you compose them explicitly.
 | Extra | Provides | Dependency |
 | --- | --- | --- |
 | `sql` | SQL query adapter (SQLite fixtures use the standard library; `sqlglot` powers bounded SQL compilation) | `sqlglot>=25.0,<30` |
-| `postgres` | Shared workflow state backend (`PostgreSQLStateStore`) and in-core PostgreSQL discovery/conformance profiles | `psycopg[binary,pool]>=3.1,<4` |
+| `postgres` | In-core PostgreSQL discovery/conformance profiles | `psycopg[binary,pool]>=3.1,<4` |
+| `nl2data-workflow-postgres` | Shared workflow state backend (`PostgreSQLStateStore`) as a separate package | `psycopg[binary,pool]>=3.1,<4` |
 | `redis` | Redis-backed Memory provider | `redis>=5.0,<7` |
 
 ```bash
@@ -31,6 +32,19 @@ pip install "nl2data-core[sql,redis]"
 Extras are lazy: installing them does not import anything at package
 import time. Drivers are loaded only when a real service client is
 first built.
+
+## Install the optional PostgreSQL workflow state backend
+
+The PostgreSQL workflow state backend is a separate distribution implementing
+the core workflow state-store contracts using PostgreSQL:
+
+```bash
+pip install nl2data-workflow-postgres
+```
+
+It depends on `nl2data-core>=0.1.0` and
+`psycopg[binary,pool]>=3.1,<4`. The driver is loaded lazily at first use;
+importing the package does not import `psycopg`.
 
 ## Install the optional OpenAI provider
 

@@ -158,8 +158,8 @@ performed by the runtime and catalog; a human does not manually bypass them.
 bounded process-local reference catalog. It keeps immutable publications, an
 active pointer, and activation history in memory. A durable/shared Bundle
 catalog is host-owned and is not silently provided by the current core. Do not
-confuse it with `PostgreSQLStateStore`, which stores safe workflow state and
-idempotency records.
+confuse it with `nl2data-workflow-postgres`'s `PostgreSQLStateStore`, which
+stores safe workflow state and idempotency records.
 
 ## How a query references the result
 

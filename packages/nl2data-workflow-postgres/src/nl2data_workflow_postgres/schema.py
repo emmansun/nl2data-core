@@ -1,18 +1,17 @@
-"""Versioned PostgreSQL schema for the shared workflow state store.
+"""Versioned PostgreSQL schema for the workflow state backend.
 
 All tables are created inside one bounded schema (the configured
 ``namespace``), so multiple deployments sharing one database service never
 observe each other's records.  Records stay isolated by opaque tenant scope
-namespaces exactly like the SQLite store: raw tenant or principal claims are
-never persisted.  Only safe serialized snapshots and bounded identity
-columns are stored - never prompts, queries, results, credentials, or
-provider objects.
+namespaces: raw tenant or principal claims are never persisted.  Only safe
+serialized snapshots and bounded identity columns are stored - never
+prompts, queries, results, credentials, or provider objects.
 
 Migrations are additive and versioned: version ``1`` creates the full
 workflow snapshot, idempotency, lease, and schema-metadata surface.  A
 runtime never applies a migration newer than the schema version it supports,
-and a database reporting a newer schema than the runtime supports is
-rejected without modification.
+and a database reporting a newer schema than the runtime supports is rejected
+without modification.
 """
 
 from __future__ import annotations

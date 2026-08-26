@@ -20,7 +20,7 @@
 | Governed workflow runtime (deterministic) | Implemented + conformant | Conformance suite | — |
 | Query lifecycle: clarification, cancellation, handles, capabilities/health | Implemented + conformant | Integration suite | — |
 | Durable workflow state (SQLite) | Implemented + conformant | Contract suite | — |
-| Durable workflow state (PostgreSQL, leases + fencing) | Implemented + verified | Real-service CI profile | `postgres` extra + service |
+| Durable workflow state (PostgreSQL, leases + fencing) | Implemented + verified | Real-service CI profile | `nl2data-workflow-postgres` + service |
 | Memory (in-memory) | Implemented + conformant | Conformance suite | — |
 | Memory (Redis) | Implemented + verified | Real-service CI profile | `redis` extra + service |
 | SQL adapter (SQLite fixtures) | Implemented + conformant | Conformance suite | `sql` extra |

@@ -1,9 +1,9 @@
-"""Unit tests for the shared PostgreSQL workflow state backend.
+"""Unit/contract tests for the nl2data-workflow-postgres package.
 
 Covers configuration bounds, schema compatibility, safe snapshot
-serialization, tenant scope namespaces, backend error normalization, and
-bounded cleanup - the pure and store-level foundations of the shared
-backend, all exercised over the deterministic in-memory fake pool.
+serialization, tenant scope namespaces, backend error normalization,
+bounded cleanup, and core store-contract behavior - all exercised over the
+deterministic in-memory fake pool.
 """
 
 from __future__ import annotations
@@ -13,8 +13,6 @@ from datetime import timedelta
 from uuid import uuid4
 
 import pytest
-from pydantic import ValidationError
-
 from nl2data.errors import REDACTED_VALUE, ErrorCode
 from nl2data_core.workflow.durable import (
     WorkflowSerializationError,
@@ -22,29 +20,30 @@ from nl2data_core.workflow.durable import (
     serialize_snapshot,
     tenant_scope_namespace,
 )
-from nl2data_core.workflow.fake_postgres import (
-    FakePostgresPool,
-    OperationalError,
-    TimeoutError,
-    UniqueViolation,
-)
 from nl2data_core.workflow.models import (
     WorkflowState,
     WorkflowStatus,
 )
-from nl2data_core.workflow.postgres_schema import MIGRATIONS, SUPPORTED_SCHEMA_VERSION
-from nl2data_core.workflow.postgres_store import (
-    _BOOTSTRAP_DDL,
-    SQL_TEMPLATES,
-    PostgreSQLStateStore,
-)
-from nl2data_core.workflow.shared_config import SharedStoreConfig
 from nl2data_core.workflow.shared_errors import (
     SharedStoreError,
     SharedStoreErrorCode,
     normalize_shared_error,
 )
 from nl2data_core.workflow.transitions import transition
+from pydantic import ValidationError
+
+from nl2data_workflow_postgres import (
+    PostgreSQLStateStore,
+    WorkflowPostgresConfig,
+)
+from nl2data_workflow_postgres.fake_postgres import (
+    FakePostgresPool,
+    OperationalError,
+    TimeoutError,
+    UniqueViolation,
+)
+from nl2data_workflow_postgres.schema import MIGRATIONS, SUPPORTED_SCHEMA_VERSION
+from nl2data_workflow_postgres.store import _BOOTSTRAP_DDL, SQL_TEMPLATES
 
 SCOPE_A = "sha256:" + "a" * 64
 SCOPE_B = "sha256:" + "b" * 64
@@ -83,9 +82,9 @@ def make_terminal(
     return state
 
 
-class TestSharedStoreConfig:
+class TestWorkflowPostgresConfig:
     def test_defaults_are_valid_and_bounded(self) -> None:
-        config = SharedStoreConfig(namespace="shared")
+        config = WorkflowPostgresConfig(namespace="shared")
         assert config.pool_size == 5
         assert config.schema_version == SUPPORTED_SCHEMA_VERSION
         assert config.lease_renewal_margin_seconds < config.lease_ttl_seconds
@@ -94,51 +93,53 @@ class TestSharedStoreConfig:
     def test_namespace_must_be_a_safe_identifier(self) -> None:
         for bad in ("", "1shared", "shared-x", "shared.x", "shared x", "a" * 65):
             with pytest.raises(ValidationError):
-                SharedStoreConfig(namespace=bad)
+                WorkflowPostgresConfig(namespace=bad)
 
     def test_pool_and_timeout_bounds_are_enforced(self) -> None:
         with pytest.raises(ValidationError):
-            SharedStoreConfig(namespace="shared", pool_size=0)
+            WorkflowPostgresConfig(namespace="shared", pool_size=0)
         with pytest.raises(ValidationError):
-            SharedStoreConfig(namespace="shared", pool_size=65)
+            WorkflowPostgresConfig(namespace="shared", pool_size=65)
         with pytest.raises(ValidationError):
-            SharedStoreConfig(namespace="shared", connect_timeout_seconds=0.0)
+            WorkflowPostgresConfig(namespace="shared", connect_timeout_seconds=0.0)
         with pytest.raises(ValidationError):
-            SharedStoreConfig(namespace="shared", command_timeout_seconds=121.0)
+            WorkflowPostgresConfig(namespace="shared", command_timeout_seconds=121.0)
         with pytest.raises(ValidationError):
-            SharedStoreConfig(namespace="shared", pool_acquire_timeout_seconds=61.0)
+            WorkflowPostgresConfig(namespace="shared", pool_acquire_timeout_seconds=61.0)
 
     def test_schema_version_is_bounded_by_support(self) -> None:
         with pytest.raises(ValidationError):
-            SharedStoreConfig(namespace="shared", schema_version=0)
+            WorkflowPostgresConfig(namespace="shared", schema_version=0)
         with pytest.raises(ValidationError):
-            SharedStoreConfig(namespace="shared", schema_version=SUPPORTED_SCHEMA_VERSION + 1)
+            WorkflowPostgresConfig(
+                namespace="shared", schema_version=SUPPORTED_SCHEMA_VERSION + 1
+            )
 
     def test_lease_timing_must_be_consistent(self) -> None:
         with pytest.raises(ValidationError):
-            SharedStoreConfig(
+            WorkflowPostgresConfig(
                 namespace="shared",
                 lease_ttl_seconds=120.0,
                 lease_renewal_margin_seconds=120.0,
             )
         with pytest.raises(ValidationError):
-            SharedStoreConfig(
+            WorkflowPostgresConfig(
                 namespace="shared",
                 lease_ttl_seconds=120.0,
                 lease_renewal_margin_seconds=121.0,
             )
 
     def test_config_is_immutable_and_never_carries_dsn_or_credentials(self) -> None:
-        config = SharedStoreConfig(namespace="shared")
+        config = WorkflowPostgresConfig(namespace="shared")
         with pytest.raises(ValidationError):
             config.namespace = "other"
         # Unknown fields are rejected by ``extra="forbid"`` in the validator.
         with pytest.raises(ValidationError):
-            SharedStoreConfig.model_validate(
+            WorkflowPostgresConfig.model_validate(
                 {"namespace": "shared", "dsn": "postgres://user:pass@host/db"}
             )
         for secret_name in ("dsn", "url", "password", "username", "ssl_cert"):
-            assert secret_name not in SharedStoreConfig.model_fields
+            assert secret_name not in WorkflowPostgresConfig.model_fields
 
 
 class TestSchemaCompatibility:

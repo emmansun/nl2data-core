@@ -19,7 +19,7 @@ backend is ever loaded unless you compose it explicitly.
 | Public API | `import nl2data` |
 | Internal API | `nl2data_core` — contributor-only, applications must not import it |
 | Optional extras | `sql`, `postgres`, `redis` |
-| Optional sibling | `nl2data-openai` (OpenAI structured-output provider), `nl2data-mongodb` (MongoDB adapter) |
+| Optional sibling | `nl2data-openai` (OpenAI structured-output provider), `nl2data-mongodb` (MongoDB adapter), `nl2data-workflow-postgres` (PostgreSQL workflow state backend) |
 
 ## Install
 
@@ -76,7 +76,7 @@ execute real work. See the [quickstart](docs/getting-started/quickstart.md).
 | SQL adapter (PostgreSQL) | Implemented; service-verified in CI | `nl2data-postgres` package + service |
 | MongoDB adapter | Implemented; service-verified in CI | `nl2data-mongodb` package + service |
 | Durable workflow state (SQLite) | Implemented + conformant | None |
-| Shared workflow state (PostgreSQL) | Implemented; service-verified in CI | `postgres` extra + service |
+| Shared workflow state (PostgreSQL) | Implemented; service-verified in CI | `nl2data-workflow-postgres` package + service |
 | Memory (in-memory) | Implemented + conformant | None |
 | Memory (Redis) | Implemented; service-verified in CI | `redis` extra + service |
 | Metadata discovery (PostgreSQL/MongoDB) | Implemented; service-verified in CI | `nl2data-postgres`/`nl2data-mongodb` package + service |

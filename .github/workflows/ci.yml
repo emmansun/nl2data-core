@@ -40,6 +40,7 @@ jobs:
             packages/nl2data-admin-service/pyproject.toml
             packages/nl2data-postgres/pyproject.toml
             packages/nl2data-mongodb/pyproject.toml
+            packages/nl2data-workflow-postgres/pyproject.toml
 
       - name: Install core development dependencies
         run: python -m pip install --upgrade pip && python -m pip install -e ".[dev]"
@@ -59,14 +60,17 @@ jobs:
       - name: Install MongoDB adapter package
         run: python -m pip install -e packages/nl2data-mongodb
 
+      - name: Install workflow PostgreSQL package
+        run: python -m pip install -e packages/nl2data-workflow-postgres
+
       - name: Run tests
         run: python -m pytest -q
 
       - name: Run Ruff
-        run: python -m ruff check src tests packages/nl2data-openai/src packages/nl2data-semantic-catalog-postgres/src packages/nl2data-admin-service/src packages/nl2data-postgres/src packages/nl2data-mongodb/src scripts
+        run: python -m ruff check src tests packages/nl2data-openai/src packages/nl2data-semantic-catalog-postgres/src packages/nl2data-admin-service/src packages/nl2data-postgres/src packages/nl2data-mongodb/src packages/nl2data-workflow-postgres/src scripts
 
       - name: Run Mypy
-        run: python -m mypy src packages/nl2data-openai/src packages/nl2data-semantic-catalog-postgres/src packages/nl2data-admin-service/src packages/nl2data-postgres/src packages/nl2data-mongodb/src
+        run: python -m mypy src packages/nl2data-openai/src packages/nl2data-semantic-catalog-postgres/src packages/nl2data-admin-service/src packages/nl2data-postgres/src packages/nl2data-mongodb/src packages/nl2data-workflow-postgres/src
 
   docs:
     name: Documentation quality gates
@@ -88,6 +92,9 @@ jobs:
 
       - name: Install semantic catalog package
         run: python -m pip install -e packages/nl2data-semantic-catalog-postgres
+
+      - name: Install workflow PostgreSQL package
+        run: python -m pip install -e packages/nl2data-workflow-postgres
 
       - name: Run documentation checks
         run: python scripts/check_docs.py
@@ -112,6 +119,7 @@ jobs:
             packages/nl2data-admin-service/pyproject.toml
             packages/nl2data-postgres/pyproject.toml
             packages/nl2data-mongodb/pyproject.toml
+            packages/nl2data-workflow-postgres/pyproject.toml
 
       - name: Install build tooling
         run: python -m pip install --upgrade pip build
@@ -134,6 +142,9 @@ jobs:
       - name: Build MongoDB adapter distribution
         run: python -m build --wheel --outdir dist/mongodb packages/nl2data-mongodb
 
+      - name: Build workflow PostgreSQL distribution
+        run: python -m build --wheel --outdir dist/workflow-postgres packages/nl2data-workflow-postgres
+
       - name: Verify wheel metadata
         run: |
           python - <<'PY'
@@ -146,6 +157,7 @@ jobs:
           assert any("nl2data_admin_service" in wheel.name for wheel in wheels)
           assert any("nl2data_postgres" in wheel.name for wheel in wheels)
           assert any("nl2data_mongodb" in wheel.name for wheel in wheels)
+          assert any("nl2data_workflow_postgres" in wheel.name for wheel in wheels)
           print("Built wheels:")
           for wheel in wheels:
               print(wheel)

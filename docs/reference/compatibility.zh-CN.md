@@ -12,6 +12,7 @@
 | `nl2data-core` | 0.1.0（Alpha） | 公共 API 在文档化表面内保持稳定；`Development Status :: 3 - Alpha` 分类器 |
 | `nl2data-openai` | 0.1.0（Alpha） | 依赖 `nl2data-core>=0.1.0`；`openai>=1.40,<3` |
 | `nl2data-mongodb` | 0.1.0（Alpha） | 依赖 `nl2data-core>=0.1.0`；`pymongo>=4.6,<5` |
+| `nl2data-workflow-postgres` | 0.1.0（Alpha） | 依赖 `nl2data-core>=0.1.0`；`psycopg[binary,pool]>=3.1,<4` |
 | 配置 schema | `schema_version: 1`（字面量） | 不支持的版本 fail-closed——绝不静默降级 |
 | 工作流状态快照 | 显式 `schema_version` | 仅加法迁移；比运行时更新的 schema 被拒绝 |
 | 指令契约 | 带版本的 `ModelInstructionBundle` | 不支持的 bundle 版本 fail-closed（`INSTRUCTION_VERSION_INCOMPATIBLE`） |
@@ -60,7 +61,7 @@
 | pydantic | `>=2.0,<3` | 核心依赖 |
 | PyYAML | `>=6.0` | 核心依赖 |
 | sqlglot | `>=25.0,<30` | `sql` extra |
-| psycopg | `>=3.1,<4`（binary + pool） | `postgres` extra |
+| psycopg | `>=3.1,<4`（binary + pool） | `postgres` extra、`nl2data-workflow-postgres` |
 | pymongo | `>=4.6,<5` | `nl2data-mongodb` |
 | redis | `>=5.0,<7` | `redis` extra |
 | openai | `>=1.40,<3` | `nl2data-openai` |

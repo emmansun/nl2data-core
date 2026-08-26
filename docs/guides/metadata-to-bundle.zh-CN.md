@@ -133,7 +133,7 @@ active 指针切回之前有效的不可变版本，不修改旧 artifact。
 
 **存储位置**：当前提供的 `InMemorySemanticBundleCatalog` 是有界的进程内参考 catalog，
 在内存中保存不可变 publication、active 指针和激活历史。当前 core 没有自动提供共享的持久化
-Bundle catalog。不要把它和 `PostgreSQLStateStore` 混淆，后者保存的是 workflow state 和幂等记录。
+Bundle catalog。不要把它和 `nl2data-workflow-postgres` 的 `PostgreSQLStateStore` 混淆，后者保存的是 workflow state 和幂等记录。
 
 ## 查询如何引用结果
 

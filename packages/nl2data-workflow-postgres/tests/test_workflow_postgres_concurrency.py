@@ -1,11 +1,9 @@
-"""Concurrency tests for the shared workflow state backend.
+"""Concurrency tests for nl2data-workflow-postgres.
 
 Proves the backend keeps exactly one active owner, rejects stale commits,
 suppresses duplicate reservations, and never completes a terminal outcome
 twice - even when two worker threads race through separate store instances
-over the same pool.  The fake pool serializes conflicting statements on row
-locks exactly like PostgreSQL row locking, so outcomes are deterministic:
-exactly one racer wins and the loser receives a structured error.
+over the same pool.
 """
 
 from __future__ import annotations
@@ -14,15 +12,16 @@ import threading
 from collections.abc import Callable
 
 from nl2data_core.workflow.durable import IdempotencyConflictError, IdempotencyStatus
-from nl2data_core.workflow.fake_postgres import FakePostgresPool
 from nl2data_core.workflow.models import (
     WorkflowState,
     WorkflowStateError,
     WorkflowStatus,
 )
-from nl2data_core.workflow.postgres_store import PostgreSQLStateStore
 from nl2data_core.workflow.shared_errors import SharedStoreError, SharedStoreErrorCode
 from nl2data_core.workflow.transitions import transition
+
+from nl2data_workflow_postgres import PostgreSQLStateStore
+from nl2data_workflow_postgres.fake_postgres import FakePostgresPool
 
 SCOPE_A = "sha256:" + "a" * 64
 FINGERPRINT = "sha256:" + "f" * 64
@@ -103,7 +102,6 @@ class TestOneActiveOwner:
         assert isinstance(error, SharedStoreError)
         assert error.code is SharedStoreErrorCode.LEASE_BUSY
         assert error.retryable is True
-        # The winner holds the only lease with the first fencing token.
         lease = store_a.inspect_lease("wf-1", tenant_scope_fingerprint=SCOPE_A)
         assert lease is not None
         assert lease.fencing_token == 1
@@ -124,8 +122,6 @@ class TestOneActiveOwner:
             tenant_scope_fingerprint=SCOPE_A,
             ttl_seconds=60.0,
         )
-        # The stale owner's renewal races the new owner's renewal; only the
-        # current owner and token can win.
         results = race(
             lambda: store_a.renew_lease(
                 "wf-1",
@@ -167,8 +163,6 @@ class TestStaleCommitRejection:
             tenant_scope_fingerprint=SCOPE_A,
             ttl_seconds=60.0,
         )
-        # Both workers attempt a fenced commit concurrently; the stale owner
-        # is rejected and the current owner's commit lands.
         results = race(
             lambda: store_a.update(
                 "wf-1",
@@ -191,8 +185,6 @@ class TestStaleCommitRejection:
         )
         assert results["b"][0] == "ok"
         assert results["a"][0] == "error"
-        # The stale owner is rejected either by fencing or by the CAS
-        # conflict the current owner's commit left behind - never committed.
         outcome, error = results["a"]
         assert outcome == "error"
         assert isinstance(error, (SharedStoreError, WorkflowStateError))
@@ -226,8 +218,6 @@ class TestStaleCommitRejection:
         outcome, error = results[loser]
         assert outcome == "error"
         assert isinstance(error, WorkflowStateError)
-        # The loser observes the winner's commit as a status or version
-        # conflict, depending on which statement landed first.
         assert "changed concurrently" in str(error)
         assert store.get_revision("wf-1") == 2
         stored = store.get("wf-1")

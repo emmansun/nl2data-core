@@ -8,7 +8,7 @@
 
 | Symptom | Likely cause | Action |
 | --- | --- | --- |
-| `STORE_UNAVAILABLE` / `STORE_TIMEOUT` (PostgreSQL) | Service unreachable, pool timeout, or driver missing | Check service health (`pg_isready`), network, and that the `postgres` extra is installed; the error is retryable |
+| `STORE_UNAVAILABLE` / `STORE_TIMEOUT` (PostgreSQL) | Service unreachable, pool timeout, or driver missing | Check service health (`pg_isready`), network, and that the `nl2data-workflow-postgres` package is installed; the error is retryable |
 | `LEASE_BUSY` | Another worker holds the lease | Wait for lease expiry (TTL + clock tolerance) or investigate the owner; never force-kill the owner's commits |
 | `MEMORY_UNAVAILABLE` | Redis unreachable or timed out | Check `NL2DATA_REDIS_URL`, Redis health (`redis-cli ping`); the workflow degrades statelessly — Memory is optional |
 | `MONGO_UNAVAILABLE` / `METADATA_UNAVAILABLE` | PyMongo missing or MongoDB unreachable | Install the `nl2data-mongodb` package; check `NL2DATA_MONGO_URI` and `mongosh ping` |

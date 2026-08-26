@@ -109,7 +109,7 @@ model 分区绝不携带凭据；提供方秘密仍是 `secrets` 中的 `SecretR
 | 配置 | Extra | 配置位置 |
 | --- | --- | --- |
 | SQL 适配器 | `sql` | `sqlglot` 编译的有界 SQL；SQLite fixtures 无需服务 |
-| PostgreSQL 共享状态 | `postgres` | `PostgreSQLStateStore` 设置 + `NL2DATA_POSTGRES_DSN` |
+| PostgreSQL 共享状态 | `nl2data-workflow-postgres` | `WorkflowPostgresConfig` 设置 + `NL2DATA_POSTGRES_DSN` |
 | PostgreSQL 语义目录 | `nl2data-semantic-catalog-postgres` | `SemanticCatalogConfig`（命名空间 + 边界）+ 宿主注入的 DSN |
 | Redis Memory | `redis` | `RedisMemoryConfig`（命名空间 + 边界）+ 连接 URL |
 | MongoDB 适配器/发现 | `nl2data-mongodb` | `ProductionDiscoveryConfig.bounds` + `NL2DATA_MONGO_URI` |

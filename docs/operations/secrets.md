@@ -69,7 +69,7 @@ $env:NL2DATA_POSTGRES_DSN = "postgresql://localhost:5432/nl2data_test"
 $env:NL2DATA_REDIS_URL = "redis://localhost:6379"
 $env:NL2DATA_MONGO_URI = "mongodb://localhost:27017"
 $env:NL2DATA_MONGO_DATABASE = "nl2data_mongo_test"
-python -m pytest -rs tests/integration/test_postgres_shared_real.py
+python -m pytest -rs packages/nl2data-workflow-postgres/tests/test_workflow_postgres_integration.py
 ```
 
 ## Cleanup

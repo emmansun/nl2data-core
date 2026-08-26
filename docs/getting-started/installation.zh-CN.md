@@ -20,7 +20,8 @@ pip install nl2data-core
 | Extra | 提供 | 依赖 |
 | --- | --- | --- |
 | `sql` | SQL 查询适配器（SQLite fixtures 使用标准库；`sqlglot` 提供有界 SQL 编译） | `sqlglot>=25.0,<30` |
-| `postgres` | 共享工作流状态后端（`PostgreSQLStateStore`）与 PostgreSQL 发现/一致性配置 | `psycopg[binary,pool]>=3.1,<4` |
+| `postgres` | PostgreSQL 发现/一致性配置 | `psycopg[binary,pool]>=3.1,<4` |
+| `nl2data-workflow-postgres` | 共享工作流状态后端（`PostgreSQLStateStore`）作为独立包 | `psycopg[binary,pool]>=3.1,<4` |
 | `redis` | Redis 支持的 Memory 提供方 | `redis>=5.0,<7` |
 
 ```bash

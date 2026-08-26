@@ -22,7 +22,7 @@
 | 受治理工作流运行时（确定性） | Implemented + conformant | 一致性套件 | — |
 | 查询生命周期：澄清、取消、句柄、能力/健康 | Implemented + conformant | 集成套件 | — |
 | 持久工作流状态（SQLite） | Implemented + conformant | 契约套件 | — |
-| 持久工作流状态（PostgreSQL，租约 + 围栏） | Implemented + verified | 真实服务 CI 配置 | `postgres` extra + 服务 |
+| 持久工作流状态（PostgreSQL，租约 + 围栏） | Implemented + verified | 真实服务 CI 配置 | `nl2data-workflow-postgres` 包 + 服务 |
 | 内存（in-memory） | Implemented + conformant | 一致性套件 | — |
 | 内存（Redis） | Implemented + verified | 真实服务 CI 配置 | `redis` extra + 服务 |
 | SQL 适配器（SQLite fixtures） | Implemented + conformant | 一致性套件 | `sql` extra |

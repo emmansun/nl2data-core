@@ -1,13 +1,13 @@
-"""Lazy optional psycopg driver boundary for the shared state store.
+"""Lazy optional psycopg driver boundary for the PostgreSQL workflow backend.
 
 The ``psycopg``/``psycopg_pool`` packages are loaded only inside this module
-through :func:`importlib.import_module`, so importing ``nl2data``,
-``nl2data_core.workflow``, or the store module never imports a database
-driver.  The store accepts an injected pool (fake or host-managed) or a
-DSN; the DSN path is constructed here with bounded connect/command timeouts
-and a bounded pool, and DSNs are never included in errors.  Driver errors
-are classified by class name first (so injected fake clients work without
-the driver installed) and by the real driver only when present.
+through :func:`importlib.import_module`, so importing
+``nl2data_workflow_postgres`` or the store module never imports a database
+driver.  The store accepts an injected pool (fake or host-managed) or a DSN;
+the DSN path is constructed here with bounded connect/command timeouts and a
+bounded pool, and DSNs are never included in errors.  Driver errors are
+classified by class name first (so injected fake clients work without the
+driver installed) and by the real driver only when present.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from importlib import import_module
 from importlib.util import find_spec
 from typing import Any, cast
 
-from .shared_errors import SharedStoreError, SharedStoreErrorCode
+from nl2data_core.workflow.shared_errors import SharedStoreError, SharedStoreErrorCode
 
 
 def driver_available() -> bool:

@@ -35,8 +35,9 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
-from .models import WorkflowStatus
-from .postgres_store import SQL_TEMPLATES
+from nl2data_core.workflow.models import WorkflowStatus
+
+from .store import SQL_TEMPLATES
 
 #: Terminal status values can never be overwritten by a CAS update.
 _TERMINAL_STATUS_VALUES = frozenset(

@@ -43,9 +43,7 @@ from nl2data_core.views import (
     SemanticEntityDescriptor,
     SemanticFieldDescriptor,
 )
-from nl2data_core.workflow.fake_postgres import FakePostgresPool as WorkflowFakePool
 from nl2data_core.workflow.models import WorkflowState, WorkflowStatus
-from nl2data_core.workflow.postgres_store import PostgreSQLStateStore
 from nl2data_semantic_catalog_postgres.errors import (
     SemanticCatalogError,
     SemanticCatalogErrorCode,
@@ -56,6 +54,8 @@ from nl2data_semantic_catalog_postgres.store import (
     SQL_TEMPLATES,
     PostgreSQLSemanticCatalog,
 )
+from nl2data_workflow_postgres import PostgreSQLStateStore
+from nl2data_workflow_postgres.fake_postgres import FakePostgresPool as WorkflowFakePool
 
 TENANT_A = "sha256:" + "a" * 64
 TENANT_B = "sha256:" + "b" * 64

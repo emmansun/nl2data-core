@@ -1,12 +1,10 @@
-"""Optional real-PostgreSQL integration profile for the shared state backend.
+"""Real-PostgreSQL integration profile for nl2data-workflow-postgres.
 
-Runs the shared workflow state backend against a real PostgreSQL service,
-proving schema bootstrap/versioning, state compare-and-set, atomic
+Proves schema bootstrap/versioning, state compare-and-set, atomic
 idempotency, lease lifecycle with takeover, fencing, and bounded cleanup
-are durable across connections.  When the driver is missing, the DSN is
-not configured, or the service is unreachable the outcome is skipped -
-never a pass.  Every run uses a unique schema namespace with best-effort
-cleanup so runs never observe each other's records.
+are durable across connections.  When the driver is missing, the DSN is not
+configured, or the service is unreachable the outcome is skipped - never a
+pass.  Every run uses a unique schema namespace with best-effort cleanup.
 """
 
 from __future__ import annotations
@@ -20,20 +18,22 @@ from typing import Any
 from uuid import uuid4
 
 import pytest
-
 from nl2data_core.workflow.durable import IdempotencyConflictError, IdempotencyStatus
 from nl2data_core.workflow.models import (
     WorkflowState,
     WorkflowStateError,
     WorkflowStatus,
 )
-from nl2data_core.workflow.postgres_client import build_pool, driver_available
-from nl2data_core.workflow.postgres_store import PostgreSQLStateStore
-from nl2data_core.workflow.shared_config import SharedStoreConfig
 from nl2data_core.workflow.shared_errors import SharedStoreError, SharedStoreErrorCode
 from nl2data_core.workflow.transitions import transition
 
-#: Service location; override with NL2DATA_POSTGRES_DSN for CI/dev services.
+from nl2data_workflow_postgres import (
+    PostgreSQLStateStore,
+    WorkflowPostgresConfig,
+    build_pool,
+    driver_available,
+)
+
 DSN = os.environ.get(
     "NL2DATA_POSTGRES_DSN", "postgres://postgres:postgres@127.0.0.1:5432/postgres"
 )
@@ -42,8 +42,6 @@ SCOPE_A = "sha256:" + "a" * 64
 SCOPE_B = "sha256:" + "b" * 64
 FINGERPRINT = "sha256:" + "f" * 64
 
-#: Short lease TTL so takeover/expiry tests stay fast; the configured clock
-#: tolerance is reduced accordingly so expiry is observed within ~2.6s.
 TTL_SECONDS = 2.0
 TAKEOVER_WAIT_SECONDS = TTL_SECONDS + 0.6
 
@@ -74,7 +72,7 @@ def shared_backend() -> Iterator[tuple[PostgreSQLStateStore, Any]]:
     """A real store over a unique schema namespace; skipped when unavailable."""
     if not driver_available():
         pytest.skip("the psycopg driver is not installed; the real postgres profile is skipped")
-    namespace = f"shared_{uuid4().hex[:10]}"
+    namespace = f"workflow_{uuid4().hex[:10]}"
     pool = build_pool(
         DSN,
         pool_size=2,
@@ -93,7 +91,7 @@ def shared_backend() -> Iterator[tuple[PostgreSQLStateStore, Any]]:
         pytest.skip("postgres service is unavailable; the real postgres profile is skipped")
     store = PostgreSQLStateStore(
         pool=pool,
-        config=SharedStoreConfig(
+        config=WorkflowPostgresConfig(
             namespace=namespace, clock_tolerance_seconds=0.5
         ),
     )
@@ -115,7 +113,7 @@ class TestSchemaBootstrap:
         assert store.schema_version() == 1
         reopened = PostgreSQLStateStore(
             pool=pool,
-            config=SharedStoreConfig(
+            config=WorkflowPostgresConfig(
                 namespace=store.schema, clock_tolerance_seconds=0.5
             ),
         )
@@ -184,7 +182,6 @@ class TestIdempotency:
         assert replay is not None
         assert replay.status is IdempotencyStatus.COMPLETED
         assert replay.terminal_outcome_fingerprint == FINGERPRINT
-        # The same request identity re-reserves the completed record stably.
         stable = store.reserve_idempotency(
             "key-1",
             request_id="req-1",
@@ -299,7 +296,6 @@ class TestCleanup:
         self, shared_backend: tuple[PostgreSQLStateStore, Any]
     ) -> None:
         store, _ = shared_backend
-        # Terminal snapshot older than the cutoff is removed.
         store.create(make_state(workflow_id="wf-done", scope=SCOPE_A))
         store.update(
             "wf-done",
@@ -308,7 +304,6 @@ class TestCleanup:
             expected_version=1,
             tenant_scope_fingerprint=SCOPE_A,
         )
-        # A running workflow survives.
         store.create(make_state(workflow_id="wf-live", scope=SCOPE_A))
         store.update(
             "wf-live",
@@ -321,7 +316,6 @@ class TestCleanup:
             expected_version=1,
             tenant_scope_fingerprint=SCOPE_A,
         )
-        # An expired idempotency record is removed; a fresh one survives.
         store.reserve_idempotency(
             "key-stale",
             request_id="req-stale",
@@ -335,7 +329,6 @@ class TestCleanup:
             workflow_id="wf-live",
             tenant_scope_fingerprint=SCOPE_A,
         )
-        # An expired lease is removed; a valid one survives.
         store.acquire_lease(
             "wf-stale-lease",
             owner_id="worker-stale",

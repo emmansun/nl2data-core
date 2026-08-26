@@ -20,14 +20,14 @@
 
 ## PostgreSQL (shared workflow state)
 
-**Extra**: `postgres` (`psycopg[binary,pool]>=3.1,<4`).
+**Distribution**: `nl2data-workflow-postgres` (`psycopg[binary,pool]>=3.1,<4`).
 
 **Endpoint injection**: `NL2DATA_POSTGRES_DSN` (default
 `postgresql://localhost:5432/nl2data_test`). Real-service profiles read
 the DSN only when the pool is first built; it is never stored in
 configuration models or included in errors.
 
-**Key settings** (`PostgreSQLStateStore`):
+**Key settings** (`WorkflowPostgresConfig`):
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
@@ -204,7 +204,7 @@ attempt budget).
 | Profile | Services | Command |
 | --- | --- | --- |
 | Deterministic (default) | None | `python -m pytest` |
-| Real services | PostgreSQL 16, Redis 7, MongoDB 7 (containers with health checks) | integration workflow: `python -m pytest -q -rs tests/integration/test_postgres_shared_real.py tests/integration/test_postgres_discovery_real.py tests/integration/test_postgres_catalog_integration.py tests/integration/test_redis_memory_real.py tests/integration/test_mongodb_real.py tests/integration/test_mongodb_discovery_real.py tests/conformance/test_postgres_conformance.py tests/conformance/test_mongodb_conformance.py` |
+| Real services | PostgreSQL 16, Redis 7, MongoDB 7 (containers with health checks) | integration workflow: `python -m pytest -q -rs tests/integration/test_postgres_discovery_real.py tests/integration/test_postgres_catalog_integration.py tests/integration/test_redis_memory_real.py tests/integration/test_mongodb_real.py tests/integration/test_mongodb_discovery_real.py tests/conformance/test_postgres_conformance.py tests/conformance/test_mongodb_conformance.py packages/nl2data-workflow-postgres/tests/test_workflow_postgres_integration.py` |
 
 Every skip reason is surfaced with `-rs`; a reachable service that fails
 its tests fails the job.

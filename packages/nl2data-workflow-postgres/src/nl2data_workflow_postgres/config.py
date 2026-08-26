@@ -1,4 +1,4 @@
-"""Validated bounds for the shared PostgreSQL workflow state store.
+"""Bounded configuration for the PostgreSQL workflow state backend.
 
 The configuration carries only behavior bounds - never connection strings
 or credentials.  A DSN (when the host manages its own pool) is passed to the
@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .postgres_schema import SUPPORTED_SCHEMA_VERSION
+from .schema import SUPPORTED_SCHEMA_VERSION
 
 #: Schema namespace: bounded identifier so every derived table name stays safe.
 _SCHEMA_PATTERN = r"^[A-Za-z][A-Za-z0-9_]{0,63}$"
@@ -28,8 +28,8 @@ _MAX_RENEWAL_MARGIN_SECONDS = 3_600.0
 _MAX_CLOCK_TOLERANCE_SECONDS = 60.0
 
 
-class SharedStoreConfig(BaseModel):
-    """Immutable bounded configuration for one shared state store.
+class WorkflowPostgresConfig(BaseModel):
+    """Immutable bounded configuration for the PostgreSQL workflow backend.
 
     ``namespace`` is required and must be unique per application and
     environment: it names the PostgreSQL schema that owns every workflow,
@@ -75,7 +75,7 @@ class SharedStoreConfig(BaseModel):
     )
 
     @model_validator(mode="after")
-    def _consistent_lease_timing(self) -> SharedStoreConfig:
+    def _consistent_lease_timing(self) -> WorkflowPostgresConfig:
         if self.lease_renewal_margin_seconds >= self.lease_ttl_seconds:
             raise ValueError(
                 "lease renewal margin must be smaller than the lease TTL"

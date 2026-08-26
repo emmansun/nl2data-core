@@ -1,25 +1,21 @@
-"""Shared PostgreSQL-backed workflow state, idempotency, and lease store.
+"""PostgreSQL-backed workflow state, idempotency, and lease store.
 
 Implements the replaceable :class:`StateStore` and :class:`IdempotencyStore`
 contracts plus the optional :class:`WorkflowLeaseStore` and
 :class:`FencedStateStore` capabilities, so multiple workers sharing one
 database coordinate through durable snapshots, atomic idempotency keys, and
 lease ownership with monotonic fencing tokens.  Safe snapshots reuse the
-same ``serialize_snapshot``/``deserialize_snapshot`` boundary as SQLite;
-raw prompts, queries, results, credentials, and provider objects are
-rejected before they reach the database.
+core ``serialize_snapshot``/``deserialize_snapshot`` boundary; raw prompts,
+queries, results, credentials, and provider objects are rejected before they
+reach the database.
 
 Every mutation is transactional and conditional: compare-and-set updates
-verify workflow identity, expected revision/status, tenant scope, and -
-when ownership is supplied - the current lease owner and fencing token in
-one statement, so a stale worker can never silently overwrite newer state
-or commit after takeover.  Backend failures (outages, timeouts, schema
-mismatches) surface as normalized :class:`SharedStoreError` values that
-never leak DSNs, credentials, or raw driver text.
-
-The psycopg driver is optional and lazy: the store accepts an injected pool
-(fake or host-managed) or a DSN, and the driver is imported only through
-:mod:`nl2data_core.workflow.postgres_client`.
+verify workflow identity, expected revision/status, tenant scope, and - when
+ownership is supplied - the current lease owner and fencing token in one
+statement, so a stale worker can never silently overwrite newer state or
+commit after takeover.  Backend failures (outages, timeouts, schema
+mismatches) surface as normalized :class:`SharedStoreError` values that never
+leak DSNs, credentials, or raw driver text.
 """
 
 from __future__ import annotations
@@ -32,8 +28,7 @@ from typing import Any
 
 from nl2data._redact import REDACTED_VALUE
 from nl2data.errors import NL2DataError
-
-from .durable import (
+from nl2data_core.workflow.durable import (
     DurableWorkflowRecord,
     IdempotencyConflictError,
     IdempotencyRecord,
@@ -43,30 +38,28 @@ from .durable import (
     serialize_snapshot,
     tenant_scope_namespace,
 )
-from .lease import (
-    FencedStateStore,
+from nl2data_core.workflow.lease import (
     WorkflowLease,
-    WorkflowLeaseStore,
     validate_lease_identity,
 )
-from .models import (
+from nl2data_core.workflow.models import (
     TERMINAL_STATUSES,
     WorkflowState,
     WorkflowStateError,
     WorkflowStatus,
     WorkflowTransitionError,
 )
-from .postgres_client import (
+from nl2data_core.workflow.shared_errors import SharedStoreError, SharedStoreErrorCode
+
+from .client import (
     build_pool,
     is_connect_error,
     is_duplicate_key_error,
     is_serialization_error,
     is_timeout_error,
 )
-from .postgres_schema import MIGRATIONS, SUPPORTED_SCHEMA_VERSION
-from .shared_config import SharedStoreConfig
-from .shared_errors import SharedStoreError, SharedStoreErrorCode
-from .store import StateStore
+from .config import WorkflowPostgresConfig
+from .schema import MIGRATIONS, SUPPORTED_SCHEMA_VERSION
 
 _FINGERPRINT_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 _IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_\-\.]{0,127}$")
@@ -276,7 +269,7 @@ class PostgreSQLStateStore:
         self,
         *,
         dsn: str | None = None,
-        config: SharedStoreConfig | None = None,
+        config: WorkflowPostgresConfig | None = None,
         pool: Any | None = None,
         now: Callable[[], datetime] | None = None,
     ) -> None:
@@ -289,7 +282,7 @@ class PostgreSQLStateStore:
         """
         if (dsn is None) == (pool is None):
             raise ValueError("exactly one of 'dsn' or 'pool' is required")
-        self._config = config or SharedStoreConfig(namespace="shared")
+        self._config = config or WorkflowPostgresConfig(namespace="shared")
         self._schema = self._config.namespace
         self._quoted_schema = f'"{self._schema}"'
         self._sql = {
@@ -1166,12 +1159,8 @@ class PostgreSQLStateStore:
             )
 
 
-#: Re-exported protocol markers so hosts can type-check the capability.
+#: Re-exported public surface of this module.
 __all__ = [
-    "FencedStateStore",
     "PostgreSQLStateStore",
     "SQL_TEMPLATES",
-    "StateStore",
-    "WorkflowLease",
-    "WorkflowLeaseStore",
 ]

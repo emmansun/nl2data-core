@@ -1,9 +1,9 @@
-"""Shared-store contract tests for the PostgreSQL workflow state backend.
+"""Shared-store contract tests for nl2data-workflow-postgres.
 
 Verifies the replaceable shared backend contract over the deterministic
 in-memory fake pool: cross-instance visibility, transactional
-compare-and-set, atomic idempotency, lease lifecycle, stale-owner
-takeover, and fencing - so any compliant backend must behave the same.
+compare-and-set, atomic idempotency, lease lifecycle, stale-owner takeover,
+and fencing.
 """
 
 from __future__ import annotations
@@ -11,22 +11,21 @@ from __future__ import annotations
 from datetime import timedelta
 
 import pytest
-
 from nl2data_core.workflow.durable import (
     IdempotencyConflictError,
     IdempotencyStatus,
-    tenant_scope_namespace,
 )
-from nl2data_core.workflow.fake_postgres import FakePostgresPool
 from nl2data_core.workflow.models import (
     WorkflowState,
     WorkflowStateError,
     WorkflowStatus,
     WorkflowTransitionError,
 )
-from nl2data_core.workflow.postgres_store import PostgreSQLStateStore
 from nl2data_core.workflow.shared_errors import SharedStoreError, SharedStoreErrorCode
 from nl2data_core.workflow.transitions import transition
+
+from nl2data_workflow_postgres import PostgreSQLStateStore
+from nl2data_workflow_postgres.fake_postgres import FakePostgresPool
 
 SCOPE_A = "sha256:" + "a" * 64
 SCOPE_B = "sha256:" + "b" * 64
@@ -160,9 +159,6 @@ class TestCompareAndSet:
     def test_update_with_mismatched_scope_is_rejected(self) -> None:
         store, _ = make_store()
         store.create(make_state(scope=SCOPE_A))
-        # The lookup scope matches the stored row, but the new snapshot drifts
-        # to another tenant scope and a CAS precondition fails - the update is
-        # rejected as a scope mismatch before any mutation is applied.
         with pytest.raises(WorkflowStateError) as excinfo:
             store.update(
                 "wf-1",
@@ -200,7 +196,6 @@ class TestCompareAndSet:
                 fencing_token=lease.fencing_token,
             )
         assert excinfo.value.code is SharedStoreErrorCode.FENCING_REJECTED
-        # The stored state was not modified by the fenced failure.
         stored = store.get("wf-1")
         assert stored is not None and stored.status is WorkflowStatus.QUEUED
 
@@ -478,7 +473,6 @@ class TestTakeoverAndFencing:
                 fencing_token=old.fencing_token,
             )
         assert excinfo.value.code is SharedStoreErrorCode.FENCING_REJECTED
-        # Worker B's fenced mutation succeeds with the new token.
         lease = store.inspect_lease("wf-1", tenant_scope_fingerprint=SCOPE_A)
         assert lease is not None
         store.update(
@@ -535,4 +529,5 @@ class TestTakeoverAndFencing:
         )
         lease = store.inspect_lease("wf-1", tenant_scope_fingerprint=SCOPE_A)
         assert lease is not None
+        from nl2data_core.workflow.durable import tenant_scope_namespace
         assert tenant_scope_namespace(SCOPE_A) not in (lease.owner_id, lease.workflow_id)

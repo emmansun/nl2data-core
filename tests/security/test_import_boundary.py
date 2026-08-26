@@ -199,15 +199,27 @@ class TestPostgresImportBoundary:
     def test_importing_the_workflow_package_loads_no_psycopg(self) -> None:
         before = _loaded_top_levels()
         import nl2data_core.workflow  # noqa: F401
-        import nl2data_core.workflow.fake_postgres  # noqa: F401
         import nl2data_core.workflow.lease  # noqa: F401
-        import nl2data_core.workflow.postgres_client  # noqa: F401
-        import nl2data_core.workflow.postgres_schema  # noqa: F401
-        import nl2data_core.workflow.postgres_store  # noqa: F401
-        import nl2data_core.workflow.shared_config  # noqa: F401
         import nl2data_core.workflow.shared_errors  # noqa: F401
 
         _assert_no_new_forbidden(before)
+
+    def test_in_core_workflow_postgres_modules_are_removed(self) -> None:
+        """The legacy in-core PostgreSQL workflow backend was removed; only
+        the nl2data-workflow-postgres package remains.
+        """
+        for name in (
+            "nl2data_core.workflow.fake_postgres",
+            "nl2data_core.workflow.postgres_client",
+            "nl2data_core.workflow.postgres_schema",
+            "nl2data_core.workflow.postgres_store",
+            "nl2data_core.workflow.shared_config",
+        ):
+            try:
+                __import__(name)
+            except ImportError:
+                continue
+            raise AssertionError(f"{name} must be removed from the core distribution")
 
     def test_shared_store_modules_never_import_optional_providers(self) -> None:
         """The shared-state modules use only importlib; a static scan must

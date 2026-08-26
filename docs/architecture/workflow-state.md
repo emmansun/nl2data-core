@@ -105,7 +105,7 @@ claimed as success.
 | Backend | When to use | Notes |
 | --- | --- | --- |
 | `SQLiteStateStore` | Single local worker | Standard library only; file locking serializes writers |
-| `PostgreSQLStateStore` | Multiple workers / Pods sharing one deployment | `postgres` extra; one bounded schema namespace per deployment; leases + fencing; versioned migrations |
+| `PostgreSQLStateStore` | Multiple workers / Pods sharing one deployment | `nl2data-workflow-postgres` package; one bounded schema namespace per deployment; leases + fencing; versioned migrations |
 
 A future optional backend (for example `nl2data-langgraph`) must pass
 the same mandatory conformance suite

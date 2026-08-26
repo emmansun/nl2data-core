@@ -561,7 +561,7 @@ def check_reconciliation(checker: Checker) -> None:
         "client_factory",
         "run_live_openai_evaluation",
         "RedisMemoryConfig",
-        "SharedStoreConfig",
+        "WorkflowPostgresConfig",
         "SemanticSnapshotCatalog",
         "PostgreSQLSemanticCatalog",
         "SemanticCatalogConfig",
@@ -576,7 +576,12 @@ def check_reconciliation(checker: Checker) -> None:
         ROOT / "src" / "nl2data_core" / "memory" / "redis_config.py"
     ).read_text(encoding="utf-8")
     shared_source = (
-        ROOT / "src" / "nl2data_core" / "workflow" / "shared_config.py"
+        ROOT
+        / "packages"
+        / "nl2data-workflow-postgres"
+        / "src"
+        / "nl2data_workflow_postgres"
+        / "config.py"
     ).read_text(encoding="utf-8")
     services = (DOCS / "operations" / "services.md").read_text(encoding="utf-8")
     for pattern in (r"\^[A-Za-z0-9][A-Za-z0-9_\\\-\\.]{0,63}\$", r"\^[A-Za-z][A-Za-z0-9_]{0,63}\$"):
@@ -600,11 +605,11 @@ def check_reconciliation(checker: Checker) -> None:
         from nl2data_core.memory.redis_config import (
             RedisMemoryConfig,  # type: ignore[import-not-found]
         )
-        from nl2data_core.workflow.shared_config import (
-            SharedStoreConfig,  # type: ignore[import-not-found]
-        )
         from nl2data_semantic_catalog_postgres.config import (  # type: ignore[import-not-found]
             SemanticCatalogConfig,
+        )
+        from nl2data_workflow_postgres.config import (
+            WorkflowPostgresConfig,  # type: ignore[import-not-found]
         )
     except Exception as exc:  # noqa: BLE001
         checker.report(ROOT, f"cannot import configuration models for reconciliation: {exc}")
@@ -686,18 +691,18 @@ def check_reconciliation(checker: Checker) -> None:
             2.0,
         ),
         (
-            "SharedStoreConfig.lease_ttl_seconds",
-            field_default(SharedStoreConfig, "lease_ttl_seconds"),
+            "WorkflowPostgresConfig.lease_ttl_seconds",
+            field_default(WorkflowPostgresConfig, "lease_ttl_seconds"),
             120.0,
         ),
         (
-            "SharedStoreConfig.lease_renewal_margin_seconds",
-            field_default(SharedStoreConfig, "lease_renewal_margin_seconds"),
+            "WorkflowPostgresConfig.lease_renewal_margin_seconds",
+            field_default(WorkflowPostgresConfig, "lease_renewal_margin_seconds"),
             20.0,
         ),
         (
-            "SharedStoreConfig.clock_tolerance_seconds",
-            field_default(SharedStoreConfig, "clock_tolerance_seconds"),
+            "WorkflowPostgresConfig.clock_tolerance_seconds",
+            field_default(WorkflowPostgresConfig, "clock_tolerance_seconds"),
             2.0,
         ),
         (
