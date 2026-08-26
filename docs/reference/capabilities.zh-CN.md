@@ -26,7 +26,7 @@
 | 内存（in-memory） | Implemented + conformant | 一致性套件 | — |
 | 内存（Redis） | Implemented + verified | 真实服务 CI 配置 | `redis` extra + 服务 |
 | SQL 适配器（SQLite fixtures） | Implemented + conformant | 一致性套件 | `sql` extra |
-| SQL 适配器（PostgreSQL） | Implemented + verified | 真实服务 CI 配置 | `postgres` extra + 服务 |
+| SQL 适配器（PostgreSQL） | Implemented + verified | 真实服务 CI 配置 | `nl2data-postgres` 包 + 服务 |
 | MongoDB 适配器 | Implemented + verified | 真实服务 CI 配置 | `nl2data-mongodb` + 服务 |
 | 元数据发现 + 生产配置 | Implemented + verified | 真实服务 CI 配置 | `nl2data-postgres`/`nl2data-mongodb` 包 + 服务 |
 | AI 意图解析 + 指令契约 | Implemented + conformant | 评估套件（fake provider） | — |

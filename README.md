@@ -73,7 +73,7 @@ execute real work. See the [quickstart](docs/getting-started/quickstart.md).
 | Semantic IR, View/Bundle resolution | Implemented + conformant | None |
 | Governed workflow runtime (deterministic) | Implemented + conformant | None |
 | SQL adapter (SQLite fixtures) | Implemented + conformant | `sql` extra (`sqlglot`) |
-| SQL adapter (PostgreSQL) | Implemented; service-verified in CI | `postgres` extra + service |
+| SQL adapter (PostgreSQL) | Implemented; service-verified in CI | `nl2data-postgres` package + service |
 | MongoDB adapter | Implemented; service-verified in CI | `nl2data-mongodb` package + service |
 | Durable workflow state (SQLite) | Implemented + conformant | None |
 | Shared workflow state (PostgreSQL) | Implemented; service-verified in CI | `postgres` extra + service |
