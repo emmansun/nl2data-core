@@ -27,8 +27,8 @@
 | 内存（Redis） | Implemented + verified | 真实服务 CI 配置 | `redis` extra + 服务 |
 | SQL 适配器（SQLite fixtures） | Implemented + conformant | 一致性套件 | `sql` extra |
 | SQL 适配器（PostgreSQL） | Implemented + verified | 真实服务 CI 配置 | `postgres` extra + 服务 |
-| MongoDB 适配器 | Implemented + verified | 真实服务 CI 配置 | `mongodb` extra + 服务 |
-| 元数据发现 + 生产配置 | Implemented + verified | 真实服务 CI 配置 | `postgres`/`mongodb` extra + 服务 |
+| MongoDB 适配器 | Implemented + verified | 真实服务 CI 配置 | `nl2data-mongodb` + 服务 |
+| 元数据发现 + 生产配置 | Implemented + verified | 真实服务 CI 配置 | `nl2data-postgres`/`nl2data-mongodb` extra + 服务 |
 | AI 意图解析 + 指令契约 | Implemented + conformant | 评估套件（fake provider） | — |
 | OpenAI 结构化输出提供方 | Implemented；按需实时验证 | `run_openai_live.py` | `nl2data-openai` + 凭据 |
 | 租户隔离 + 范围指纹 | Implemented + conformant | 一致性套件 | — |
@@ -52,7 +52,7 @@
 - 公共 `nl2data` API 是唯一受支持的应用程序表面；`nl2data_core` 仅限
   贡献者使用，恕不另行通知即可变更。
 - 可选兄弟发行包（`nl2data-openai`、`nl2data-semantic-catalog-postgres`、
-  `nl2data-admin-service`）通过其文档化的包表面受支持；其内部实现恕不另行通知
+  `nl2data-admin-service`、`nl2data-postgres`、`nl2data-mongodb`）通过其文档化的包表面受支持；其内部实现恕不另行通知
   即可变更。
 - 真实服务与实时提供方结果**依赖环境**：`skipped`/`unavailable` 结果
   绝不是验证。只有 `verified` 才算服务兼容性的证据。

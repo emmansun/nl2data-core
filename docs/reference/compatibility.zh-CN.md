@@ -11,6 +11,7 @@
 | --- | --- | --- |
 | `nl2data-core` | 0.1.0（Alpha） | 公共 API 在文档化表面内保持稳定；`Development Status :: 3 - Alpha` 分类器 |
 | `nl2data-openai` | 0.1.0（Alpha） | 依赖 `nl2data-core>=0.1.0`；`openai>=1.40,<3` |
+| `nl2data-mongodb` | 0.1.0（Alpha） | 依赖 `nl2data-core>=0.1.0`；`pymongo>=4.6,<5` |
 | 配置 schema | `schema_version: 1`（字面量） | 不支持的版本 fail-closed——绝不静默降级 |
 | 工作流状态快照 | 显式 `schema_version` | 仅加法迁移；比运行时更新的 schema 被拒绝 |
 | 指令契约 | 带版本的 `ModelInstructionBundle` | 不支持的 bundle 版本 fail-closed（`INSTRUCTION_VERSION_INCOMPATIBLE`） |
@@ -34,6 +35,10 @@
   - 将组合输入移入 `CompositionProfile`。
   - 配置仍通过公共的 `load_config` 加载；类型化配置模型在公共配置 API
     发布前保持内部。
+- **MongoDB 适配器已迁移至 `nl2data-mongodb`**：核心中的
+  `nl2data_core.adapters.mongodb` 模块作为自包含的临时兼容路径保留，
+  行为等价并发出 `DeprecationWarning`。新代码应直接从 `nl2data_mongodb`
+  导入；该兼容路径将在未来主版本中移除。
 - **原始载荷绝不成为任何契约的一部分**：SQL/MQL、提示词、结果与凭据
   在任何地方都没有序列化形式——没有任何东西依赖它们，因此也没有任何
   东西可以与它们“兼容”。

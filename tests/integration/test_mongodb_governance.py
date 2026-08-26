@@ -9,11 +9,6 @@ never reached.  A spy executor records every driver call.
 from __future__ import annotations
 
 from nl2data import ErrorCode, OutcomeStatus, QueryRequest
-from nl2data_core.adapters.mongodb.adapter import MongoQueryAdapter
-from nl2data_core.adapters.mongodb.compile import compile_mongo_ir
-from nl2data_core.adapters.mongodb.fake import FakeMongoExecutor
-from nl2data_core.adapters.mongodb.models import MongoAdapterConfig, MongoProfile
-from nl2data_core.adapters.mongodb.normalize import predicate_fingerprint
 from nl2data_core.fixtures import MONGO_SEED
 from nl2data_core.governance.models import PolicyScope
 from nl2data_core.planning.ir.models import (
@@ -26,6 +21,11 @@ from nl2data_core.planning.ir.models import (
 from nl2data_core.planning.models import ColumnBinding, PhysicalBinding
 from nl2data_core.planning.validation import AuthorizedView
 from nl2data_core.workflow.runner import QueryExecutionRunner, StaticPlanResolver
+from nl2data_mongodb.adapter import MongoQueryAdapter
+from nl2data_mongodb.compile import compile_mongo_ir
+from nl2data_mongodb.config import MongoAdapterConfig, MongoProfile
+from nl2data_mongodb.fake import FakeMongoExecutor
+from nl2data_mongodb.normalize import predicate_fingerprint
 
 FIELDS = frozenset(
     {"order_id", "customer_id", "amount", "region", "status", "created_at"}

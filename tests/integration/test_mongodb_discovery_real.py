@@ -22,8 +22,6 @@ from uuid import uuid4
 
 import pytest
 
-from nl2data_core.adapters.mongodb.metadata import MongoMetadataDiscoverer
-from nl2data_core.adapters.mongodb.pymongo_executor import PyMongoExecutor
 from nl2data_core.metadata import (
     DiscoveryAuthorization,
     DiscoveryOutcomeCategory,
@@ -37,6 +35,9 @@ from nl2data_core.metadata import (
     check_snapshot_activation,
     run_production_discovery,
 )
+from nl2data_mongodb.config import MongoAdapterConfig, MongoProfile
+from nl2data_mongodb.metadata import MongoMetadataDiscoverer
+from nl2data_mongodb.pymongo_executor import PyMongoExecutor
 
 #: Service location; override with NL2DATA_MONGO_URI for CI/dev services.
 MONGO_URI = os.environ.get("NL2DATA_MONGO_URI", "mongodb://127.0.0.1:27017")
@@ -107,9 +108,11 @@ def make_discoverer(
     allowed_collections: frozenset[str],
     executor: PyMongoExecutor | None = None,
 ) -> MongoMetadataDiscoverer:
+    """A package discoverer bound to the fixture executor and source id."""
+    config = MongoAdapterConfig(profile=MongoProfile.PY_MONGO, source_id="mongodb")
     return MongoMetadataDiscoverer(
-        handle=executor if executor is not None else source["executor"],
-        source_id="mongodb",
+        config,
+        executor=executor if executor is not None else source["executor"],
         allowed_collections=allowed_collections,
     )
 

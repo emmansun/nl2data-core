@@ -16,12 +16,6 @@ import sqlite3
 import pytest
 
 from nl2data_core.adapters.models import ValidationContext
-from nl2data_core.adapters.mongodb import (
-    MongoAdapterConfig,
-    MongoAdapterError,
-    MongoProfile,
-    MongoQueryAdapter,
-)
 from nl2data_core.adapters.sql import SqlMetadataDiscoverer, SqlQueryAdapter
 from nl2data_core.adapters.sql.adapter import SQLAdapterError
 from nl2data_core.bundles import (
@@ -61,6 +55,9 @@ from nl2data_core.views import (
     ViewRegistry,
 )
 from nl2data_core.views.models import SemanticViewDefinition, ViewProvenance
+from nl2data_mongodb import MongoAdapterConfig, MongoQueryAdapter
+from nl2data_mongodb.config import MongoProfile
+from nl2data_mongodb.models import MongoAdapterError
 
 CTX = ValidationContext()
 SQL_QUERY = "SELECT customer_id FROM customers LIMIT 5"

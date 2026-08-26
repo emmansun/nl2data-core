@@ -21,7 +21,7 @@ you compose them explicitly.
 | --- | --- | --- |
 | `sql` | SQL query adapter (SQLite fixtures use the standard library; `sqlglot` powers bounded SQL compilation) | `sqlglot>=25.0,<30` |
 | `postgres` | Shared workflow state backend (`PostgreSQLStateStore`) and in-core PostgreSQL discovery/conformance profiles | `psycopg[binary,pool]>=3.1,<4` |
-| `mongodb` | MongoDB query adapter and metadata discovery profile | `pymongo>=4.6,<5` |
+| `mongodb` | Legacy in-core MongoDB adapter driver (deprecated); install `nl2data-mongodb` for the adapter package | `pymongo>=4.6,<5` |
 | `redis` | Redis-backed Memory provider | `redis>=5.0,<7` |
 
 ```bash
@@ -60,6 +60,20 @@ It depends on `nl2data-core>=0.1.0` and
 `psycopg[binary,pool]>=3.1,<4`. The driver is loaded lazily at first
 use; importing the package does not import `psycopg`.
 
+## Install the optional MongoDB adapter
+
+The MongoDB adapter is a separate distribution implementing the
+provider-neutral metadata discovery and `QueryAdapter` contracts for
+MongoDB:
+
+```bash
+pip install nl2data-mongodb
+```
+
+It depends on `nl2data-core>=0.1.0` and `pymongo>=4.6,<5`. The driver
+is loaded lazily at first use; importing the package does not import
+`pymongo`.
+
 ## Install the optional PostgreSQL semantic catalog
 
 The durable semantic catalog is a separate distribution implementing the
@@ -81,6 +95,7 @@ pip install -e ".[dev]"
 pip install -e packages/nl2data-openai
 pip install -e packages/nl2data-semantic-catalog-postgres
 pip install -e packages/nl2data-postgres
+pip install -e packages/nl2data-mongodb
 ```
 
 ## Install for development

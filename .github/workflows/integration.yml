@@ -70,12 +70,14 @@ jobs:
           cache-dependency-path: |
             pyproject.toml
             packages/nl2data-semantic-catalog-postgres/pyproject.toml
+            packages/nl2data-mongodb/pyproject.toml
 
       - name: Install integration dependencies
         run: >-
           python -m pip install --upgrade pip
           && python -m pip install -e ".[dev,postgres,redis,mongodb]"
           && python -m pip install -e packages/nl2data-semantic-catalog-postgres
+          && python -m pip install -e packages/nl2data-mongodb
 
       - name: Run real service integration tests
         # Discovery profiles are classified explicitly: an unreachable service
@@ -92,3 +94,4 @@ jobs:
           tests/integration/test_mongodb_discovery_real.py
           tests/conformance/test_postgres_conformance.py
           tests/conformance/test_mongodb_conformance.py
+          packages/nl2data-mongodb/tests/test_package_integration.py

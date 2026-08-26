@@ -10,6 +10,7 @@
 | `nl2data-core` | 0.1.0 (Alpha) | Public API is stable within the documented surface; `Development Status :: 3 - Alpha` classifier |
 | `nl2data-openai` | 0.1.0 (Alpha) | Depends on `nl2data-core>=0.1.0`; `openai>=1.40,<3` |
 | `nl2data-semantic-catalog-postgres` | 0.1.0 (Alpha) | Depends on `nl2data-core>=0.1.0`; `psycopg[binary,pool]>=3.1,<4` |
+| `nl2data-mongodb` | 0.1.0 (Alpha) | Depends on `nl2data-core>=0.1.0`; `pymongo>=4.6,<5` |
 | Configuration schema | `schema_version: 1` (literal) | Unsupported versions fail closed — never silently downgraded |
 | Workflow state snapshots | explicit `schema_version` | Additive migrations only; newer-than-runtime schema rejected |
 | Instruction contract | versioned `ModelInstructionBundle` | Unsupported bundle versions fail closed (`INSTRUCTION_VERSION_INCOMPATIBLE`) |
@@ -40,6 +41,12 @@
   - Configuration still loads through public `load_config`; the typed
     configuration model remains internal until a public configuration
     API ships.
+- **MongoDB adapter moved to `nl2data-mongodb`**: the in-core
+  `nl2data_core.adapters.mongodb` module remains as a temporary
+  self-contained compatibility path with equivalent behavior,
+  deprecated and emitting `DeprecationWarning`. New code should import
+  from `nl2data_mongodb`; the legacy path will be removed in a future
+  major release.
 - **Raw payloads never become part of any contract**: SQL/MQL, prompts,
   results, and credentials have no serialized form anywhere — nothing
   depends on them, so nothing can be "compatible" with them.

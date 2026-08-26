@@ -12,7 +12,6 @@ stay comparable across backend mapping orders.
 from __future__ import annotations
 
 import asyncio
-import warnings
 from collections.abc import Mapping
 from typing import Any
 
@@ -37,7 +36,10 @@ from nl2data_core.metadata.protocol import (
 )
 
 from .client import MongoClientHandle
+from .config import MongoAdapterConfig, MongoProfile
+from .executor import MongoExecutor
 from .models import MongoUnavailableError
+from .pymongo_executor import PyMongoExecutor
 
 
 def _collect_paths(document: Mapping[str, Any], *, max_fields: int) -> tuple[str, ...]:
@@ -179,26 +181,44 @@ class MongoMetadataDiscoverer:
 
     def __init__(
         self,
-        handle: MongoClientHandle,
+        config: MongoAdapterConfig | MongoClientHandle,
         *,
-        source_id: str = "mongodb",
+        executor: MongoExecutor | None = None,
         allowed_collections: frozenset[str] | None = None,
-        max_collections: int = 100,
-        max_fields_per_collection: int = 200,
+        allowed_fields: frozenset[str] | None = None,
     ) -> None:
-        self._handle = handle
-        self._source_id = source_id
+        if isinstance(config, MongoClientHandle):
+            self._config = MongoAdapterConfig(profile=MongoProfile.FAKE)
+            self._executor = config.executor
+            self._handle = config
+        else:
+            self._config = config
+            if executor is not None:
+                self._executor = executor
+            elif config.database is None:
+                raise ValueError("MongoDB discovery requires a configured database")
+            else:
+                self._executor = PyMongoExecutor(
+                    config.resolve_uri(),
+                    config.database,
+                    server_selection_timeout_ms=config.server_selection_timeout_ms,
+                )
+            self._handle = MongoClientHandle(self._executor)
         self._allowed_collections = allowed_collections
-        self._max_collections = max_collections
-        self._max_fields_per_collection = max_fields_per_collection
+        self._allowed_fields = allowed_fields
+
+    @property
+    def handle(self) -> MongoClientHandle:
+        """The bound client handle (adapter-internal boundary only)."""
+        return self._handle
 
     def capability(self) -> MetadataDiscoveryCapability:
         """Declare the discovery bounds this backend supports."""
         return MetadataDiscoveryCapability(
             backend="mongodb",
             supported=True,
-            max_objects=self._max_collections,
-            max_fields_per_object=self._max_fields_per_collection,
+            max_objects=self._config.max_collections,
+            max_fields_per_object=self._config.max_fields_per_collection,
             supports_statistics=False,
             supports_sampling=True,
             description="bounded dotted-path discovery without raw values",
@@ -206,22 +226,12 @@ class MongoMetadataDiscoverer:
 
     async def discover(self, config: MetadataDiscoveryConfig) -> MetadataSnapshot:
         """Discover a bounded canonical snapshot, failing closed on unavailability."""
-        warnings.warn(
-            "nl2data_core.adapters.mongodb.MongoMetadataDiscoverer is deprecated; "
-            "migrate to nl2data_mongodb.MongoMetadataDiscoverer.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
         if not self._handle.available():
             raise MetadataUnavailableError(
                 "the mongodb driver or service is unavailable for discovery",
                 details={"cause_type": "Unavailable"},
             )
-        effective_collections = (
-            self._allowed_collections
-            if self._allowed_collections is not None
-            else None
-        )
+        effective_collections = self._allowed_collections
         if config.allowed_objects:
             if effective_collections is None:
                 effective_collections = config.allowed_objects
@@ -232,18 +242,24 @@ class MongoMetadataDiscoverer:
                 "no collections are authorized for metadata discovery",
                 details={"authorized_collections": "0"},
             )
+        effective_fields = self._allowed_fields
+        if config.allowed_fields:
+            if effective_fields is None:
+                effective_fields = config.allowed_fields
+            else:
+                effective_fields &= config.allowed_fields
         try:
             return await asyncio.wait_for(
                 asyncio.to_thread(
                     discover_metadata,
                     self._handle,
-                    source_id=self._source_id,
+                    source_id=self._config.source_id or "mongodb",
                     allowed_collections=effective_collections,
-                    max_collections=min(config.max_objects, self._max_collections),
+                    max_collections=min(config.max_objects, self._config.max_collections),
                     max_fields_per_collection=min(
-                        config.max_fields_per_object, self._max_fields_per_collection
+                        config.max_fields_per_object, self._config.max_fields_per_collection
                     ),
-                    allowed_fields=config.allowed_fields or None,
+                    allowed_fields=effective_fields,
                 ),
                 timeout=config.timeout_seconds,
             )
@@ -257,3 +273,7 @@ class MongoMetadataDiscoverer:
                 "mongodb metadata discovery exceeded the authorized timeout",
                 details={"timeout_seconds": str(config.timeout_seconds)},
             ) from error
+
+    async def close(self) -> None:
+        """Release the underlying client handle."""
+        self._handle.close()

@@ -81,6 +81,20 @@ connection pool, statement timeout, and result bounds. The `psycopg`
 driver is loaded lazily at first use and never imported at package
 import time.
 
+### Example: MongoDB adapter package (`nl2data-mongodb`)
+
+The MongoDB adapter is a sibling distribution (`nl2data-mongodb`)
+implementing both the `MetadataDiscoverer` and `QueryAdapter` ports.
+`MongoAdapterConfig` carries a host-injected URI reference, bounded
+collection/path/sample limits, and read-only client settings. Discovery
+returns core `MetadataSnapshot` values with canonical dotted paths;
+execution enforces pipeline/stage/operator validation, tenant scope,
+and result bounds. The `pymongo` driver is loaded lazily at first use
+and never imported at package import time. The legacy in-core
+`nl2data_core.adapters.mongodb` path remains self-contained with
+equivalent behavior and emits a `DeprecationWarning`; migrate to the
+package.
+
 ## Adding a model provider
 
 1. **Implement the `ModelProvider` port** (internal

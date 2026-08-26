@@ -14,15 +14,6 @@ import os
 import pytest
 
 from nl2data_core.adapters.models import AdapterLimits, ValidationContext
-from nl2data_core.adapters.mongodb.adapter import MongoQueryAdapter
-from nl2data_core.adapters.mongodb.compile import compile_mongo_ir
-from nl2data_core.adapters.mongodb.fake import FakeMongoExecutor
-from nl2data_core.adapters.mongodb.models import (
-    MongoAdapterConfig,
-    MongoProfile,
-    mongo_spec_json,
-)
-from nl2data_core.adapters.mongodb.pymongo_executor import PyMongoExecutor
 from nl2data_core.fixtures import MONGO_RESULT_ASSERTIONS, MONGO_SEED
 from nl2data_core.planning.ir.models import (
     IRFilter,
@@ -32,6 +23,12 @@ from nl2data_core.planning.ir.models import (
     SemanticQueryIR,
 )
 from nl2data_core.planning.models import ColumnBinding, PhysicalBinding
+from nl2data_mongodb.adapter import MongoQueryAdapter
+from nl2data_mongodb.compile import compile_mongo_ir
+from nl2data_mongodb.config import MongoAdapterConfig, MongoProfile
+from nl2data_mongodb.fake import FakeMongoExecutor
+from nl2data_mongodb.models import mongo_spec_json
+from nl2data_mongodb.pymongo_executor import PyMongoExecutor
 
 #: Service location; override with NL2DATA_MONGO_URI for CI/dev services.
 MONGO_URI = os.environ.get("NL2DATA_MONGO_URI", "mongodb://127.0.0.1:27017")
