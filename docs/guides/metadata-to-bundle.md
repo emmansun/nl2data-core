@@ -254,6 +254,7 @@ semantics rather than treating process memory as a production database.
 ## Related pages
 
 - [Metadata lifecycle](../architecture/metadata-lifecycle.md) — contract and drift policy
-- [Metadata lifecycle](../architecture/metadata-lifecycle.md) — Bundle usage and compatibility policy
+- [Semantic layer](../architecture/semantic-layer.md) — descriptors, views, projections, multi-root sources
+- [CompositionProfile reference](../reference/composition-profile.md) — every profile field with examples
 - [Evidence and fingerprints](../architecture/evidence-and-fingerprints.md) — safe identity references
 - [Services](../operations/services.md) — source connection profiles

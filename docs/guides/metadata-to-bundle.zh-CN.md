@@ -217,5 +217,7 @@ Discovery 和 Bundle 的持久化是 Host 管理的扩展点。多进程生产�
 ## 相关页面
 
 - [元数据生命周期](../architecture/metadata-lifecycle.md) — 契约与 drift policy
+- [语义层](../architecture/semantic-layer.zh-CN.md) — 描述符、视图、投影与多根数据源
+- [CompositionProfile 参考](../reference/composition-profile.zh-CN.md) — 每个 profile 字段及示例
 - [证据与指纹](../architecture/evidence-and-fingerprints.zh-CN.md) — 安全 identity 引用
 - [服务配置](../operations/services.md) — 数据源连接 profile

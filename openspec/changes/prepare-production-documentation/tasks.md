@@ -39,3 +39,10 @@
 - [x] 5.3 Add scans preventing tokens, DSNs, credentials, raw prompts, and raw provider/result payloads from documentation and examples.
 - [x] 5.4 Reconcile documentation claims with source models, tests, OpenSpec specs, and package metadata; run full CI checks.
 - [x] 5.5 Validate bilingual navigation, translation status markers, internal links, and representative English/Chinese code examples without requiring exact prose parity.
+
+## 6. Semantic Layer and Composition Reference
+
+- [x] 6.1 Add an architecture page explaining the Semantic View/Bundle layer (descriptor, view definition, resolution context, projection, authorized view, runtime consumption) with a Mermaid diagram, reader question, and text equivalent; document multi-root semantics and the one-root-per-query physical boundary (English normative + Chinese translation).
+- [x] 6.2 Add a field-by-field `CompositionProfile` reference page with construction examples (pre-built runtime port, deterministic parts, metadata-lifecycle projection, multi-root data source), reconciled with the source model (English normative + Chinese translation).
+- [x] 6.3 Correct the misleading "(all optional)" wording in the composition guide; document the executability gate (pre-built runtime or the four deterministic parts) and link the reference page.
+- [x] 6.4 Register the new pages in the bilingual docs index, fix related-page links, and pass all documentation quality gates (check_docs, openspec validate, full test suite).

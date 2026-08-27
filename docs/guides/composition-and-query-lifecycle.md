@@ -15,7 +15,23 @@ profile binds either:
    received from your own composition layer or implemented yourself, or
 2. **The deterministic composition parts** — query adapter, policy scope,
    authorized view, plan resolver, model provider, state store, tenant
-   context, Memory, telemetry (all optional).
+   context, Memory, telemetry.
+
+No field is structurally required — an empty profile is valid and yields
+only the safe `NOT_CONFIGURED` fallback. Executability is a separate gate:
+
+- With `runtime` bound, the profile executes when `runtime.is_configured()`
+  is `true`.
+- Without it, the deterministic profile executes only when **all four
+  runtime parts** are bound: `adapter`, `policy_scope`, `view`, and
+  `plan_resolver`. Missing any of them silently yields `NOT_CONFIGURED`
+  outcomes, so treat the four-part gate as required even though every
+  individual field is optional.
+
+The physical `binding` is not part of the gate: it is optional compiler
+context (the default SQL compiler falls back to the `sqlite` dialect
+without it). Every field, its source, and worked examples are documented
+in the [CompositionProfile reference](../reference/composition-profile.md).
 
 An empty profile yields the safe `NOT_CONFIGURED` fallback and never loads
 optional backends. Composition is separate from authentication: the facade
@@ -28,7 +44,8 @@ from nl2data import CompositionProfile, create_facade
 
 facade = create_facade(
     composition=CompositionProfile(
-        # runtime=...  or the deterministic parts:
+        # runtime=...  or the deterministic parts (executable only with
+        # adapter + policy_scope + view + plan_resolver together):
         # adapter=..., policy_scope=..., view=..., plan_resolver=...,
         # provider=..., state_store=..., tenant_context=..., memory=...,
         # telemetry=...
@@ -193,6 +210,10 @@ execution.
 
 ## Next steps
 
+- [CompositionProfile reference](../reference/composition-profile.md) —
+  every profile field with construction examples.
+- [Semantic layer](../architecture/semantic-layer.md) — descriptors,
+  views, projections, and multi-root sources.
 - [Execution flow](../architecture/execution-flow.md) — what happens
   between `aquery` and the protected outcome.
 - [Workflow state](../architecture/workflow-state.md) — leases, fencing,

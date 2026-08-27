@@ -49,7 +49,7 @@ Getting-started and developer documentation SHALL include tested installation, c
 - **THEN** credentials/endpoints are supplied through temporary environment or host secret injection and are removed after use
 
 ### Requirement: Architecture and operations are documented
-Architecture docs SHALL explain Semantic Query IR, Semantic View/Bundle, instruction/provider, compiler/governance, tenant isolation, workflow state, Memory, and evidence boundaries. Operations docs SHALL explain service prerequisites, configuration, health/failure behavior, retention, drift, rollback, and at-least-once semantics.
+Architecture docs SHALL explain Semantic Query IR, Semantic View/Bundle, instruction/provider, compiler/governance, tenant isolation, workflow state, Memory, and evidence boundaries. Architecture docs SHALL also explain Semantic View resolution and projection consumption by the runtime, including multi-root data sources and the one-root-per-query physical compilation boundary. Operations docs SHALL explain service prerequisites, configuration, health/failure behavior, retention, drift, rollback, and at-least-once semantics.
 
 #### Scenario: Responsibility boundary is clear
 - **WHEN** a reader asks who owns system instructions, provider calls, compilation, authorization, or result protection
@@ -58,6 +58,25 @@ Architecture docs SHALL explain Semantic Query IR, Semantic View/Bundle, instruc
 #### Scenario: Failure and rollback behavior is discoverable
 - **WHEN** a service or metadata source is unavailable or a snapshot drifts
 - **THEN** the operations docs describe safe failure, active-state preservation, recovery, and rollback
+
+#### Scenario: Multi-root source is understood
+- **WHEN** a source exposes several root entities across physical objects
+- **THEN** the architecture docs explain that every query selects exactly one root entity, that a view may authorize many roots, and that each profile compiles against one physical object
+
+### Requirement: Composition profile inputs are documented field by field
+The project SHALL provide a reference page that documents every public `CompositionProfile` field (port fields, opaque deterministic parts, scalar settings) with its source, default, executability role, and construction examples covering a pre-built runtime port, the deterministic parts, metadata-lifecycle-derived projections, and multi-root data sources.
+
+#### Scenario: Reader composes a deterministic profile
+- **WHEN** an integrator binds adapter, policy scope, view, and plan resolver
+- **THEN** the reference explains each field, the required four-part gate, the safe NOT_CONFIGURED fallback, and the optional role of the physical binding
+
+#### Scenario: Reader composes a lifecycle profile
+- **WHEN** a host resolves a Semantic View projection from the metadata lifecycle
+- **THEN** the reference shows how `projection` and `AuthorizedView.from_projection` fold into the profile and what evidence the runtime derives from them
+
+#### Scenario: Reader composes for multiple roots
+- **WHEN** a data source has several root tables
+- **THEN** the reference shows one profile per physical object with object-scoped policy, view, binding, and plan resolver
 
 ### Requirement: Architecture documentation is visual and accessible
 Architecture documentation SHALL combine explanatory prose with source-controlled Mermaid diagrams for the end-to-end execution flow, component/package boundaries, governance and authorization boundaries, workflow-state lifecycle, and metadata-to-bundle lifecycle. Each diagram SHALL state the reader question it answers, identify ownership and trust boundaries, and have a nearby text explanation that remains meaningful when diagrams are not rendered.

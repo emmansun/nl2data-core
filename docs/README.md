@@ -26,7 +26,7 @@ public facade: `import nl2data`.
 | [Architecture](architecture/overview.md) | Architects, security reviewers, and maintainers | Basic knowledge of the public API | [Architecture overview](architecture/overview.md) |
 | [Development](development/local-development.md) | Contributors to this repository | Python tooling (pytest, mypy, ruff) | [Local development](development/local-development.md) |
 | [Operations](operations/services.md) | Operators and platform engineers | PostgreSQL, Redis, MongoDB, or OpenAI access as needed | [Service configuration](operations/services.md) |
-| [Reference](reference/configuration.md) | Everyone looking up a specific fact | None | [Configuration](reference/configuration.md), [Error codes](reference/error-codes.md) |
+| [Reference](reference/configuration.md) | Everyone looking up a specific fact | None | [Configuration](reference/configuration.md), [Error codes](reference/error-codes.md), [CompositionProfile](reference/composition-profile.md) |
 
 ## Language navigation
 
@@ -48,6 +48,7 @@ and security warnings, and they always link to the canonical English page.
 | [Governance and tenancy](architecture/governance-and-tenancy.md) | English-first（暂无中文翻译，请阅读英文原文） |
 | [Workflow state](architecture/workflow-state.md) | English-first（暂无中文翻译，请阅读英文原文） |
 | [Metadata lifecycle](architecture/metadata-lifecycle.md) | English-first（暂无中文翻译，请阅读英文原文） |
+| [Semantic layer](architecture/semantic-layer.md) | [语义层 (简体中文)](architecture/semantic-layer.zh-CN.md) — 完整翻译 |
 | [Evidence and fingerprints](architecture/evidence-and-fingerprints.md) | [证据与指纹 (简体中文)](architecture/evidence-and-fingerprints.zh-CN.md) — 完整翻译 |
 | [Local development](development/local-development.md) | English-first（暂无中文翻译，请阅读英文原文） |
 | [Adding an adapter or provider](development/adding-adapter-or-provider.md) | English-first（暂无中文翻译，请阅读英文原文） |
@@ -55,6 +56,7 @@ and security warnings, and they always link to the canonical English page.
 | [Secrets and live testing](operations/secrets.md) | [密钥与实时测试 (简体中文)](operations/secrets.zh-CN.md) — 完整翻译 |
 | [Troubleshooting](operations/troubleshooting.md) | English-first（暂无中文翻译，请阅读英文原文） |
 | [Configuration reference](reference/configuration.md) | [配置参考 (简体中文)](reference/configuration.zh-CN.md) — 完整翻译 |
+| [CompositionProfile reference](reference/composition-profile.md) | [CompositionProfile 参考 (简体中文)](reference/composition-profile.zh-CN.md) — 完整翻译 |
 | [Error codes](reference/error-codes.md) | English-first（暂无中文翻译，请阅读英文原文） |
 | [Capabilities and support](reference/capabilities.md) | [能力与支持 (简体中文)](reference/capabilities.zh-CN.md) — 完整翻译 |
 | [Compatibility](reference/compatibility.md) | [兼容性 (简体中文)](reference/compatibility.zh-CN.md) — 完整翻译 |
@@ -63,7 +65,7 @@ and security warnings, and they always link to the canonical English page.
 ## Reader paths
 
 - **New user**: [Installation](getting-started/installation.md) → [Quickstart](getting-started/quickstart.md) → [Metadata to active Bundle](guides/metadata-to-bundle.md) → [Composition and query lifecycle](guides/composition-and-query-lifecycle.md) → [Mainflow demo](guides/mainflow-demo.md)
-- **Integrator**: [Architecture overview](architecture/overview.md) → [Package boundaries](architecture/package-boundaries.md) → [Governance and tenancy](architecture/governance-and-tenancy.md)
+- **Integrator**: [Architecture overview](architecture/overview.md) → [Semantic layer](architecture/semantic-layer.md) → [Package boundaries](architecture/package-boundaries.md) → [Governance and tenancy](architecture/governance-and-tenancy.md) → [CompositionProfile reference](reference/composition-profile.md)
 - **Operator**: [Service configuration](operations/services.md) → [Secrets and live testing](operations/secrets.md) → [Troubleshooting](operations/troubleshooting.md)
 - **Contributor**: [Local development](development/local-development.md) → [Adding an adapter or provider](development/adding-adapter-or-provider.md) → [Architecture](architecture/overview.md)
 
