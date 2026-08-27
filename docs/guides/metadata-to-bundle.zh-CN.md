@@ -157,6 +157,49 @@ resolved = registry.resolve("sales", trusted_resolution_context)
 Bundle 或 snapshot fingerprint 不匹配时，解析或激活会 fail closed，防止 Schema、策略、租户或
 Bundle 上下文变化后继续使用旧语义定义。
 
+## 从解析后的 View 到 CompositionProfile
+
+解析后的投影（projection）是流程交给应用运行时的查询期产物。Host 将其折叠进 `NL2Data` facade
+使用的公开 `CompositionProfile`：
+
+| Profile 字段 | 来源 | 说明 |
+| --- | --- | --- |
+| `view` | `AuthorizedView.from_projection(projection)` | 携带 `source_id`、`root_entity_ids`、`field_ids` 以及绑定的 `view_id`/`view_version`/`view_fingerprint`（即投影 fingerprint） |
+| `projection` | 解析得到的 `ResolvedViewProjection` | 把 Bundle 身份与 fingerprint 绑定进编译、授权与结果血缘证据；运行时据此自动推导授权视图和语义引用 |
+| `adapter` | Host 构建，与 discovery 边界一致 | `allowed_objects`/`allowed_columns` 应与快照 allowlist 一致 |
+| `policy_scope` | Host 自有治理 | 必须先于解析存在：其 `policy_fingerprint` 即视图的 `bound_policy_fingerprint`；`resource_ids` 使用物理对象名 |
+| `binding` | Host 自有，来自 discovery 快照或源配置 | Bundle descriptor 只含语义信息，物理名从不进入其中 |
+| `tenant_context` | Host 自有可信 scope | 其 `scope_fingerprint` 是解析的闸门（`bound_tenant_scope_fingerprint`） |
+
+顺序很重要：租户 scope 与 policy scope 必须先于视图解析存在，因为它们的 fingerprint 是
+`ResolutionContext` 的输入。物理 binding 和 adapter 与 Bundle 无关。
+
+```python
+from nl2data import CompositionProfile, NL2Data
+from nl2data_core.planning.validation import AuthorizedView
+
+# policy 与 tenant 先行：它们的 fingerprint 是视图解析的输入
+projection = registry.resolve("sales_view", trusted_resolution_context).projection
+
+profile = CompositionProfile(
+    provider=model_provider,
+    adapter=query_adapter,
+    policy_scope=policy_scope,                      # resource_ids = 物理对象名
+    view=AuthorizedView.from_projection(projection),
+    projection=projection,                          # 全链路 Bundle 证据
+    binding=physical_binding,                       # 物理名，Host 自有
+    plan_resolver=plan_resolver,
+    state_store=state_store,
+    tenant_context=scope,
+)
+
+facade = NL2Data(composition=profile)
+```
+
+绑定 `projection` 后，运行时自动从投影推导授权视图与语义引用，所有证据记录（checkpoint、授权、
+结果血缘）都携带解析视图 fingerprint 与 Bundle 身份；不绑定时，Host 必须自行构建 `view` 与
+`semantic_references`，Bundle 身份只能通过视图 fingerprint 间接承诺。
+
 ## 哪些变化会重新触发流程？
 
 | 变化 | 从哪一步重新开始 | 典型动作 |

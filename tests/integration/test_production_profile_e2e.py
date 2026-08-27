@@ -17,7 +17,14 @@ import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from nl2data import ErrorCode, OutcomeStatus, QueryContext, QueryRequest
+from nl2data import (
+    CompositionProfile,
+    ErrorCode,
+    NL2Data,
+    OutcomeStatus,
+    QueryContext,
+    QueryRequest,
+)
 from nl2data_core.adapters.sql.adapter import SqlQueryAdapter
 from nl2data_core.adapters.sql.discovery import SqlMetadataDiscoverer
 from nl2data_core.ai.fake import FakeModelProvider
@@ -963,3 +970,77 @@ class TestSafeOperationalEvidence:
         payload_text = json.dumps(health.safe_payload())
         for name in ("orders", "order_id", "amount", "region", "created_at"):
             assert name not in payload_text
+
+
+class TestPublicFacadeBindsResolvedProjection:
+    async def test_projection_reaches_runtime_through_composition_profile(
+        self, tmp_path: Path
+    ) -> None:
+        """The public facade forwards the resolved projection to the runtime:
+        the view-bound workflow records resolved-view and bundle evidence."""
+        store = SQLiteStateStore(tmp_path / "durable.db")
+        try:
+            db_path = provision_db(tmp_path)
+            result = await run_production_discovery(
+                make_discoverer(db_path), make_production_config()
+            )
+            snapshot = result.snapshot
+            assert snapshot is not None
+            bundle = bundle_from_snapshot(snapshot)
+            scope = make_tenant_scope()
+            policy_scope = make_policy_scope(scope)
+            definition = make_view_definition(bundle.descriptor, policy_scope, scope)
+            registry = make_registry(bundle, definition)
+            resolution = registry.resolve(
+                "sales_view",
+                make_resolution_context(
+                    scope=scope,
+                    policy_scope=policy_scope,
+                    snapshot=snapshot,
+                    bundle=bundle,
+                ),
+            )
+            assert resolution.kind == "resolved"
+            projection = resolution.projection
+            assert projection is not None
+
+            adapter = CountingAdapter(
+                dialect="sqlite",
+                db_path=db_path,
+                allowed_objects=frozenset({"orders"}),
+                allowed_columns=FIELDS,
+                max_rows=100,
+            )
+            profile = CompositionProfile(
+                provider=FakeModelProvider(default_response=INTENT),
+                adapter=adapter,
+                policy_scope=policy_scope,
+                view=AuthorizedView.from_projection(projection),
+                plan_resolver=StaticPlanResolver(None),
+                binding=BINDING,
+                state_store=store,
+                tenant_context=scope,
+                projection=projection,
+            )
+            facade = NL2Data(composition=profile)
+            await facade.initialize()
+
+            outcome = await facade.aquery(
+                make_request("req-facade-projection", "wf-facade-projection")
+            )
+            assert outcome.status == OutcomeStatus.SUCCEEDED
+            assert adapter.executions == 1
+
+            checkpoint = store.get_checkpoint(
+                "wf-facade-projection",
+                "req-facade-projection",
+                tenant_scope_fingerprint=scope.scope_fingerprint,
+            )
+            assert checkpoint is not None
+            assert (
+                checkpoint.compatibility_fingerprints["semantic"]
+                == projection.fingerprint
+            )
+            assert checkpoint.compatibility_fingerprints["view"].startswith("sha256:")
+        finally:
+            store.close()

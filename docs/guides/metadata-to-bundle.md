@@ -187,6 +187,54 @@ A Bundle or snapshot fingerprint mismatch causes resolution or activation to
 fail closed. This prevents a query from using an old semantic definition after
 schema, policy, tenant, or Bundle context has changed.
 
+## From the resolved View to a CompositionProfile
+
+The resolved projection is the lifecycle's query-time handoff to the
+application runtime. The host folds it into the public `CompositionProfile`
+used by the `NL2Data` facade:
+
+| Profile part | Source | Notes |
+| --- | --- | --- |
+| `view` | `AuthorizedView.from_projection(projection)` | Carries `source_id`, `root_entity_ids`, `field_ids`, and the bound `view_id`/`view_version`/`view_fingerprint` (the projection fingerprint) |
+| `projection` | The resolved `ResolvedViewProjection` | Binds Bundle identity and fingerprint into compilation, authorization, and result-lineage evidence; the runtime derives the authorized view and semantic references from it |
+| `adapter` | Host, mirroring the discovery bounds | `allowed_objects`/`allowed_columns` should match the snapshot allowlist |
+| `policy_scope` | Host-owned governance | Must exist before resolution: its `policy_fingerprint` is the view's `bound_policy_fingerprint`; `resource_ids` use physical object names |
+| `binding` | Host-owned, from the discovery snapshot or source config | The Bundle descriptor is semantic-only; physical names never enter it |
+| `tenant_context` | Host-owned trusted scope | Its `scope_fingerprint` gates resolution (`bound_tenant_scope_fingerprint`) |
+
+Order matters: the tenant scope and policy scope must exist **before** view
+resolution, because their fingerprints are inputs to `ResolutionContext`.
+The physical binding and the adapter are independent of the Bundle.
+
+```python
+from nl2data import CompositionProfile, NL2Data
+from nl2data_core.planning.validation import AuthorizedView
+
+# policy + tenant first: their fingerprints feed view resolution
+projection = registry.resolve("sales_view", trusted_resolution_context).projection
+
+profile = CompositionProfile(
+    provider=model_provider,
+    adapter=query_adapter,
+    policy_scope=policy_scope,                      # resource_ids = physical objects
+    view=AuthorizedView.from_projection(projection),
+    projection=projection,                          # bundle evidence end to end
+    binding=physical_binding,                       # physical names, host-owned
+    plan_resolver=plan_resolver,
+    state_store=state_store,
+    tenant_context=scope,
+)
+
+facade = NL2Data(composition=profile)
+```
+
+When `projection` is bound, the runtime builds the authorized view and the
+semantic references from the projection automatically, and every evidence
+record (checkpoints, authorization, result lineage) carries the resolved-view
+fingerprint and the Bundle identity. Without it, the host must build `view`
+and `semantic_references` itself, and Bundle identity commits only
+transitively through the view fingerprint.
+
 ## What changes trigger the lifecycle again?
 
 | Change | Repeat from | Typical action |

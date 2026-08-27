@@ -166,6 +166,8 @@ class CompositionProfile(BaseModel):
     policy_scope: Any = None
     #: Authorized semantic view (opaque internal type).
     view: Any = None
+    #: Resolved Semantic View projection (opaque internal type).
+    projection: Any = None
     #: Physical binding used for IR compilation (opaque internal type).
     binding: Any = None
     #: Model invocation configuration (opaque internal type).

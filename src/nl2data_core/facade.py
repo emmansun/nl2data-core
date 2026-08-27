@@ -106,6 +106,7 @@ def _build_deterministic_runtime(profile: CompositionProfile) -> Any | None:
         idempotency_ttl_seconds=profile.idempotency_ttl_seconds,
         approval_required=profile.approval_required,
         now=profile.now,
+        projection=profile.projection,
     )
 
 
