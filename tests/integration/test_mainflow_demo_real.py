@@ -49,10 +49,14 @@ def _require_postgres_service() -> Any:
 
 
 def _require_seeded_dataset(connection: Any) -> None:
-    """Skip when the reference tables were not seeded (skipped outcome)."""
+    """Skip when the reference tables were not seeded (skipped outcome).
+
+    Note: the ``with connection:`` transaction context closes the connection
+    on exit (psycopg >= 3.3), so the probe executes without it and the caller
+    keeps the connection for subsequent queries.
+    """
     try:
-        with connection:
-            connection.execute("SELECT 1 FROM orders LIMIT 1")
+        connection.execute("SELECT 1 FROM orders LIMIT 1").fetchone()
     except Exception:
         pytest.skip(
             "demo dataset is not seeded; run python demo/seed/seed.py --scale small"
@@ -99,10 +103,12 @@ class TestDemoEvidenceSuite:
         suite = yaml.safe_load(DEMO_QUESTIONS.read_text(encoding="utf-8"))
         try:
             for entry in suite["questions"]:
-                with connection:
-                    cursor = connection.execute(entry["evidence_sql"])
+                cursor = connection.execute(entry["evidence_sql"])
+                try:
                     columns = [column.name for column in cursor.description]
                     rows = cursor.fetchall()
+                finally:
+                    cursor.close()
                 assert columns == entry["shape_check"]["columns"], entry["id"]
                 shape = entry["shape_check"]
                 if "exact_rows" in shape:

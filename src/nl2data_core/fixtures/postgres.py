@@ -213,9 +213,12 @@ class PostgresFixtureProfile(FixtureProfile):
         )
 
     def _drop_all(self, connection: Any) -> None:
-        connection.execute(f"DROP TABLE IF EXISTS {_META_TABLE}")
+        # CASCADE keeps the clean-slate contract even when leftover tables
+        # (for example the seeded mainflow demo dataset) carry foreign-key
+        # dependencies between the fixture table names.
+        connection.execute(f"DROP TABLE IF EXISTS {_META_TABLE} CASCADE")
         for table in SCHEMA:
-            connection.execute(f"DROP TABLE IF EXISTS {table}")
+            connection.execute(f"DROP TABLE IF EXISTS {table} CASCADE")
 
     def _create_all(self, connection: Any) -> None:
         for ddl in SCHEMA.values():

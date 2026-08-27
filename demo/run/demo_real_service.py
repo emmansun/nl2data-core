@@ -122,7 +122,11 @@ def _build_profile(*, dsn: str, redis_url: str | None) -> CompositionProfile:
         allowed_fields=FIELDS,
         source_id="sales",
     )
-    adapter = PostgresQueryAdapter(config)
+    adapter = PostgresQueryAdapter(
+        config,
+        allowed_objects=frozenset({"orders"}),
+        allowed_columns=FIELDS,
+    )
     state_store = PostgreSQLStateStore(dsn=dsn)
 
     memory = None
