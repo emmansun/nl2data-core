@@ -17,6 +17,10 @@ class TestPostgresQueryAdapter:
         caps = adapter.capabilities()
         assert caps.adapter_type == "sql"
         assert "read_only" in caps.features
+        #: PostgreSQL natively executes multi-entity JOIN queries, so the
+        #: adapter declares the same join surface as the core SQL adapter.
+        assert "join" in caps.features
+        assert "multi_entity" in caps.features
         assert caps.limits.max_result_rows == 100_000
 
     def test_parse_valid_select(self) -> None:

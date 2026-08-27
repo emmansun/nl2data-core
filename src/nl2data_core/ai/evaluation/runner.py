@@ -20,7 +20,12 @@ from nl2data_core.ai.context import SemanticReference, assemble_model_context
 from nl2data_core.ai.errors import ModelErrorRecord, normalize_model_error
 from nl2data_core.ai.fake import FakeModelProvider
 from nl2data_core.ai.instructions import assemble_instruction_bundle
-from nl2data_core.ai.models import ClarificationRequired, RejectedIntent, ResolvedIntent
+from nl2data_core.ai.models import (
+    ClarificationRequired,
+    RejectedIntent,
+    ResolvedIntent,
+    ResolvedMultiEntityIntent,
+)
 from nl2data_core.ai.resolver import IntentResolver
 from nl2data_core.fixtures.models import FIXED_TIMEZONE, TIME_ANCHOR
 from nl2data_core.planning.validation import AuthorizedView
@@ -284,7 +289,10 @@ class AIEvaluationRunner:
     def _build_evidence(
         self,
         case: AIEvaluationCase,
-        outcome: ResolvedIntent | ClarificationRequired | RejectedIntent,
+        outcome: ResolvedIntent
+        | ResolvedMultiEntityIntent
+        | ClarificationRequired
+        | RejectedIntent,
         provider: FakeModelProvider,
     ) -> AIProtectedEvidence:
         context_fingerprint = assemble_model_context(
@@ -303,7 +311,7 @@ class AIEvaluationRunner:
             ),
             view=self._view,
         )
-        if isinstance(outcome, ResolvedIntent):
+        if isinstance(outcome, (ResolvedIntent, ResolvedMultiEntityIntent)):
             resolution: Literal["resolved", "clarification", "rejected"] = "resolved"
             intent_fingerprint = outcome.intent.fingerprint
             clarification_fingerprint: str | None = None

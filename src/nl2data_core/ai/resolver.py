@@ -43,8 +43,10 @@ from nl2data_core.ai.models import (
     ClarificationRequired,
     ModelInvocationRequest,
     ModelResponse,
+    MultiEntityIntent,
     RejectedIntent,
     ResolvedIntent,
+    ResolvedMultiEntityIntent,
     StructuredIntent,
 )
 from nl2data_core.ai.protocol import ModelProvider
@@ -53,7 +55,9 @@ from nl2data_core.planning.validation import AuthorizedView
 from nl2data_core.views.projection import ResolvedViewProjection
 
 #: Top-level fields a provider may emit in the structured output envelope.
-_ALLOWED_OUTPUT_FIELDS = frozenset({"intent", "clarification", "alternatives"})
+_ALLOWED_OUTPUT_FIELDS = frozenset(
+    {"intent", "multi_entity_intent", "clarification", "alternatives"}
+)
 
 #: Key names that signal executable or injected content at any depth.
 _UNSAFE_KEY_NAMES = frozenset(
@@ -281,7 +285,7 @@ class IntentResolver:
         *,
         max_output_tokens: int | None = None,
         context_extra: Mapping[str, Any] | None = None,
-    ) -> ResolvedIntent | ClarificationRequired | RejectedIntent:
+    ) -> ResolvedIntent | ResolvedMultiEntityIntent | ClarificationRequired | RejectedIntent:
         """Resolve one request into a validated outcome.
 
         ``context_extra`` is merged into the provider context payload (for
@@ -476,7 +480,7 @@ class IntentResolver:
         request: QueryRequest,
         response: ModelResponse,
         context: AuthorizedModelContext,
-    ) -> ResolvedIntent | ClarificationRequired | RejectedIntent:
+    ) -> ResolvedIntent | ResolvedMultiEntityIntent | ClarificationRequired | RejectedIntent:
         if response.usage.completion_tokens > context.max_output_tokens:
             return self._reject(
                 ModelErrorCode.OUTPUT_LIMIT_EXCEEDED,
@@ -510,12 +514,19 @@ class IntentResolver:
             )
         if "clarification" in response.content:
             return self._clarification(request, response.content["clarification"])
-        if "intent" not in response.content:
+        if "intent" in response.content and "multi_entity_intent" in response.content:
             return self._reject(
                 ModelErrorCode.MALFORMED_RESPONSE,
-                "model output is missing the intent contract",
+                "model output contains both single-entity and multi-entity intent",
             )
-        return self._intent(request, response.content, context)
+        if "multi_entity_intent" in response.content:
+            return self._multi_entity_intent(request, response.content, context)
+        if "intent" in response.content:
+            return self._intent(request, response.content, context)
+        return self._reject(
+            ModelErrorCode.MALFORMED_RESPONSE,
+            "model output is missing the intent contract",
+        )
 
     def _intent(
         self,
@@ -577,6 +588,69 @@ class IntentResolver:
         if intent.confidence < self._min_confidence:
             return self._clarification_from_alternatives(request, content.get("alternatives"))
         return ResolvedIntent(intent=intent)
+
+    def _multi_entity_intent(
+        self,
+        request: QueryRequest,
+        content: Mapping[str, Any],
+        context: AuthorizedModelContext,
+    ) -> ResolvedMultiEntityIntent | ClarificationRequired | RejectedIntent:
+        raw = content.get("multi_entity_intent")
+        if not isinstance(raw, Mapping):
+            return self._reject(
+                ModelErrorCode.MALFORMED_RESPONSE,
+                "provider multi-entity intent output is not a mapping",
+            )
+        try:
+            intent = MultiEntityIntent.model_validate(
+                {
+                    **raw,
+                    "intent_id": f"intent-{request.request_id}",
+                    "request_id": request.request_id,
+                }
+            )
+        except ValidationError as error:
+            return self._reject(
+                ModelErrorCode.MALFORMED_RESPONSE,
+                "provider multi-entity intent output failed structured validation",
+                details={"errors": self._validation_summary(error)},
+            )
+        if intent.source_id != context.source_id:
+            return self._reject(
+                ModelErrorCode.UNSAFE_OUTPUT,
+                "multi-entity intent references a source outside the authorized view",
+                details={"source_id": intent.source_id},
+            )
+        for entity_ref in intent.entity_refs:
+            if context.root_entity_ids and entity_ref.entity_id not in context.root_entity_ids:
+                return self._reject(
+                    ModelErrorCode.UNSAFE_OUTPUT,
+                    "multi-entity intent references an entity outside the authorized view",
+                    details={"entity_id": entity_ref.entity_id},
+                )
+        for field_id in sorted(intent.field_ids()):
+            if field_id not in self._field_ids:
+                return self._reject(
+                    ModelErrorCode.UNSAFE_OUTPUT,
+                    "multi-entity intent references a field outside the authorized view",
+                    details={"field_id": field_id},
+                )
+        for metric in intent.metric_refs:
+            if metric.aggregation != "none":
+                reference = self._references.get(metric.field_id)
+                if reference is None or metric.aggregation not in reference.allowed_aggregations:
+                    return self._reject(
+                        ModelErrorCode.UNSAFE_OUTPUT,
+                        "multi-entity intent uses an aggregation outside the "
+                        "authorized field scope",
+                        details={
+                            "field_id": metric.field_id,
+                            "aggregation": metric.aggregation,
+                        },
+                    )
+        if intent.confidence < self._min_confidence:
+            return self._clarification_from_alternatives(request, content.get("alternatives"))
+        return ResolvedMultiEntityIntent(intent=intent)
 
     def _clarification(
         self, request: QueryRequest, raw: Any

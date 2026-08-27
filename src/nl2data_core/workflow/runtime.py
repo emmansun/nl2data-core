@@ -56,8 +56,13 @@ from nl2data_core.adapters.sql.compile import compile_sql
 from nl2data_core.ai.config import ModelConfig
 from nl2data_core.ai.context import SemanticReference
 from nl2data_core.ai.instructions import instruction_evidence_fingerprint
-from nl2data_core.ai.models import ClarificationRequired, RejectedIntent, ResolvedIntent
-from nl2data_core.ai.plan_builder import build_ir_from_intent
+from nl2data_core.ai.models import (
+    ClarificationRequired,
+    RejectedIntent,
+    ResolvedIntent,
+    ResolvedMultiEntityIntent,
+)
+from nl2data_core.ai.plan_builder import build_ir_from_resolved_intent
 from nl2data_core.ai.protocol import ModelProvider
 from nl2data_core.ai.resolver import IntentResolver
 from nl2data_core.canonical import sha256_fingerprint
@@ -96,6 +101,7 @@ from nl2data_core.memory.resolver import (
 )
 from nl2data_core.planning.ir.models import IRViewReference, SemanticQueryIR
 from nl2data_core.planning.ir.validation import validate_ir
+from nl2data_core.planning.join_planner import JoinPlanner
 from nl2data_core.planning.models import PhysicalBinding
 from nl2data_core.planning.validation import AuthorizedView
 from nl2data_core.tenancy.models import TenantScopeContext
@@ -679,6 +685,13 @@ class _IntentNode(_NodeBase):
                 status=RuntimeOutcomeStatus.SUCCEEDED,
                 next_stage=WorkflowStage.PLAN,
             )
+        if isinstance(outcome, ResolvedMultiEntityIntent):
+            self._channel["intent_outcome"] = outcome
+            return StageResult(
+                stage=self.stage,
+                status=RuntimeOutcomeStatus.SUCCEEDED,
+                next_stage=WorkflowStage.PLAN,
+            )
         if isinstance(outcome, ClarificationRequired):
             return StageResult(
                 stage=self.stage,
@@ -700,16 +713,51 @@ class _PlanNode(_NodeBase):
     async def run(self, context: WorkflowExecutionContext) -> StageResult:
         runtime = self._runtime
         outcome = self._channel["intent_outcome"]
-        if not isinstance(outcome, ResolvedIntent):
+        if not isinstance(outcome, (ResolvedIntent, ResolvedMultiEntityIntent)):
             raise RuntimeGateError(
                 "plan stage requires a resolved intent",
                 details={"stage": self.stage.value},
             )
+
+        join_plan = None
+        if isinstance(outcome, ResolvedMultiEntityIntent):
+            if runtime.join_planner is None:
+                return StageResult(
+                    stage=self.stage,
+                    status=RuntimeOutcomeStatus.REJECTED,
+                    outcome=_rejected(
+                        context.request,
+                        ErrorRecord(
+                            code=ErrorCode.MULTI_ENTITY_UNSUPPORTED,
+                            category=ErrorCategory.VALIDATION,
+                            message="multi-entity planning is not configured for this runtime",
+                            retryable=False,
+                        ),
+                    ),
+                )
+            planner_outcome = runtime.join_planner.plan(outcome.intent)
+            if planner_outcome.kind != "plan":
+                return StageResult(
+                    stage=self.stage,
+                    status=RuntimeOutcomeStatus.REJECTED,
+                    outcome=_rejected(
+                        context.request,
+                        ErrorRecord(
+                            code=_join_error_code(planner_outcome.kind),
+                            category=ErrorCategory.VALIDATION,
+                            message=planner_outcome.reason,
+                            retryable=False,
+                        ),
+                    ),
+                )
+            join_plan = planner_outcome.plan
+
         try:
-            ir = build_ir_from_intent(
-                outcome.intent,
+            ir = build_ir_from_resolved_intent(
+                outcome,
                 catalog_fingerprint=runtime.view.catalog_fingerprint,
                 view_reference=runtime._view_reference(),
+                join_plan=join_plan,
             )
         except Exception as error:
             return StageResult(
@@ -720,6 +768,7 @@ class _PlanNode(_NodeBase):
                 ),
             )
         self._channel["ir"] = ir
+        self._channel["join_plan"] = join_plan
         self._channel["compat"]["ir"] = sha256_fingerprint(
             {"ir_version": ir.ir_version, "ir_fingerprint": ir.fingerprint}
         )
@@ -728,6 +777,14 @@ class _PlanNode(_NodeBase):
             status=RuntimeOutcomeStatus.SUCCEEDED,
             next_stage=WorkflowStage.VALIDATE,
         )
+
+
+def _join_error_code(kind: str) -> ErrorCode:
+    if kind == "ambiguous":
+        return ErrorCode.JOIN_PATH_AMBIGUOUS
+    if kind == "unauthorized":
+        return ErrorCode.JOIN_EDGE_UNAUTHORIZED
+    return ErrorCode.JOIN_PATH_NOT_FOUND
 
 
 class _ValidateNode(_NodeBase):
@@ -803,6 +860,12 @@ class _CompileNode(_NodeBase):
             effective_limits=runtime.effective_limits,
             mandatory_filter_fingerprints=ir.filter_fingerprints(),
             compiler_context=runtime.binding,
+            join_plan=self._channel.get("join_plan"),
+            planner_identity=(
+                "deterministic-join-planner"
+                if self._channel.get("join_plan") is not None
+                else None
+            ),
         )
         try:
             result = runtime.compiler.compile(ir, context=compilation_context)
@@ -1309,6 +1372,8 @@ class DeterministicWorkflowRuntime:
         ir_compiler: IRCompiler | Callable[[SemanticQueryIR], str] | None = None,
         now: Callable[[], datetime] | None = None,
         projection: ResolvedViewProjection | None = None,
+        relationship_graph: object | None = None,
+        join_planner: JoinPlanner | None = None,
     ) -> None:
         self._provider = provider
         self._execution = execution
@@ -1336,6 +1401,8 @@ class DeterministicWorkflowRuntime:
         self._approval_required = approval_required
         self._ir_compiler = _BoundCompiler(ir_compiler or compile_sql)
         self._now_fn = now or _utc_now
+        self._relationship_graph = relationship_graph
+        self._join_planner = join_planner
         self._closed = False
         if projection is not None:
             self._view: AuthorizedView | None = AuthorizedView.from_projection(projection)
@@ -1375,6 +1442,16 @@ class DeterministicWorkflowRuntime:
     def binding(self) -> PhysicalBinding | None:
         """The bound physical binding used for IR compilation, if any."""
         return self._binding
+
+    @property
+    def relationship_graph(self) -> object | None:
+        """The governed relationship graph used for multi-entity planning."""
+        return self._relationship_graph
+
+    @property
+    def join_planner(self) -> JoinPlanner | None:
+        """The deterministic join planner bound to the runtime, if any."""
+        return self._join_planner
 
     @property
     def config(self) -> ModelConfig:

@@ -19,7 +19,13 @@ from nl2data_core.ai.context import SemanticReference
 from nl2data_core.ai.fake import FakeModelProvider
 from nl2data_core.fixtures import SQLiteFixtureProfile
 from nl2data_core.governance.models import PolicyScope
-from nl2data_core.planning.models import ColumnBinding, PhysicalBinding
+from nl2data_core.planning.join_planner import JoinPlanner
+from nl2data_core.planning.models import (
+    ColumnBinding,
+    PhysicalBinding,
+    RelationshipEdge,
+    RelationshipGraph,
+)
 from nl2data_core.planning.validation import AuthorizedView
 from nl2data_core.workflow.runner import QueryExecutionRunner, StaticPlanResolver
 from nl2data_core.workflow.runtime import DeterministicWorkflowRuntime
@@ -131,13 +137,15 @@ def make_runtime(
     adapter: CountingAdapter | None = None,
     provider: FakeModelProvider | None = None,
     policy_scope: PolicyScope | None = None,
+    join_planner: JoinPlanner | None = None,
+    view: AuthorizedView | None = None,
 ) -> DeterministicWorkflowRuntime:
     fixture = SQLiteFixtureProfile(db_path=tmp_path / "fixture.db")
     fixture.provision()
     execution = QueryExecutionRunner(
         adapter=adapter or make_adapter(tmp_path),
         policy_scope=policy_scope or make_policy_scope(),
-        view=make_view(),
+        view=view or make_view(),
         plan_resolver=StaticPlanResolver(None),
     )
     return DeterministicWorkflowRuntime(
@@ -145,6 +153,64 @@ def make_runtime(
         execution=execution,
         semantic_references=REFERENCES,
         binding=BINDING,
+        join_planner=join_planner,
+        relationship_graph=None,
+    )
+
+
+def make_runtime_with_multi_entity(
+    tmp_path: Path,
+    *,
+    adapter: CountingAdapter | None = None,
+) -> DeterministicWorkflowRuntime:
+    """Runtime bound to an ambiguous two-entity relationship graph."""
+    graph = RelationshipGraph(
+        graph_id="g1",
+        source_id="sales",
+        edges=(
+            RelationshipEdge(
+                edge_id="e1",
+                relationship_id="r1",
+                left_entity_id="order",
+                right_entity_id="customer",
+                left_field_id="customer_id",
+                right_field_id="customer_id",
+                cardinality="many_to_one",
+            ),
+            RelationshipEdge(
+                edge_id="e2",
+                relationship_id="r2",
+                left_entity_id="order",
+                right_entity_id="customer",
+                left_field_id="alt_id",
+                right_field_id="alt_id",
+                cardinality="many_to_one",
+            ),
+        ),
+    )
+    view = make_view(
+        root_entity_ids=frozenset({"order", "customer"}),
+        allowed_relationships=frozenset({"r1", "r2"}),
+    )
+    planner = JoinPlanner(graph, view)
+    response = {
+        "multi_entity_intent": {
+            "source_id": "sales",
+            "entity_refs": [{"entity_id": "order"}, {"entity_id": "customer"}],
+            "dimension_refs": [{"dimension_id": "d1", "field_id": "order_id"}],
+            "metric_refs": [
+                {"metric_id": "m1", "field_id": "amount", "aggregation": "sum"},
+            ],
+            "limit": 10,
+            "confidence": 0.95,
+        }
+    }
+    return make_runtime(
+        tmp_path,
+        adapter=adapter,
+        provider=FakeModelProvider(default_response=response),
+        join_planner=planner,
+        view=view,
     )
 
 
@@ -220,4 +286,46 @@ class TestMandatoryGates:
         assert outcome.error is not None
         assert outcome.error.code == ErrorCode.MODEL_INVOCATION_FAILED
         assert outcome.error.details["model_code"] == "MALFORMED_RESPONSE"
+        assert adapter.executions == 0
+
+
+class TestMultiEntityRuntime:
+    """Multi-entity planning preserves mandatory gate order."""
+
+    async def test_unsupported_multi_entity_rejects_before_adapter(self, tmp_path: Path) -> None:
+        adapter = make_adapter(tmp_path)
+        view = make_view(root_entity_ids=frozenset({"order", "customer"}))
+        response = {
+            "multi_entity_intent": {
+                "source_id": "sales",
+                "entity_refs": [{"entity_id": "order"}, {"entity_id": "customer"}],
+                "dimension_refs": [
+                    {"dimension_id": "d1", "field_id": "order_id"},
+                ],
+                "metric_refs": [
+                    {"metric_id": "m1", "field_id": "amount", "aggregation": "sum"},
+                ],
+                "limit": 10,
+                "confidence": 0.95,
+            }
+        }
+        runtime = make_runtime(
+            tmp_path,
+            adapter=adapter,
+            provider=FakeModelProvider(default_response=response),
+            view=view,
+        )
+        outcome = await runtime.execute(request())
+        assert outcome.status == OutcomeStatus.REJECTED
+        assert outcome.error is not None
+        assert outcome.error.code == ErrorCode.MULTI_ENTITY_UNSUPPORTED
+        assert adapter.executions == 0
+
+    async def test_ambiguous_path_rejects_before_adapter(self, tmp_path: Path) -> None:
+        adapter = make_adapter(tmp_path)
+        runtime = make_runtime_with_multi_entity(tmp_path, adapter=adapter)
+        outcome = await runtime.execute(request())
+        assert outcome.status == OutcomeStatus.REJECTED
+        assert outcome.error is not None
+        assert outcome.error.code == ErrorCode.JOIN_PATH_AMBIGUOUS
         assert adapter.executions == 0

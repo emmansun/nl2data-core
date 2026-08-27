@@ -68,6 +68,22 @@ def _physical(binding: PhysicalBinding, field_id: str) -> str:
     return name
 
 
+def _reject_join_plan(ir: SemanticQueryIR) -> None:
+    """Fail closed when the IR carries a multi-entity join plan.
+
+    The Mongo compiler emits single-collection MQL only; a joined IR must
+    never be silently degraded into a single-collection query.
+    """
+    if ir.provenance.join_plan_fingerprint is not None:
+        raise MongoCompileError(
+            "multi-entity join plans are not supported by the MongoDB compiler",
+            details={
+                "ir_id": ir.ir_id,
+                "join_plan_fingerprint": ir.provenance.join_plan_fingerprint,
+            },
+        )
+
+
 def _compile_filter(ir: SemanticQueryIR, binding: PhysicalBinding) -> dict[str, Any]:
     filter_mql: dict[str, Any] = {}
     for filter_ in ir.filters:
@@ -166,6 +182,7 @@ def compile_mongo_ir(ir: SemanticQueryIR, *, binding: PhysicalBinding | None) ->
     """
     if binding is None:
         raise MongoCompileError("IR compilation requires a physical binding")
+    _reject_join_plan(ir)
     if not verify_ir_fingerprint(ir):
         raise MongoCompileError(
             "IR fingerprint does not match its canonical payload",
@@ -202,6 +219,7 @@ def compile_mongo(
     binding = context.compiler_context
     if binding is None:
         raise MongoCompileError("IR compilation requires a physical binding")
+    _reject_join_plan(ir)
     if not verify_ir_fingerprint(ir):
         raise MongoCompileError(
             "IR fingerprint does not match its canonical payload",

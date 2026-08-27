@@ -25,6 +25,7 @@ from nl2data_core.ai.protocol import ModelProvider
 from nl2data_core.memory.models import MemoryRecallBudget
 from nl2data_core.memory.protocol import MemoryProvider
 from nl2data_core.planning.ir.models import SemanticQueryIR
+from nl2data_core.planning.join_planner import JoinPlanner
 from nl2data_core.planning.models import PhysicalBinding
 from nl2data_core.views.projection import ResolvedViewProjection
 from nl2data_core.workflow.contract import WorkflowCancellation
@@ -63,6 +64,8 @@ class AIWorkflowRunner:
         approval_required: Callable[[SemanticQueryIR], bool] | None = None,
         now: Callable[[], datetime] | None = None,
         projection: ResolvedViewProjection | None = None,
+        relationship_graph: object | None = None,
+        join_planner: JoinPlanner | None = None,
     ) -> None:
         self._execution = execution
         self._runtime = DeterministicWorkflowRuntime(
@@ -81,6 +84,8 @@ class AIWorkflowRunner:
             approval_required=approval_required,
             now=now,
             projection=projection,
+            relationship_graph=relationship_graph,
+            join_planner=join_planner,
         )
 
     @property

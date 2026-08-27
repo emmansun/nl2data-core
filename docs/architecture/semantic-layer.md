@@ -118,21 +118,21 @@ profile carries exactly one binding. Practical consequences:
   roots/fields that map to that object, its own binding, and its own plan
   resolver. A shared descriptor and Bundle can back all of them.
 - **Relationships** are governed vocabulary, not query mechanics — see
-  [Relationships: vocabulary before execution](#relationships-vocabulary-before-execution).
+  [Relationships: governed vocabulary, compiled at query time](#relationships-governed-vocabulary-compiled-at-query-time).
 
 See [CompositionProfile reference](../reference/composition-profile.md)
 for the multi-root construction example.
 
-### Relationships: vocabulary before execution
+### Relationships: governed vocabulary, compiled at query time
 
-Relationships are governed **vocabulary**, not a query mechanism:
-discovery derives them from foreign keys (`orders_customers_via_customer_id`),
-view definitions restrict `allowed_relationships`, and the metadata
-lifecycle tracks them like every other member — yet nothing compiles them
-into a join, and the IR has no relationship member. The gap is deliberate:
-the vocabulary, the authorization surface, and the drift coverage are
-complete *before* the execution capability exists, so a future join
-emitter can never ship ungoverned.
+Relationships are governed **vocabulary** first: discovery derives them
+from foreign keys (`orders_customers_via_customer_id`), view definitions
+restrict `allowed_relationships`, and the metadata lifecycle tracks them
+like every other member. The multi-entity join planner then compiles that
+vocabulary into a deterministic `LogicalJoinPlan` at query time — the
+vocabulary, the authorization surface, and the drift coverage are complete
+*before* any join is emitted, so execution can never ship ungoverned. See
+[Execution flow](execution-flow.md).
 
 Three things depend on relationships today:
 
@@ -141,10 +141,10 @@ Three things depend on relationships today:
   reviewers need to approve and which the discovery-to-Bundle lifecycle
   publishes.
 - **An authorization dimension** — the registry rejects view definitions
-  that allow relationships the descriptor does not define. When join
-  emission arrives, `ResolvedViewProjection.contains_relationship` is the
-  ready runtime check; descriptor, view, and projection models need no
-  change.
+  that allow relationships the descriptor does not define. At query time,
+  the join planner checks every edge through
+  `ResolvedViewProjection.contains_relationship` before a `LogicalJoinPlan`
+  is produced; descriptor, view, and projection models needed no change.
 - **Drift coverage** — removing or changing a relationship that a view
   definition references is **blocking** drift
   (`referenced_relationship_removed` / `referenced_relationship_changed`);
@@ -153,7 +153,8 @@ Three things depend on relationships today:
   receive.
 
 In short, relationships make the layer *complete, governable, and
-drift-visible* today, and *executable* later.
+drift-visible*, and the multi-entity planner turns that governed vocabulary
+into *executable* join plans.
 
 ## From projection to runtime
 

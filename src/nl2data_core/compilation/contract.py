@@ -28,7 +28,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from nl2data_core.adapters.models import AdapterCapabilities
 from nl2data_core.canonical import sha256_fingerprint
 from nl2data_core.governance.models import EffectiveLimits, ExecutionAuthorization
-from nl2data_core.planning.ir.models import IRViewReference, SemanticQueryIR
+from nl2data_core.planning.ir.models import IRViewReference, LogicalJoinPlan, SemanticQueryIR
 from nl2data_core.planning.models import PhysicalBinding
 from nl2data_core.planning.validation import AuthorizedView
 
@@ -67,6 +67,8 @@ class CompilationContext(BaseModel):
     effective_limits: EffectiveLimits | None = None
     mandatory_filter_fingerprints: frozenset[str] = Field(default_factory=frozenset)
     compiler_context: PhysicalBinding | None = None
+    join_plan: LogicalJoinPlan | None = None
+    planner_identity: str | None = Field(default=None, pattern=_IDENTIFIER_PATTERN)
 
     @model_validator(mode="after")
     def _consistent(self) -> CompilationContext:
@@ -129,6 +131,8 @@ class CompilationEvidence(BaseModel):
     compiler_identity: str = Field(pattern=_IDENTIFIER_PATTERN)
     compiler_version: str = Field(min_length=1, max_length=64)
     artifact_fingerprint: str = Field(pattern=_FINGERPRINT_PATTERN)
+    join_plan_fingerprint: str | None = Field(default=None, pattern=_FINGERPRINT_PATTERN)
+    planner_identity: str | None = Field(default=None, pattern=_IDENTIFIER_PATTERN)
 
     @model_validator(mode="after")
     def _validate_references(self) -> CompilationEvidence:
@@ -240,6 +244,8 @@ def compilation_evidence_fingerprint(evidence: CompilationEvidence) -> str:
             "compiler_identity": evidence.compiler_identity,
             "compiler_version": evidence.compiler_version,
             "artifact_fingerprint": evidence.artifact_fingerprint,
+            "join_plan_fingerprint": evidence.join_plan_fingerprint,
+            "planner_identity": evidence.planner_identity,
         }
     )
 

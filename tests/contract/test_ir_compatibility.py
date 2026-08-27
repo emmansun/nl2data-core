@@ -15,6 +15,7 @@ import json
 import pytest
 
 from nl2data_core.adapters.models import (
+    AdapterCapabilities,
     CompilerArtifactEvidence,
     ValidatedArtifact,
     ValidationContext,
@@ -26,7 +27,9 @@ from nl2data_core.adapters.sql.compile import (
 from nl2data_core.adapters.sql.compile import (
     COMPILER_VERSION as SQL_COMPILER_VERSION,
 )
-from nl2data_core.adapters.sql.compile import SQLCompileError, compile_ir
+from nl2data_core.adapters.sql.compile import SQLCompileError, compile_ir, compile_sql
+from nl2data_core.compilation.contract import CompilationContext
+from nl2data_core.governance.models import EffectiveLimits
 from nl2data_core.planning.ir.fixtures import (
     GOLDEN_FINGERPRINT,
     golden_binding,
@@ -86,6 +89,33 @@ class TestGoldenIRCompilation:
     def test_sql_compiler_fails_closed_without_binding(self) -> None:
         with pytest.raises(SQLCompileError):
             compile_ir(golden_ir(), binding=None)
+
+    def test_single_entity_path_unchanged_with_empty_join_plan(self) -> None:
+        ir = golden_ir()
+        binding = golden_binding()
+        legacy_sql = compile_ir(ir, binding=binding)
+        context = CompilationContext(
+            ir=ir,
+            adapter_capabilities=AdapterCapabilities(
+                adapter_type="sql",
+                query_language="sql",
+                async_mode="native",
+                features=frozenset(
+                    {
+                        "select",
+                        "filter",
+                        "group_by",
+                        "order_by",
+                        "aggregation",
+                    }
+                ),
+            ),
+            effective_limits=EffectiveLimits(max_rows=1_000),
+            mandatory_filter_fingerprints=ir.filter_fingerprints(),
+            compiler_context=binding,
+        )
+        new_sql = compile_sql(ir, context=context).artifact
+        assert new_sql == legacy_sql
 
     def test_mongo_spec_id_is_derived_from_ir_fingerprint(self) -> None:
         ir = golden_ir()

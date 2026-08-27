@@ -67,6 +67,8 @@ class PostgresQueryAdapter:
                     "list_ops",
                     "contains",
                     "metadata_discovery",
+                    "join",
+                    "multi_entity",
                     "cte",
                     "grouping",
                     "union",

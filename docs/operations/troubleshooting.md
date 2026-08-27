@@ -67,6 +67,22 @@
 | `DUPLICATE_REQUEST` / `IDEMPOTENCY_CONFLICT` | Request id reused | Use a fresh `request_id` per logical request, or reuse the same id deliberately for idempotent replay |
 | `UNSUPPORTED_SCHEMA_VERSION` | Runtime older than the deployment schema/config | Upgrade the runtime or align the deployment; downgrading is a deployment decision, never automatic |
 
+## Multi-entity join planning errors
+
+| Symptom | Likely cause | Action |
+| --- | --- | --- |
+| `JOIN_PATH_NOT_FOUND` | Required entities are not connected by any authorized `RelationshipEdge` | Add the missing relationship to the `RelationshipGraph` for the source, or restrict the view to connected entities |
+| `JOIN_PATH_AMBIGUOUS` | Multiple shortest paths exist between the required entities | Keep a single authoritative relationship per entity pair; if both are needed, restrict the view's `allowed_relationships` or split the source into separate relationship graphs |
+| `JOIN_EDGE_UNAUTHORIZED` | The `RelationshipGraph` contains a relationship not in the view's `allowed_relationships`, or an entity outside `root_entity_ids` | Update the authorized view to include the relationship/entity, or remove it from the graph |
+| `MULTI_ENTITY_UNSUPPORTED` | A multi-entity intent was resolved but no `JoinPlanner` is bound to the runtime | Bind a `JoinPlanner` with the current `RelationshipGraph` and `AuthorizedView`, or route multi-entity requests through a feature-gated path |
+
+Relationship graph authoring tips:
+
+- Keep edges governed: every `RelationshipEdge` must be explicitly authorized via `allowed_relationships` in the view.
+- Prefer shortest unique paths: the planner deterministically picks the shortest path and rejects ambiguity.
+- Use stable identifiers: `edge_id` and `relationship_id` are part of the graph fingerprint; changing them invalidates cached plans.
+- Never put physical table/column names in the graph; the compiler maps semantic entity/field ids through the `PhysicalBinding`.
+
 ## Documentation checks
 
 Run the documentation quality gates locally:

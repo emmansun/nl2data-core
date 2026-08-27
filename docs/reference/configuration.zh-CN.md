@@ -146,6 +146,20 @@ DSN（`dsn_secret_ref` 命名宿主侧的该秘密）。
 比运行时受支持版本更新的 `schema_version` 会 fail-closed（安全失败）。
 参见[服务](../operations/services.md)获取运维手册。
 
+## 多实体规划发布
+
+多实体连接规划通过在运行时绑定 `JoinPlanner` 与受治理的 `RelationshipGraph`
+启用。未绑定规划器时，多实体意图以 `MULTI_ENTITY_UNSUPPORTED` fail-closed，
+单实体工作流不受影响。
+
+运维控制：
+
+- **按组合启用（opt-in）**：只有在 `RelationshipGraph` 经过评审、且视图的
+  `allowed_relationships` 显式授权每条边之后，才绑定 `JoinPlanner`。
+- **特性开关**：要求适配器 capabilities 的 `required_feature_flags` 包含
+  `"multi_entity"` 以在生产部署上设门；标志缺失则保持路径禁用。
+- **回滚**：移除 `JoinPlanner` 绑定即可立即禁用多实体规划，无需改变单实体行为。
+
 ## 指纹稳定性
 
 配置指纹是确定性的：键顺序不同但等价的输入产生相同的

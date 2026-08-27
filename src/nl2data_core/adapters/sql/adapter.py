@@ -103,6 +103,8 @@ class SqlQueryAdapter:
             "list_ops",
             "contains",
             "metadata_discovery",
+            "join",
+            "multi_entity",
             "cte" if profile.supports_cte else "no_cte",
             "grouping" if profile.supports_grouping else "no_grouping",
             "union" if profile.supports_union else "no_union",

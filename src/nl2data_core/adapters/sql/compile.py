@@ -23,7 +23,7 @@ from nl2data_core.compilation.contract import (
     CompilationEvidence,
     CompileResult,
 )
-from nl2data_core.planning.ir.models import IRFilter, SemanticQueryIR
+from nl2data_core.planning.ir.models import IRFilter, LogicalJoinPlan, SemanticQueryIR
 from nl2data_core.planning.ir.validation import validate_ir, verify_ir_fingerprint
 from nl2data_core.planning.models import PhysicalBinding
 
@@ -175,7 +175,7 @@ def compile_sql(
             "IR failed structural validation",
             details={"issue_codes": ",".join(validation.issue_codes())},
         )
-    artifact = _compile(ir, binding)
+    artifact = _compile(ir, binding, join_plan=context.join_plan)
     limits = context.effective_limits
     evidence = CompilationEvidence(
         ir_version=ir.ir_version,
@@ -201,15 +201,60 @@ def compile_sql(
         compiler_identity=COMPILER_IDENTITY,
         compiler_version=COMPILER_VERSION,
         artifact_fingerprint=sql_artifact_fingerprint(artifact, binding.dialect),
+        join_plan_fingerprint=(
+            context.join_plan.fingerprint if context.join_plan is not None else None
+        ),
+        planner_identity=context.planner_identity,
     )
     return CompileResult(artifact=artifact, evidence=evidence)
 
 
-def _compile(ir: SemanticQueryIR, binding: PhysicalBinding) -> str:
+def _compile(
+    ir: SemanticQueryIR,
+    binding: PhysicalBinding,
+    *,
+    join_plan: LogicalJoinPlan | None = None,
+) -> str:
     """Compile a validated IR into SQL; the binding is guaranteed present."""
     dialect = binding.dialect
     if ir.limit is None:
         raise SQLCompileError("IR has no bounded limit; refusing unbounded compilation")
+
+    if join_plan is not None and not isinstance(join_plan, LogicalJoinPlan):
+        # If a compilation context was passed by mistake, normalize to the plan.
+        join_plan = getattr(join_plan, "join_plan", None)
+
+    # Determine joined entities from the logical join plan.
+    joined_entities: set[str] = set()
+    if join_plan is not None:
+        for step in join_plan.steps:
+            joined_entities.add(step.left_entity_id)
+            joined_entities.add(step.right_entity_id)
+
+    # Table alias for an entity is its entity_id (identifier-safe).
+    def _table_alias(entity_id: str) -> str:
+        return quote_identifier(entity_id)
+
+    def _qualified_column(field_id: str) -> str:
+        entity_id = binding.entity_for(field_id)
+        physical = binding.physical_name(field_id)
+        if physical is None:
+            raise SQLCompileError(
+                f"field '{field_id}' is not physically bound",
+            )
+        if joined_entities:
+            # In a joined query an unqualified column would silently resolve
+            # against the wrong table; every referenced field must belong to
+            # an entity the join plan introduces.
+            if entity_id is None or entity_id not in joined_entities:
+                raise SQLCompileError(
+                    f"field '{field_id}' is not bound to an entity in the join plan",
+                    details={"entity_id": entity_id},
+                )
+            return f"{_table_alias(entity_id)}.{quote_identifier(physical)}"
+        if entity_id is not None and entity_id in joined_entities:
+            return f"{_table_alias(entity_id)}.{quote_identifier(physical)}"
+        return quote_identifier(physical)
 
     selections: list[str] = []
     group_by: list[str] = []
@@ -231,44 +276,76 @@ def _compile(ir: SemanticQueryIR, binding: PhysicalBinding) -> str:
             )
         if selection.aggregation != "none":
             selections.append(
-                f"{selection.aggregation.upper()}({quote_identifier(physical)})"
+                f"{selection.aggregation.upper()}({_qualified_column(selection.field_id)})"
                 f" AS {quote_identifier(selection.alias or f'{selection.aggregation}_{physical}')}"
             )
         else:
             selections.append(
-                f"{quote_identifier(physical)} AS {quote_identifier(selection.alias or physical)}"
+                f"{_qualified_column(selection.field_id)} AS "
+                f"{quote_identifier(selection.alias or physical)}"
             )
     for field_id in grouped_field_ids:
-        physical = binding.physical_name(field_id)
-        if physical is None:
+        if binding.physical_name(field_id) is None:
             raise SQLCompileError(
                 f"grouping field '{field_id}' is not physically bound",
             )
-        group_by.append(quote_identifier(physical))
+        group_by.append(_qualified_column(field_id))
 
     filter_sql: list[str] = []
     for filter_ in ir.filters:
-        physical = binding.physical_name(filter_.field_id)
-        if physical is None:
+        if binding.physical_name(filter_.field_id) is None:
             raise SQLCompileError(
                 f"filter field '{filter_.field_id}' is not physically bound",
                 details={"filter_id": filter_.filter_id},
             )
-        filter_sql.append(_render_filter(filter_, physical, dialect))
+        filter_sql.append(_render_filter(filter_, _qualified_column(filter_.field_id), dialect))
     filters = " AND ".join(filter_sql)
 
     ordering_sql: list[str] = []
     for ordering in ir.orderings:
-        physical = binding.physical_name(ordering.field_id)
-        if physical is None:
+        if binding.physical_name(ordering.field_id) is None:
             raise SQLCompileError(
                 f"ordering field '{ordering.field_id}' is not physically bound",
                 details={"ordering_id": ordering.ordering_id},
             )
-        ordering_sql.append(f"{quote_identifier(physical)} {ordering.direction.upper()}")
+        ordering_sql.append(f"{_qualified_column(ordering.field_id)} {ordering.direction.upper()}")
     orderings = ", ".join(ordering_sql)
 
-    sql = f"SELECT {', '.join(selections)} FROM {quote_identifier(binding.object_id)}"
+    root_object = binding.physical_object(ir.root_entity_id) or binding.object_id
+    from_clause = f"FROM {quote_identifier(root_object)} AS {_table_alias(ir.root_entity_id)}"
+    if join_plan is not None:
+        joins: list[str] = [from_clause]
+        introduced_entities = {ir.root_entity_id}
+        for step in join_plan.steps:
+            if step.left_entity_id not in introduced_entities:
+                raise SQLCompileError(
+                    f"join step '{step.step_id}' references entity "
+                    f"'{step.left_entity_id}' before it is introduced",
+                )
+            right_object = binding.physical_object(step.right_entity_id)
+            if right_object is None:
+                raise SQLCompileError(
+                    f"right entity '{step.right_entity_id}' has no physical object binding",
+                    details={"relationship_id": step.relationship_id},
+                )
+            left_field = quote_identifier(
+                binding.physical_name(step.left_field_id) or step.left_field_id
+            )
+            right_field = quote_identifier(
+                binding.physical_name(step.right_field_id) or step.right_field_id
+            )
+            condition = (
+                f"{_table_alias(step.left_entity_id)}.{left_field} = "
+                f"{_table_alias(step.right_entity_id)}.{right_field}"
+            )
+            joins.append(
+                f"JOIN {quote_identifier(right_object)} AS "
+                f"{_table_alias(step.right_entity_id)} ON {condition}"
+            )
+            introduced_entities.add(step.right_entity_id)
+        from_clause = " ".join(joins)
+
+    sql = f"SELECT {', '.join(selections)} {from_clause}"
     if filters:
         sql += f" WHERE {filters}"
     if group_by:

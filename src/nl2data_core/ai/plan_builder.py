@@ -20,11 +20,17 @@ from nl2data_core.planning.ir.models import (
     IRResultShape,
     IRSelection,
     IRViewReference,
+    LogicalJoinPlan,
     SemanticQueryIR,
 )
 from nl2data_core.planning.ir.validation import validate_ir
 
-from .models import StructuredIntent
+from .models import (
+    MultiEntityIntent,
+    ResolvedIntent,
+    ResolvedMultiEntityIntent,
+    StructuredIntent,
+)
 
 __all__ = ["build_ir_from_intent"]
 
@@ -137,3 +143,135 @@ def build_ir_from_intent(
         codes = ", ".join(result.issue_codes())
         raise ValueError(f"intent produced an invalid IR: {codes}")
     return ir
+
+
+def build_ir_from_multi_entity_intent(
+    intent: MultiEntityIntent,
+    *,
+    ir_id: str | None = None,
+    catalog_fingerprint: str | None = None,
+    policy_view_fingerprint: str | None = None,
+    view_reference: IRViewReference | None = None,
+    join_plan: LogicalJoinPlan | None = None,
+) -> SemanticQueryIR:
+    """Build the canonical Semantic Query IR for a validated multi-entity intent.
+
+    Metrics and dimensions are mapped to IR selections; groupings are
+    derived from dimensions whenever any metric is aggregated.  The logical
+    join plan is recorded in provenance as join-plan evidence but never
+    enters the canonical IR payload directly.
+    """
+    root_entity_id = join_plan.root_entity_id if join_plan is not None else (
+        intent.entity_refs[0].entity_id if intent.entity_refs else ""
+    )
+
+    selections = tuple(
+        IRSelection(
+            selection_id=dimension.dimension_id,
+            field_id=dimension.field_id,
+            alias=dimension.alias,
+            aggregation="none",
+        )
+        for dimension in intent.dimension_refs
+    ) + tuple(
+        IRSelection(
+            selection_id=metric.metric_id,
+            field_id=metric.field_id,
+            alias=metric.alias,
+            aggregation=metric.aggregation,
+        )
+        for metric in intent.metric_refs
+    )
+
+    filters = tuple(
+        IRFilter(
+            filter_id=filter_.filter_id,
+            field_id=filter_.field_id,
+            operator=filter_.operator,
+            value=filter_.value,
+        )
+        for filter_ in intent.filters
+    )
+    orderings = tuple(
+        IROrdering(
+            ordering_id=ordering.ordering_id,
+            field_id=ordering.field_id,
+            direction=ordering.direction,
+        )
+        for ordering in intent.orderings
+    )
+
+    aggregated_metrics = [m for m in intent.metric_refs if m.aggregation != "none"]
+    groupings = tuple(
+        IRGrouping(grouping_id=f"g-{dimension.dimension_id}", field_id=dimension.field_id)
+        for dimension in intent.dimension_refs
+        if aggregated_metrics
+    )
+
+    capabilities = set(_derive_required_capabilities(selections, filters, orderings))
+    if len(intent.entity_refs) > 1:
+        capabilities.add("multi_entity")
+        capabilities.add("join")
+    if join_plan is not None and join_plan.steps:
+        capabilities.add("join")
+
+    has_grouping = aggregated_metrics or groupings
+    kind: Literal["rows", "grouped_rows"] = "grouped_rows" if has_grouping else "rows"
+    provenance = IRProvenance(
+        source_id=intent.source_id,
+        root_entity_id=root_entity_id,
+        catalog_fingerprint=catalog_fingerprint,
+        policy_view_fingerprint=policy_view_fingerprint,
+        view_reference=view_reference,
+        join_plan_fingerprint=join_plan.fingerprint if join_plan is not None else None,
+    )
+    ir = SemanticQueryIR(
+        ir_id=ir_id or f"ir-{intent.request_id}",
+        source_id=intent.source_id,
+        root_entity_id=root_entity_id,
+        selections=selections,
+        filters=filters,
+        groupings=groupings,
+        orderings=orderings,
+        limit=intent.limit,
+        result_shape=IRResultShape(kind=kind),
+        provenance=provenance,
+        required_capabilities=tuple(sorted(capabilities)),
+    )
+    result = validate_ir(ir)
+    if not result.valid:
+        codes = ", ".join(result.issue_codes())
+        raise ValueError(f"multi-entity intent produced an invalid IR: {codes}")
+    return ir
+
+
+def build_ir_from_resolved_intent(
+    outcome: ResolvedIntent | ResolvedMultiEntityIntent,
+    *,
+    ir_id: str | None = None,
+    catalog_fingerprint: str | None = None,
+    policy_view_fingerprint: str | None = None,
+    view_reference: IRViewReference | None = None,
+    join_plan: LogicalJoinPlan | None = None,
+) -> SemanticQueryIR:
+    """Dispatcher that keeps the single-entity IR path unchanged.
+
+    When the resolved outcome is a multi-entity intent, a logical join
+    plan must be supplied; single-entity intents ignore the join plan.
+    """
+    if isinstance(outcome, ResolvedMultiEntityIntent):
+        return build_ir_from_multi_entity_intent(
+            outcome.intent,
+            ir_id=ir_id,
+            catalog_fingerprint=catalog_fingerprint,
+            policy_view_fingerprint=policy_view_fingerprint,
+            view_reference=view_reference,
+            join_plan=join_plan,
+        )
+    return build_ir_from_intent(
+        outcome.intent,
+        ir_id=ir_id,
+        catalog_fingerprint=catalog_fingerprint,
+        policy_view_fingerprint=policy_view_fingerprint,
+        view_reference=view_reference,
+    )

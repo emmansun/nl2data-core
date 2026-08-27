@@ -325,6 +325,21 @@ class TestStageResultContract:
             )
 
 
+class TestMultiEntityPlanningContract:
+    def test_compile_and_guard_gates_precede_execution(self) -> None:
+        """Join-plan evidence is produced before adapter execution gates."""
+        execute_required = REQUIRED_GATES[WorkflowStage.EXECUTE]
+        assert WorkflowGate.COMPILATION in execute_required
+        assert WorkflowGate.ARTIFACT_GUARD in execute_required
+        assert WorkflowGate.GOVERNANCE in execute_required
+        assert WorkflowGate.AUTHORIZATION in execute_required
+
+    def test_join_planner_protocol_is_declared(self) -> None:
+        from nl2data_core.workflow.runner import JoinPlanner
+
+        assert callable(getattr(JoinPlanner, "plan", None))
+
+
 class TestNoLangGraphImport:
     def test_runtime_contract_imports_without_langgraph(self) -> None:
         import nl2data_core.workflow.contract  # noqa: F401

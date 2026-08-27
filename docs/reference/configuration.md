@@ -154,6 +154,24 @@ one database service never observe each other's records. A newer
 `schema_version` than the runtime supports fails closed. See
 [Services](../operations/services.md) for the runbook.
 
+## Multi-entity planning rollout
+
+Multi-entity join planning is enabled by binding a `JoinPlanner` and a
+governed `RelationshipGraph` at runtime. When the planner is not bound,
+multi-entity intents fail closed with `MULTI_ENTITY_UNSUPPORTED`, leaving
+single-entity workflows unaffected.
+
+Operational controls:
+
+- **Opt-in by composition**: bind a `JoinPlanner` only after the
+  `RelationshipGraph` has been reviewed and the view's
+  `allowed_relationships` explicitly authorizes every edge.
+- **Feature flag**: require `"multi_entity"` in the adapter capabilities
+  `required_feature_flags` to gate production deployment; a missing flag
+  keeps the path disabled.
+- **Rollback**: removing the `JoinPlanner` binding immediately disables
+  multi-entity planning without changing single-entity behavior.
+
 ## Fingerprint stability
 
 The configuration fingerprint is deterministic: equivalent inputs loaded

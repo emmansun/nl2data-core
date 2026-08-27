@@ -17,14 +17,19 @@ from nl2data_core.ai.models import (
     ClarificationOption,
     ClarificationRequest,
     ClarificationRequired,
+    DimensionRef,
+    EntityRef,
     IntentFilter,
     IntentOrdering,
     IntentSelection,
+    MetricRef,
     ModelInvocationRequest,
     ModelResponse,
     ModelUsage,
+    MultiEntityIntent,
     RejectedIntent,
     ResolvedIntent,
+    ResolvedMultiEntityIntent,
     StructuredIntent,
 )
 
@@ -343,3 +348,66 @@ class TestModelErrors:
             {"request_id": "r1", "content": {"intent": "ok"}, "api_key": "sk-123"}
         )
         assert clean == with_secret
+
+
+class TestMultiEntityIntent:
+    def test_valid_multi_entity_intent_computes_stable_fingerprint(self) -> None:
+        intent = MultiEntityIntent(
+            intent_id="intent-r1",
+            request_id="r1",
+            source_id="sales",
+            entity_refs=(
+                EntityRef(entity_id="order"),
+                EntityRef(entity_id="customer"),
+            ),
+            dimension_refs=(
+                DimensionRef(dimension_id="d1", field_id="order_id"),
+                DimensionRef(dimension_id="d2", field_id="customer_name"),
+            ),
+            metric_refs=(
+                MetricRef(metric_id="m1", field_id="amount", aggregation="sum"),
+            ),
+            filters=(
+                IntentFilter(filter_id="f1", field_id="region", operator="eq", value="emea"),
+            ),
+            orderings=(
+                IntentOrdering(ordering_id="o1", field_id="amount", direction="desc"),
+            ),
+            limit=10,
+        )
+        assert intent.fingerprint.startswith("sha256:")
+        assert intent.field_ids() == frozenset(
+            {"order_id", "customer_name", "amount", "region"}
+        )
+
+    def test_multi_entity_intent_rejects_duplicate_entity_ids(self) -> None:
+        with pytest.raises(ValidationError):
+            MultiEntityIntent(
+                intent_id="intent-r1",
+                request_id="r1",
+                source_id="sales",
+                entity_refs=(
+                    EntityRef(entity_id="order"),
+                    EntityRef(entity_id="order"),
+                ),
+            )
+
+    def test_multi_entity_intent_rejects_extra_fields(self) -> None:
+        with pytest.raises(ValidationError):
+            MultiEntityIntent(
+                intent_id="intent-r1",
+                request_id="r1",
+                source_id="sales",
+                entity_refs=(EntityRef(entity_id="order"),),
+                sql="SELECT * FROM orders",
+            )
+
+    def test_resolved_multi_entity_fingerprint_matches_intent(self) -> None:
+        intent = MultiEntityIntent(
+            intent_id="intent-r1",
+            request_id="r1",
+            source_id="sales",
+            entity_refs=(EntityRef(entity_id="order"),),
+        )
+        outcome = ResolvedMultiEntityIntent(intent=intent)
+        assert outcome.fingerprint == intent.fingerprint

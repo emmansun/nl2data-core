@@ -311,6 +311,63 @@ class IRViewReference(BaseModel):
         }
 
 
+class JoinStep(BaseModel):
+    """One deterministic join step in a logical join plan."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    step_id: str = Field(pattern=_IDENTIFIER_PATTERN)
+    relationship_id: str = Field(pattern=_IDENTIFIER_PATTERN)
+    left_entity_id: str = Field(pattern=_IDENTIFIER_PATTERN)
+    right_entity_id: str = Field(pattern=_IDENTIFIER_PATTERN)
+    left_field_id: str = Field(pattern=_IDENTIFIER_PATTERN)
+    right_field_id: str = Field(pattern=_IDENTIFIER_PATTERN)
+    join_type: Literal["inner"] = "inner"
+
+    def canonical_payload(self) -> dict[str, Any]:
+        return {
+            "step_id": self.step_id,
+            "relationship_id": self.relationship_id,
+            "left_entity_id": self.left_entity_id,
+            "right_entity_id": self.right_entity_id,
+            "left_field_id": self.left_field_id,
+            "right_field_id": self.right_field_id,
+            "join_type": self.join_type,
+        }
+
+
+class LogicalJoinPlan(BaseModel):
+    """Backend-neutral logical join plan produced by a deterministic planner.
+
+    The plan carries only semantic entity/field references and
+    relationship identities - never raw join text, SQL AST nodes, or
+    physical table names.  The fingerprint is deterministic so equivalent
+    inputs always produce the same plan identity.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    plan_id: str = Field(pattern=_IDENTIFIER_PATTERN)
+    source_id: str = Field(pattern=_IDENTIFIER_PATTERN)
+    root_entity_id: str = Field(pattern=_IDENTIFIER_PATTERN)
+    steps: tuple[JoinStep, ...] = Field(default_factory=tuple)
+    fingerprint: str = Field(default="", pattern=_FINGERPRINT_PATTERN)
+
+    @model_validator(mode="after")
+    def _compute_fingerprint(self) -> LogicalJoinPlan:
+        fingerprint = sha256_fingerprint(self.canonical_payload())
+        object.__setattr__(self, "fingerprint", fingerprint)
+        return self
+
+    def canonical_payload(self) -> dict[str, Any]:
+        return {
+            "plan_id": self.plan_id,
+            "source_id": self.source_id,
+            "root_entity_id": self.root_entity_id,
+            "steps": [step.canonical_payload() for step in self.steps],
+        }
+
+
 class IRProvenance(BaseModel):
     """View/source provenance of the logical request.
 
@@ -325,6 +382,7 @@ class IRProvenance(BaseModel):
     catalog_fingerprint: str | None = Field(default=None, pattern=_FINGERPRINT_PATTERN)
     policy_view_fingerprint: str | None = Field(default=None, pattern=_FINGERPRINT_PATTERN)
     view_reference: IRViewReference | None = None
+    join_plan_fingerprint: str | None = Field(default=None, pattern=_FINGERPRINT_PATTERN)
 
     def canonical_payload(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -335,6 +393,8 @@ class IRProvenance(BaseModel):
         }
         if self.view_reference is not None:
             payload["view_reference"] = self.view_reference.canonical_payload()
+        if self.join_plan_fingerprint is not None:
+            payload["join_plan_fingerprint"] = self.join_plan_fingerprint
         return payload
 
 

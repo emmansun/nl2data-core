@@ -229,6 +229,22 @@ class TestCompilerFailClosed:
         assert excinfo.value.code == ErrorCode.MONGO_REJECTED
         assert "fingerprint" in excinfo.value.message
 
+    def test_mongo_compiler_rejects_join_plan_ir(self) -> None:
+        # A multi-entity IR carries a join plan fingerprint the
+        # single-collection Mongo compiler cannot honor; compilation must
+        # fail closed instead of silently dropping the join.
+        joined = golden_ir().model_copy(
+            update={
+                "provenance": golden_ir().provenance.model_copy(
+                    update={"join_plan_fingerprint": "sha256:" + "a" * 64}
+                )
+            }
+        )
+        with pytest.raises(MongoCompileError) as excinfo:
+            compile_mongo_ir(joined, binding=golden_binding())
+        assert excinfo.value.code == ErrorCode.MONGO_REJECTED
+        assert "join" in excinfo.value.message
+
     def test_native_values_cannot_reach_a_compiler(self) -> None:
         from nl2data_core.planning.ir.models import IRFilter
 

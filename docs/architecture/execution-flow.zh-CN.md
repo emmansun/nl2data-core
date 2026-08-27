@@ -17,7 +17,9 @@ flowchart TD
     B --> C["memory<br/>recall + revalidate context"]
     C --> D["intent<br/>provider -> structured intent<br/>or clarification"]
     D --> E["plan<br/>intent -> Semantic IR"]
-    E --> F["validate<br/>IR against authorized view"]
+    E --> E2{"join plan<br/>RelationshipGraph +<br/>authorized view"}
+    E2 -- "not found / ambiguous /<br/>unauthorized" --> X
+    E2 -- "LogicalJoinPlan" --> F["validate<br/>IR against authorized view"]
     F --> G{"compile<br/>adapter capabilities, limits,<br/>mandatory filter obligations"}
     G -- "denied / malformed" --> X["protected REJECTED outcome"]
     G -- "compiled evidence" --> H["guard<br/>artifact guard bound to IR"]
@@ -57,6 +59,7 @@ IR 验证会对照当前授权投影重新检查每个被引用的成员，并�
 | `memory` | 仅召回有界上下文 | 内存提供方（可选） | 召回引用过期/超出范围 → 澄清 |
 | `intent` | 提供方输出 → 结构化意图 | `IntentResolver`（核心） | 不安全输出、预算耗尽 |
 | `plan` | 意图 → Semantic IR | 计划构建器（核心） | 引用超出授权视图 |
+| `plan:join` | 多实体意图 → LogicalJoinPlan | JoinPlanner（核心） | 路径缺失/歧义/未授权 |
 | `validate` | IR 对照已解析视图 | IR 验证器（核心） | 任何被引用成员被排除 |
 | `compile` | IR → 后端中立证据 | 编译器（核心） | 能力/限制/义务不匹配 |
 | `guard` | 将工件守卫绑定到编译产物 | 运行时门 | 守卫/IR 不匹配 |
@@ -66,6 +69,20 @@ IR 验证会对照当前授权投影重新检查每个被引用的成员，并�
 | `protect` | 归一化 + 指纹化结果 | 运行时边界 | 不支持的原生值 |
 | `persist` | 安全证据 + 幂等 | 状态存储（可选） | CAS 冲突、过期检查点 |
 | `complete` | 受保护结果 | 运行时 | — |
+
+## 多实体连接规划
+
+当已解析意图携带多个语义实体时，运行时在 IR 定稿之前调用确定性的
+`JoinPlanner`。规划器消费受治理的 `RelationshipGraph`、`AuthorizedView` 与
+已校验的 `MultiEntityIntent`，返回四种结构化结果之一：
+
+- **plan** —— 携带稳定 fingerprint 的后端中立 `LogicalJoinPlan`。
+- **not_found** —— 不存在连接所需实体的已授权路径。
+- **ambiguous** —— 确定性平局裁决之后仍存在多条最短已授权路径。
+- **unauthorized** —— 关系图或请求的实体超出当前视图。
+
+四种结果全部 fail-closed：除非产生有效的 `LogicalJoinPlan` 并像单实体计划
+一样穿过相同的 compile、guard、govern 与 authorize 门禁，适配器绝不被调用。
 
 ## 提供方在哪里
 

@@ -346,6 +346,147 @@ class ResolvedIntent(BaseModel):
         return self
 
 
+class EntityRef(BaseModel):
+    """One bounded semantic entity reference; never a physical table name."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    entity_id: str = Field(pattern=_IDENTIFIER_PATTERN)
+    alias: str | None = Field(default=None, pattern=_IDENTIFIER_PATTERN)
+
+    def canonical_payload(self) -> dict[str, Any]:
+        return {"entity_id": self.entity_id, "alias": self.alias}
+
+
+class MetricRef(BaseModel):
+    """One bounded metric reference (aggregated field) across entities."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    metric_id: str = Field(pattern=_IDENTIFIER_PATTERN)
+    field_id: str = Field(pattern=_IDENTIFIER_PATTERN)
+    aggregation: AggregationKind = "none"
+    alias: str | None = Field(default=None, pattern=_IDENTIFIER_PATTERN)
+
+    def canonical_payload(self) -> dict[str, Any]:
+        return {
+            "metric_id": self.metric_id,
+            "field_id": self.field_id,
+            "aggregation": self.aggregation,
+            "alias": self.alias,
+        }
+
+
+class DimensionRef(BaseModel):
+    """One bounded dimension reference (non-aggregated field)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    dimension_id: str = Field(pattern=_IDENTIFIER_PATTERN)
+    field_id: str = Field(pattern=_IDENTIFIER_PATTERN)
+    alias: str | None = Field(default=None, pattern=_IDENTIFIER_PATTERN)
+
+    def canonical_payload(self) -> dict[str, Any]:
+        return {
+            "dimension_id": self.dimension_id,
+            "field_id": self.field_id,
+            "alias": self.alias,
+        }
+
+class MultiEntityIntent(BaseModel):
+    """Validated multi-entity structured intent.
+
+    Carries only semantic facts (entities, metrics, dimensions, filters,
+    ordering, bounded limits) - never raw SQL, MQL, shell text, AST nodes,
+    driver objects, or authorization decisions.  All collections are bounded
+    and the model is frozen after construction.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    intent_version: Literal[2] = 2
+    intent_id: str = Field(pattern=_IDENTIFIER_PATTERN)
+    request_id: str = Field(pattern=_IDENTIFIER_PATTERN)
+    source_id: str = Field(pattern=_IDENTIFIER_PATTERN)
+    entity_refs: tuple[EntityRef, ...] = Field(
+        min_length=1, max_length=_MAX_INTENT_SELECTIONS
+    )
+    metric_refs: tuple[MetricRef, ...] = Field(
+        default_factory=tuple, max_length=_MAX_INTENT_SELECTIONS
+    )
+    dimension_refs: tuple[DimensionRef, ...] = Field(
+        default_factory=tuple, max_length=_MAX_INTENT_SELECTIONS
+    )
+    filters: tuple[IntentFilter, ...] = Field(
+        default_factory=tuple, max_length=_MAX_INTENT_FILTERS
+    )
+    orderings: tuple[IntentOrdering, ...] = Field(
+        default_factory=tuple, max_length=_MAX_INTENT_ORDERINGS
+    )
+    limit: int | None = Field(default=None, ge=1, le=_MAX_LIMIT)
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+    fingerprint: str = Field(default="", pattern=_FINGERPRINT_PATTERN)
+
+    @field_validator("entity_refs")
+    @classmethod
+    def _unique_entity_refs(
+        cls, value: tuple[EntityRef, ...]
+    ) -> tuple[EntityRef, ...]:
+        ids = [ref.entity_id for ref in value]
+        if len(ids) != len(set(ids)):
+            raise ValueError("entity ids must be unique")
+        return value
+
+    @model_validator(mode="after")
+    def _compute_fingerprint(self) -> MultiEntityIntent:
+        fingerprint = sha256_fingerprint(self.canonical_payload())
+        object.__setattr__(self, "fingerprint", fingerprint)
+        return self
+
+    def canonical_payload(self) -> dict[str, Any]:
+        return {
+            "intent_version": self.intent_version,
+            "intent_id": self.intent_id,
+            "request_id": self.request_id,
+            "source_id": self.source_id,
+            "entity_refs": [ref.canonical_payload() for ref in self.entity_refs],
+            "metric_refs": [ref.canonical_payload() for ref in self.metric_refs],
+            "dimension_refs": [ref.canonical_payload() for ref in self.dimension_refs],
+            "filters": [filter_.canonical_payload() for filter_ in self.filters],
+            "orderings": [ordering.canonical_payload() for ordering in self.orderings],
+            "limit": self.limit,
+            "confidence": self.confidence,
+        }
+
+    def field_ids(self) -> frozenset[str]:
+        """All semantic field ids referenced by the intent."""
+        return (
+            frozenset(metric.field_id for metric in self.metric_refs)
+            | frozenset(dimension.field_id for dimension in self.dimension_refs)
+            | frozenset(filter_.field_id for filter_ in self.filters)
+            | frozenset(ordering.field_id for ordering in self.orderings)
+        )
+
+    def safe_dump(self) -> dict[str, Any]:
+        """Serialization with semantic facts only - never raw model output."""
+        return self.model_dump()
+
+
+class ResolvedMultiEntityIntent(BaseModel):
+    """Resolution outcome: validated multi-entity structured intent."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    kind: Literal["resolved_multi_entity"] = "resolved_multi_entity"
+    intent: MultiEntityIntent
+    fingerprint: str = Field(default="", pattern=_FINGERPRINT_PATTERN)
+
+    @model_validator(mode="after")
+    def _compute_fingerprint(self) -> ResolvedMultiEntityIntent:
+        object.__setattr__(self, "fingerprint", self.intent.fingerprint)
+        return self
+
+
 class ClarificationRequired(BaseModel):
     """Resolution outcome: the request needs clarification."""
 

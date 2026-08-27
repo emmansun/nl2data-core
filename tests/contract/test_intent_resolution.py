@@ -18,6 +18,7 @@ from nl2data_core.ai.models import (
     ModelUsage,
     RejectedIntent,
     ResolvedIntent,
+    ResolvedMultiEntityIntent,
 )
 from nl2data_core.ai.plan_builder import build_ir_from_intent
 from nl2data_core.ai.resolver import IntentResolver
@@ -29,6 +30,13 @@ from nl2data_core.planning.validation import AuthorizedView
 VIEW = AuthorizedView(
     source_id="sales",
     root_entity_ids=frozenset({"order"}),
+    field_ids=frozenset({"order_id", "amount", "status", "created_at"}),
+    catalog_fingerprint="sha256:" + "a" * 64,
+)
+
+ME_VIEW = AuthorizedView(
+    source_id="sales",
+    root_entity_ids=frozenset({"order", "customer"}),
     field_ids=frozenset({"order_id", "amount", "status", "created_at"}),
     catalog_fingerprint="sha256:" + "a" * 64,
 )
@@ -83,8 +91,23 @@ def resolver(
     )
 
 
+def me_resolver(
+    *, min_confidence: float = 0.6, config: ModelConfig | None = None
+) -> IntentResolver:
+    return IntentResolver(
+        view=ME_VIEW,
+        semantic_references=REFERENCES,
+        config=config,
+        min_confidence=min_confidence,
+    )
+
+
 async def resolve_with(provider: FakeModelProvider, **overrides):
     return await resolver().resolve(request(), provider, **overrides)
+
+
+async def resolve_with_me(provider: FakeModelProvider, **overrides):
+    return await me_resolver().resolve(request(), provider, **overrides)
 
 
 class TestValidIntent:
@@ -398,6 +421,85 @@ class TestSensitiveContextExclusion:
         assert "prompt" not in invocation.context
         assert "credentials" not in repr(invocation.context)
         assert invocation.metadata["context_fingerprint"].startswith("sha256:")
+
+
+VALID_MULTI_ENTITY_INTENT = {
+    "multi_entity_intent": {
+        "source_id": "sales",
+        "entity_refs": [
+            {"entity_id": "order"},
+            {"entity_id": "customer"},
+        ],
+        "dimension_refs": [
+            {"dimension_id": "d1", "field_id": "order_id"},
+            {"dimension_id": "d2", "field_id": "status"},
+        ],
+        "metric_refs": [
+            {"metric_id": "m1", "field_id": "amount", "aggregation": "sum"},
+        ],
+        "filters": [
+            {"filter_id": "f1", "field_id": "status", "operator": "eq", "value": "shipped"}
+        ],
+        "orderings": [
+            {"ordering_id": "o1", "field_id": "amount", "direction": "desc"}
+        ],
+        "limit": 100,
+        "confidence": 0.9,
+    }
+}
+
+
+class TestMultiEntityIntent:
+    async def test_valid_multi_entity_intent_resolves(self) -> None:
+        outcome = await resolve_with_me(
+            FakeModelProvider(default_response=VALID_MULTI_ENTITY_INTENT)
+        )
+        assert isinstance(outcome, ResolvedMultiEntityIntent)
+        assert outcome.intent.source_id == "sales"
+        assert {ref.entity_id for ref in outcome.intent.entity_refs} == {"order", "customer"}
+
+    async def test_multi_entity_field_outside_view_is_rejected(self) -> None:
+        content = {
+            "multi_entity_intent": {
+                "source_id": "sales",
+                "entity_refs": [{"entity_id": "order"}],
+                "dimension_refs": [{"dimension_id": "d1", "field_id": "salary"}],
+                "limit": 10,
+                "confidence": 0.9,
+            }
+        }
+        outcome = await resolve_with_me(FakeModelProvider(default_response=content))
+        assert isinstance(outcome, RejectedIntent)
+        assert outcome.error.code == ModelErrorCode.UNSAFE_OUTPUT
+
+    async def test_multi_entity_entity_outside_view_is_rejected(self) -> None:
+        content = {
+            "multi_entity_intent": {
+                "source_id": "sales",
+                "entity_refs": [{"entity_id": "order"}, {"entity_id": "supplier"}],
+                "dimension_refs": [{"dimension_id": "d1", "field_id": "order_id"}],
+                "limit": 10,
+                "confidence": 0.9,
+            }
+        }
+        outcome = await resolve_with_me(FakeModelProvider(default_response=content))
+        assert isinstance(outcome, RejectedIntent)
+        assert outcome.error.code == ModelErrorCode.UNSAFE_OUTPUT
+
+    async def test_multi_entity_sql_in_payload_is_rejected(self) -> None:
+        content = {
+            "multi_entity_intent": {
+                "source_id": "sales",
+                "entity_refs": [{"entity_id": "order"}],
+                "dimension_refs": [{"dimension_id": "d1", "field_id": "order_id"}],
+                "note": "SELECT * FROM orders",
+                "limit": 10,
+                "confidence": 0.9,
+            }
+        }
+        outcome = await resolve_with_me(FakeModelProvider(default_response=content))
+        assert isinstance(outcome, RejectedIntent)
+        assert outcome.error.code == ModelErrorCode.UNSAFE_OUTPUT
 
 
 class TestIRBuilderHandoff:

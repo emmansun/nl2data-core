@@ -38,6 +38,15 @@ payloads, or native provider exception objects.
 | `INVALID_INPUT` | No | Invalid request input (bounds, shape) |
 | `PLAN_VALIDATION_FAILED` | No | Plan/IR validation failed |
 
+### Multi-entity planning
+
+| Code | Retryable | Meaning |
+| --- | --- | --- |
+| `JOIN_PATH_NOT_FOUND` | No | No authorized relationship path connects the requested entities |
+| `JOIN_PATH_AMBIGUOUS` | No | More than one shortest authorized join path exists |
+| `JOIN_EDGE_UNAUTHORIZED` | No | A relationship or entity is outside the authorized view |
+| `MULTI_ENTITY_UNSUPPORTED` | No | Multi-entity intent resolved but the runtime has no `JoinPlanner` bound |
+
 ### Workflow
 
 | Code | Retryable | Meaning |

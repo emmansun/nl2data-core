@@ -32,6 +32,7 @@ from nl2data.models import (
 from nl2data_core.adapters.models import AdapterLimits, ValidationContext
 from nl2data_core.adapters.protocol import QueryAdapter
 from nl2data_core.adapters.sql.compile import compile_ir
+from nl2data_core.ai.models import MultiEntityIntent
 from nl2data_core.engine.ports import NOT_CONFIGURED_MESSAGE
 from nl2data_core.governance.authorization import AuthorizationIssuer, AuthorizationVerifier
 from nl2data_core.governance.decisions import PolicyEvaluator
@@ -43,6 +44,7 @@ from nl2data_core.governance.models import (
 )
 from nl2data_core.planning.ir.models import SemanticQueryIR
 from nl2data_core.planning.ir.validation import validate_ir
+from nl2data_core.planning.join_planner import JoinPlannerOutcome
 from nl2data_core.planning.models import PhysicalBinding
 from nl2data_core.planning.validation import AuthorizedView
 from nl2data_core.tenancy.models import TenantScopeContext
@@ -73,6 +75,14 @@ class PlanResolver(Protocol):
 
     def resolve(self, request: QueryRequest) -> SemanticQueryIR | None:
         """Return the IR for ``request`` or ``None`` when unresolvable."""
+        ...
+
+
+class JoinPlanner(Protocol):
+    """Deterministic planner from a governed multi-entity intent to a plan."""
+
+    def plan(self, intent: MultiEntityIntent) -> JoinPlannerOutcome:
+        """Return the structured deterministic join-plan outcome."""
         ...
 
 

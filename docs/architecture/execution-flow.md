@@ -15,7 +15,9 @@ flowchart TD
     B --> C["memory<br/>recall + revalidate context"]
     C --> D["intent<br/>provider -> structured intent<br/>or clarification"]
     D --> E["plan<br/>intent -> Semantic IR"]
-    E --> F["validate<br/>IR against authorized view"]
+    E --> E2{"join plan<br/>RelationshipGraph +<br/>authorized view"}
+    E2 -- "not found / ambiguous /<br/>unauthorized" --> X
+    E2 -- "LogicalJoinPlan" --> F["validate<br/>IR against authorized view"]
     F --> G{"compile<br/>adapter capabilities, limits,<br/>mandatory filter obligations"}
     G -- "denied / malformed" --> X["protected REJECTED outcome"]
     G -- "compiled evidence" --> H["guard<br/>artifact guard bound to IR"]
@@ -62,6 +64,7 @@ completion maps to a protected public outcome.
 | `memory` | Recall bounded context only | Memory provider (optional) | Recalled reference stale/out of scope → clarification |
 | `intent` | Provider output → structured intent | `IntentResolver` (core) | Unsafe output, budget exhausted |
 | `plan` | Intent → Semantic IR | Plan builder (core) | Reference outside authorized view |
+| `plan:join` | Multi-entity intent → LogicalJoinPlan | JoinPlanner (core) | Missing/ambiguous/unauthorized path |
 | `validate` | IR against resolved view | IR validator (core) | Any referenced member excluded |
 | `compile` | IR → backend-neutral evidence | Compiler (core) | Capability/limit/obligation mismatch |
 | `guard` | Bind artifact guard to compiled artifact | Runtime gate | Guard/IR mismatch |
@@ -71,6 +74,24 @@ completion maps to a protected public outcome.
 | `protect` | Normalize + fingerprint results | Runtime boundary | Unsupported native values |
 | `persist` | Safe evidence + idempotency | State store (optional) | CAS conflict, stale checkpoint |
 | `complete` | Protected outcome | Runtime | — |
+
+## Multi-entity join planning
+
+When the resolved intent carries more than one semantic entity, the runtime
+invokes the deterministic `JoinPlanner` before the IR is finalized. The
+planner consumes the governed `RelationshipGraph`, the `AuthorizedView`, and
+the validated `MultiEntityIntent`. It returns one of four structured outcomes:
+
+- **plan** — a backend-neutral `LogicalJoinPlan` with a stable fingerprint.
+- **not_found** — no authorized path connects the required entities.
+- **ambiguous** — more than one shortest authorized path exists after the
+  deterministic tie-break policy.
+- **unauthorized** — the relationship graph or a requested entity is outside
+  the current view.
+
+All four outcomes are fail-closed: the adapter is never invoked unless a valid
+`LogicalJoinPlan` is produced and threaded through the same compile, guard,
+governance, and authorization gates as single-entity plans.
 
 ## Where providers fit
 
