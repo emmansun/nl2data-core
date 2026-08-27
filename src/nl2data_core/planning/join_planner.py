@@ -18,6 +18,13 @@ from nl2data_core.planning.ir.models import JoinStep, LogicalJoinPlan
 from nl2data_core.planning.models import RelationshipEdge, RelationshipGraph
 from nl2data_core.planning.validation import AuthorizedView
 
+#: Versioned planner identity embedded in compilation evidence.
+#: Currently holds the legacy value; will be renamed to
+#: ``"logical-plan-planner/v1"`` when the sprint B schema changes ship.
+#: The ``/v{N}`` suffix increments on any fingerprint-breaking rule change,
+#: automatically invalidating downstream evidence.
+PLANNER_IDENTITY = "deterministic-join-planner"
+
 
 class JoinPlannerOutcome(BaseModel):
     """Structured result of deterministic join planning."""

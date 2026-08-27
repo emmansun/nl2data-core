@@ -15,6 +15,7 @@ from nl2data_core.compilation.contract import CompilationContext
 from nl2data_core.governance.models import EffectiveLimits
 from nl2data_core.planning.ir.fixtures import golden_ir
 from nl2data_core.planning.ir.models import JoinStep, LogicalJoinPlan
+from nl2data_core.planning.join_planner import PLANNER_IDENTITY
 from nl2data_core.planning.models import ColumnBinding, EntityBinding, PhysicalBinding
 
 
@@ -63,7 +64,7 @@ def _context(
         mandatory_filter_fingerprints=ir.filter_fingerprints(),
         compiler_context=binding,
         join_plan=join_plan,
-        planner_identity="deterministic-join-planner",
+        planner_identity=PLANNER_IDENTITY,
     )
 
 
@@ -89,7 +90,7 @@ def test_sql_compiler_emits_join_from_logical_join_plan() -> None:
     result = compile_sql(ir, context=context)
     assert "JOIN" in result.artifact
     assert result.evidence.join_plan_fingerprint == join_plan.fingerprint
-    assert result.evidence.planner_identity == "deterministic-join-planner"
+    assert result.evidence.planner_identity == PLANNER_IDENTITY
 
 
 def test_sql_compiler_preserves_join_step_order() -> None:

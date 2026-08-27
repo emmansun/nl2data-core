@@ -101,7 +101,7 @@ from nl2data_core.memory.resolver import (
 )
 from nl2data_core.planning.ir.models import IRViewReference, SemanticQueryIR
 from nl2data_core.planning.ir.validation import validate_ir
-from nl2data_core.planning.join_planner import JoinPlanner
+from nl2data_core.planning.join_planner import PLANNER_IDENTITY, JoinPlanner
 from nl2data_core.planning.models import PhysicalBinding
 from nl2data_core.planning.validation import AuthorizedView
 from nl2data_core.tenancy.models import TenantScopeContext
@@ -862,7 +862,7 @@ class _CompileNode(_NodeBase):
             compiler_context=runtime.binding,
             join_plan=self._channel.get("join_plan"),
             planner_identity=(
-                "deterministic-join-planner"
+                PLANNER_IDENTITY
                 if self._channel.get("join_plan") is not None
                 else None
             ),
