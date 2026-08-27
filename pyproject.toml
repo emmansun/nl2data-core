@@ -55,7 +55,7 @@ testpaths = [
 ]
 asyncio_mode = "auto"
 addopts = "-q"
-pythonpath = ["src", "packages/nl2data-openai/src", "packages/nl2data-semantic-catalog-postgres/src", "packages/nl2data-admin-service/src", "packages/nl2data-postgres/src", "packages/nl2data-mongodb/src", "packages/nl2data-workflow-postgres/src", "packages/nl2data-memory-redis/src"]
+pythonpath = ["src", "packages/nl2data-openai/src", "packages/nl2data-semantic-catalog-postgres/src", "packages/nl2data-admin-service/src", "packages/nl2data-postgres/src", "packages/nl2data-mongodb/src", "packages/nl2data-workflow-postgres/src", "packages/nl2data-memory-redis/src", "demo"]
 
 [tool.mypy]
 python_version = "3.11"
@@ -71,7 +71,7 @@ exclude = ["tests"]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
-src = ["src", "tests", "packages/nl2data-openai/src", "packages/nl2data-semantic-catalog-postgres/src", "packages/nl2data-admin-service/src", "packages/nl2data-postgres/src", "packages/nl2data-mongodb/src", "packages/nl2data-workflow-postgres/src", "packages/nl2data-memory-redis/src"]
+src = ["src", "tests", "demo", "packages/nl2data-openai/src", "packages/nl2data-semantic-catalog-postgres/src", "packages/nl2data-admin-service/src", "packages/nl2data-postgres/src", "packages/nl2data-mongodb/src", "packages/nl2data-workflow-postgres/src", "packages/nl2data-memory-redis/src"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]

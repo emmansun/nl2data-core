@@ -71,10 +71,10 @@ jobs:
         run: python -m pytest -q
 
       - name: Run Ruff
-        run: python -m ruff check src tests packages/nl2data-openai/src packages/nl2data-semantic-catalog-postgres/src packages/nl2data-admin-service/src packages/nl2data-postgres/src packages/nl2data-mongodb/src packages/nl2data-workflow-postgres/src packages/nl2data-memory-redis/src scripts
+        run: python -m ruff check src tests demo packages/nl2data-openai/src packages/nl2data-semantic-catalog-postgres/src packages/nl2data-admin-service/src packages/nl2data-postgres/src packages/nl2data-mongodb/src packages/nl2data-workflow-postgres/src packages/nl2data-memory-redis/src scripts
 
       - name: Run Mypy
-        run: python -m mypy src packages/nl2data-openai/src packages/nl2data-semantic-catalog-postgres/src packages/nl2data-admin-service/src packages/nl2data-postgres/src packages/nl2data-mongodb/src packages/nl2data-workflow-postgres/src packages/nl2data-memory-redis/src
+        run: python -m mypy src demo packages/nl2data-openai/src packages/nl2data-semantic-catalog-postgres/src packages/nl2data-admin-service/src packages/nl2data-postgres/src packages/nl2data-mongodb/src packages/nl2data-workflow-postgres/src packages/nl2data-memory-redis/src
 
   docs:
     name: Documentation quality gates

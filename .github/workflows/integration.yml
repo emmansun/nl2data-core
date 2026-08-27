@@ -80,8 +80,12 @@ jobs:
           && python -m pip install -e ".[dev,postgres]"
           && python -m pip install -e packages/nl2data-semantic-catalog-postgres
           && python -m pip install -e packages/nl2data-mongodb
+          && python -m pip install -e packages/nl2data-postgres
           && python -m pip install -e packages/nl2data-workflow-postgres
           && python -m pip install -e "packages/nl2data-memory-redis[redis]"
+
+      - name: Seed the mainflow demo reference dataset
+        run: python demo/seed/seed.py --scale small
 
       - name: Run real service integration tests
         # Discovery profiles are classified explicitly: an unreachable service
@@ -96,6 +100,7 @@ jobs:
           packages/nl2data-memory-redis/tests/test_integration.py
           tests/integration/test_mongodb_real.py
           tests/integration/test_mongodb_discovery_real.py
+          tests/integration/test_mainflow_demo_real.py
           tests/conformance/test_postgres_conformance.py
           tests/conformance/test_mongodb_conformance.py
           packages/nl2data-mongodb/tests/test_package_integration.py

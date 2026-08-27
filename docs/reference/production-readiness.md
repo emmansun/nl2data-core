@@ -36,7 +36,11 @@ verification.
 
 ## Before going to production
 
-1. **Pass the deterministic suites.** The mandatory entry gate for any
+1. **Run the canonical mainflow demo.** The deterministic profile must pass
+   locally (`python demo/run/demo_deterministic.py`), and the real-service
+   profile must be exercised against PostgreSQL before a release. See
+   [Mainflow demo](../guides/mainflow-demo.md) for the runbook.
+2. **Pass the deterministic suites.** The mandatory entry gate for any
    optional backend is the conformance suite
    (`tests/conformance/test_workflow_runtime_conformance.py`,
    `tests/contract/test_backend_conformance.py`, plus the unit,
@@ -54,18 +58,19 @@ verification.
    fingerprints, workflow state, telemetry, or evidence. See
    [Secrets and live testing](../operations/secrets.md) for injection,
    cleanup, and rollback.
-5. **Plan rollback explicitly.** Rollback never rewrites evidence:
+6. **Plan rollback explicitly.** Rollback never rewrites evidence:
    activating an older artifact invalidates evidence produced under the
    newer one, and stale checkpoints are rejected before any adapter
    execution. See [Compatibility](compatibility.md) for the migration
    policy.
-6. **Understand the documented surface.** The public API is stable
+7. **Understand the documented surface.** The public API is stable
    within the documented surface, but `nl2data_core` is not — pin your
    application to `nl2data` imports and re-run the import-boundary
    suites after upgrades.
 
 ## Operating the documented surface
 
+- [Mainflow demo](../guides/mainflow-demo.md) — repeatable end-to-end walkthrough of configuration, startup, execution, and durable recovery.
 - [Service configuration](../operations/services.md) — per-service
   settings, health checks, timeouts, retries, and failure
   classification for PostgreSQL, Redis, MongoDB, and OpenAI.

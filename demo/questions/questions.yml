@@ -1,0 +1,217 @@
+# Standard 10-question mainflow demo suite.
+# Each entry includes the natural-language question, a stable SQL evidence
+# query, and deterministic result-shape checks for runbook verification.
+
+questions:
+  - id: q1_gmv_top_regions
+    text: "GMV top regions in the previous month."
+    capabilities: [aggregation, time-window]
+    evidence_sql: |
+      SELECT region,
+             SUM(amount) AS gmv,
+             COUNT(*)    AS order_count
+      FROM orders
+      WHERE status IN ('paid', 'shipped', 'refunded')
+        AND created_at >= DATE_TRUNC('month', CURRENT_DATE - INTERVAL '1 month')
+        AND created_at < DATE_TRUNC('month', CURRENT_DATE)
+      GROUP BY region
+      ORDER BY gmv DESC;
+    shape_check:
+      columns: [region, gmv, order_count]
+      min_rows: 1
+
+  - id: q2_refund_rate_by_category
+    text: "Refund-rate outliers by product category."
+    capabilities: [aggregation, join]
+    evidence_sql: |
+      SELECT p.category,
+             COUNT(DISTINCT o.order_id) FILTER (WHERE o.status = 'refunded') AS refunded_orders,
+             COUNT(DISTINCT o.order_id)                                       AS total_orders,
+             ROUND(
+               100.0 * COUNT(DISTINCT o.order_id) FILTER (WHERE o.status = 'refunded')
+               / NULLIF(COUNT(DISTINCT o.order_id), 0),
+               2
+             ) AS refund_rate_pct
+      FROM orders o
+      JOIN order_items oi ON o.order_id = oi.order_id
+      JOIN products p ON oi.product_id = p.product_id
+      GROUP BY p.category
+      ORDER BY refund_rate_pct DESC NULLS LAST;
+    shape_check:
+      columns: [category, refunded_orders, total_orders, refund_rate_pct]
+      min_rows: 1
+
+  - id: q3_orders_not_shipped_48h
+    text: "Orders not shipped within 48 hours."
+    capabilities: [time-window, join, filter]
+    evidence_sql: |
+      SELECT o.order_id,
+             o.created_at,
+             o.paid_at,
+             s.shipped_at,
+             EXTRACT(EPOCH FROM (s.shipped_at - o.created_at)) / 3600 AS hours_to_ship
+      FROM orders o
+      LEFT JOIN shipments s ON o.order_id = s.order_id
+      WHERE o.status IN ('paid', 'shipped', 'refunded')
+        AND (s.shipped_at IS NULL OR s.shipped_at > o.created_at + INTERVAL '48 hours')
+      ORDER BY hours_to_ship DESC NULLS FIRST
+      LIMIT 100;
+    shape_check:
+      columns: [order_id, created_at, paid_at, shipped_at, hours_to_ship]
+      min_rows: 0
+
+  - id: q4_paid_but_unshipped
+    text: "Paid but unshipped orders."
+    capabilities: [filter, join]
+    evidence_sql: |
+      SELECT o.order_id,
+             o.amount,
+             o.paid_at,
+             s.status AS shipment_status
+      FROM orders o
+      LEFT JOIN shipments s ON o.order_id = s.order_id
+      WHERE o.status IN ('paid')
+        AND (s.shipment_id IS NULL OR s.status = 'pending')
+      ORDER BY o.paid_at
+      LIMIT 100;
+    shape_check:
+      columns: [order_id, amount, paid_at, shipment_status]
+      min_rows: 0
+
+  - id: q5_weekly_order_growth
+    text: "Weekly order growth (WoW)."
+    capabilities: [aggregation, time-window]
+    evidence_sql: |
+      WITH weekly AS (
+        SELECT DATE_TRUNC('week', created_at) AS week_start,
+               COUNT(*) AS order_count,
+               SUM(amount) AS gmv
+        FROM orders
+        WHERE status IN ('paid', 'shipped', 'refunded')
+        GROUP BY DATE_TRUNC('week', created_at)
+      )
+      SELECT week_start,
+             order_count,
+             gmv,
+             LAG(order_count) OVER (ORDER BY week_start) AS prev_order_count,
+             ROUND(
+               100.0 * (order_count - LAG(order_count) OVER (ORDER BY week_start))
+               / NULLIF(LAG(order_count) OVER (ORDER BY week_start), 0),
+               2
+             ) AS wow_growth_pct
+      FROM weekly
+      ORDER BY week_start DESC
+      LIMIT 12;
+    shape_check:
+      columns: [week_start, order_count, gmv, prev_order_count, wow_growth_pct]
+      min_rows: 2
+
+  - id: q6_new_customer_first_order_conversion
+    text: "New-customer first-order conversion by channel."
+    capabilities: [aggregation, join]
+    evidence_sql: |
+      WITH first_order AS (
+        SELECT customer_id,
+               MIN(created_at) AS first_order_at,
+               MIN(order_id)   AS first_order_id
+        FROM orders
+        WHERE status IN ('paid', 'shipped', 'refunded')
+        GROUP BY customer_id
+      )
+      SELECT c.channel,
+             COUNT(DISTINCT fo.customer_id) AS new_customers,
+             COUNT(DISTINCT CASE WHEN o.status IN ('paid', 'shipped', 'refunded') THEN o.customer_id END)
+               AS converted_customers,
+             ROUND(
+               100.0 * COUNT(DISTINCT CASE WHEN o.status IN ('paid', 'shipped', 'refunded') THEN o.customer_id END)
+               / NULLIF(COUNT(DISTINCT fo.customer_id), 0),
+               2
+             ) AS conversion_pct
+      FROM first_order fo
+      JOIN customers c ON fo.customer_id = c.customer_id
+      JOIN orders o ON fo.customer_id = o.customer_id
+      GROUP BY c.channel
+      ORDER BY conversion_pct DESC NULLS LAST;
+    shape_check:
+      columns: [channel, new_customers, converted_customers, conversion_pct]
+      min_rows: 1
+
+  - id: q7_aov_quantiles
+    text: "AOV quantiles (P50/P90)."
+    capabilities: [aggregation, statistics]
+    evidence_sql: |
+      SELECT PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY amount) AS p50_aov,
+             PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY amount) AS p90_aov,
+             AVG(amount) AS mean_aov,
+             COUNT(*)    AS order_count
+      FROM orders
+      WHERE status IN ('paid', 'shipped', 'refunded');
+    shape_check:
+      columns: [p50_aov, p90_aov, mean_aov, order_count]
+      exact_rows: 1
+
+  - id: q8_fast_growing_low_stock
+    text: "Fast-growing products with low stock signal."
+    capabilities: [aggregation, join, filter]
+    evidence_sql: |
+      WITH weekly_sales AS (
+        SELECT oi.product_id,
+               SUM(oi.quantity) AS units_sold_7d
+        FROM order_items oi
+        JOIN orders o ON oi.order_id = o.order_id
+        WHERE o.created_at >= CURRENT_DATE - INTERVAL '7 days'
+        GROUP BY oi.product_id
+      )
+      SELECT p.product_id,
+             p.category,
+             p.stock_quantity,
+             p.unit_price,
+             COALESCE(ws.units_sold_7d, 0) AS units_sold_7d,
+             ROUND(
+               p.stock_quantity::numeric
+               / NULLIF(COALESCE(ws.units_sold_7d, 0), 0),
+               2
+             ) AS days_of_cover
+      FROM products p
+      LEFT JOIN weekly_sales ws ON p.product_id = ws.product_id
+      WHERE COALESCE(ws.units_sold_7d, 0) > 0
+      ORDER BY units_sold_7d DESC, days_of_cover ASC
+      LIMIT 50;
+    shape_check:
+      columns: [product_id, category, stock_quantity, unit_price, units_sold_7d, days_of_cover]
+      min_rows: 0
+
+  - id: q9_tenant_scoped_summary
+    text: "Tenant-scoped order and amount summary."
+    capabilities: [aggregation, tenant-isolation]
+    evidence_sql: |
+      SELECT tenant_id,
+             COUNT(*)        AS order_count,
+             SUM(amount)     AS total_amount,
+             AVG(amount)     AS avg_amount
+      FROM orders
+      WHERE status IN ('paid', 'shipped', 'refunded')
+      GROUP BY tenant_id
+      ORDER BY tenant_id;
+    shape_check:
+      columns: [tenant_id, order_count, total_amount, avg_amount]
+      min_rows: 2
+
+  - id: q10_clarify_revenue
+    text: "Clarification branch for ambiguous business term (revenue vs paid amount)."
+    capabilities: [clarification]
+    evidence_sql: |
+      -- This query returns the two possible metric definitions so the demo can
+      -- surface a clarification request instead of guessing the user's intent.
+      SELECT 'gross_merchandise_value' AS metric,
+             SUM(amount)               AS value
+      FROM orders
+      WHERE status IN ('paid', 'shipped', 'refunded')
+      UNION ALL
+      SELECT 'paid_amount',
+             SUM(p.amount)
+      FROM payments p
+      WHERE p.status = 'completed';
+    shape_check:
+      columns: [metric, value]
+      exact_rows: 2
