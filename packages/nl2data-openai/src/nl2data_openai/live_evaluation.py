@@ -34,7 +34,12 @@ from nl2data_core.ai.evaluation.models import (
     LiveAvailability,
 )
 from nl2data_core.ai.instructions import assemble_instruction_bundle
-from nl2data_core.ai.models import ClarificationRequired, RejectedIntent, ResolvedIntent
+from nl2data_core.ai.models import (
+    ClarificationRequired,
+    RejectedIntent,
+    ResolvedIntent,
+    ResolvedMultiEntityIntent,
+)
 from nl2data_core.ai.resolver import IntentResolver
 from nl2data_core.fixtures.models import FIXED_TIMEZONE, TIME_ANCHOR
 from nl2data_core.planning.validation import AuthorizedView
@@ -230,7 +235,12 @@ async def _run_case(
 
 def _build_evidence(
     case: Any,
-    outcome: ResolvedIntent | ClarificationRequired | RejectedIntent,
+    outcome: (
+        ResolvedIntent
+        | ResolvedMultiEntityIntent
+        | ClarificationRequired
+        | RejectedIntent
+    ),
     view: AuthorizedView,
     references: dict[str, SemanticReference],
     resolver_config: ModelConfig,
@@ -248,7 +258,7 @@ def _build_evidence(
         context=context,
         view=view,
     )
-    if isinstance(outcome, ResolvedIntent):
+    if isinstance(outcome, (ResolvedIntent, ResolvedMultiEntityIntent)):
         resolution: Literal["resolved", "clarification", "rejected"] = "resolved"
         intent_fingerprint = outcome.intent.fingerprint
         clarification_fingerprint: str | None = None
