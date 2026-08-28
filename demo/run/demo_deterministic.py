@@ -90,7 +90,7 @@ IR = SemanticQueryIR(
 
 #: Fields spanning the 2-entity JOIN (orders + customers).
 JOIN_FIELDS: frozenset[str] = frozenset(
-    {"order_id", "customer_id", "amount", "region", "status", "created_at", "name"}
+    {"order_id", "customer_id", "amount", "region", "status", "created_at", "customer_region"}
 )
 
 #: Multi-entity binding for the 2-entity JOIN demo.
@@ -104,7 +104,9 @@ JOIN_BINDING = PhysicalBinding(
         ColumnBinding(field_id="region", physical_name="region", entity_id="orders"),
         ColumnBinding(field_id="status", physical_name="status", entity_id="orders"),
         ColumnBinding(field_id="created_at", physical_name="created_at", entity_id="orders"),
-        ColumnBinding(field_id="name", physical_name="name", entity_id="customers"),
+        ColumnBinding(
+            field_id="customer_region", physical_name="region", entity_id="customers"
+        ),
     ),
     entity_bindings=(
         EntityBinding(entity_id="orders", physical_name="orders"),
@@ -119,14 +121,14 @@ JOIN_VIEW = AuthorizedView(
     field_ids=JOIN_FIELDS,
 )
 
-#: 2-entity JOIN IR: top EMEA orders with the customer name.
+#: 2-entity JOIN IR: top EMEA orders with the customer region.
 JOIN_IR = SemanticQueryIR(
     ir_id="demo-join-ir",
     source_id="sales",
     root_entity_id="orders",
     selections=(
         IRSelection(selection_id="s1", field_id="order_id", alias="oid"),
-        IRSelection(selection_id="s2", field_id="name", alias="customer_name"),
+        IRSelection(selection_id="s2", field_id="customer_region", alias="customer_region"),
     ),
     filters=(
         IRFilter(filter_id="f1", field_id="region", operator="eq", value="emea"),
@@ -332,7 +334,7 @@ async def run_join_demo(*, db_dir: Path) -> bool:
     await join_facade.initialize()
     join_request = QueryRequest(
         request_id="demo-join-req-1",
-        prompt="top emea orders with customer name",
+        prompt="top emea orders with customer region",
         context=QueryContext(request_id="demo-join-req-1", workflow_id="demo-join-wf-1"),
     )
     join_outcome = await join_facade.aquery(join_request)

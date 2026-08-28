@@ -40,7 +40,7 @@ using a static `LogicalJoinPlan` injected through the facade's `plan_compiler`
 hook.
 
 - **2-entity JOIN** — `orders` joined with `customers` on `customer_id`,
-  returning the top EMEA orders with the customer name.
+  returning the top EMEA orders with the customer region.
 - **3-entity compound JOIN** — `orders` joined with `order_items` on `order_id`,
   then joined with `products` on `product_id`, returning the top EMEA order
   line items with product category and quantity.
@@ -49,7 +49,7 @@ hook.
 
 | Scenario | Columns | Row count |
 | --- | --- | --- |
-| 2-entity JOIN | `oid`, `customer_name` | 5 |
+| 2-entity JOIN | `oid`, `customer_region` | 5 |
 | 3-entity compound JOIN | `oid`, `category`, `quantity` | 5 |
 
 Both scenarios assert `QueryOutcome.status == SUCCEEDED` and print the result
