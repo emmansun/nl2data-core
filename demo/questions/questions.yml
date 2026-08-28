@@ -1,11 +1,23 @@
 # Standard 10-question mainflow demo suite.
 # Each entry includes the natural-language question, a stable SQL evidence
 # query, and deterministic result-shape checks for runbook verification.
+#
+# Questions whose evidence SQL filters on an enum-coded field carry a
+# ``value_semantics`` annotation (corpus metadata for the v4.1 value-level
+# semantics slice): the mapped field, the declared business terms, and the
+# attribution each filter value is expected to produce (VS_HIT when the
+# model uses a governed business word, VS_PASS_THROUGH when it uses a
+# stored value).  Annotations are documentation for evaluation runs; the
+# evidence SQL stays authoritative for runbook verification.
 
 questions:
   - id: q1_gmv_top_regions
     text: "GMV top regions in the previous month."
     capabilities: [aggregation, time-window]
+    value_semantics:
+      field: status
+      business_terms: [paid, shipped, refunded]
+      expected_outcomes: [VS_HIT, VS_HIT, VS_HIT]
     evidence_sql: |
       SELECT region,
              SUM(amount) AS gmv,
@@ -44,6 +56,10 @@ questions:
   - id: q3_orders_not_shipped_48h
     text: "Orders not shipped within 48 hours."
     capabilities: [time-window, join, filter]
+    value_semantics:
+      field: status
+      business_terms: [paid, shipped, refunded]
+      expected_outcomes: [VS_HIT, VS_HIT, VS_HIT]
     evidence_sql: |
       SELECT o.order_id,
              o.created_at,
@@ -63,6 +79,10 @@ questions:
   - id: q4_paid_but_unshipped
     text: "Paid but unshipped orders."
     capabilities: [filter, join]
+    value_semantics:
+      field: status
+      business_terms: [paid]
+      expected_outcomes: [VS_HIT]
     evidence_sql: |
       SELECT o.order_id,
              o.amount,
@@ -81,6 +101,10 @@ questions:
   - id: q5_weekly_order_growth
     text: "Weekly order growth (WoW)."
     capabilities: [aggregation, time-window]
+    value_semantics:
+      field: status
+      business_terms: [paid, shipped, refunded]
+      expected_outcomes: [VS_HIT, VS_HIT, VS_HIT]
     evidence_sql: |
       WITH weekly AS (
         SELECT DATE_TRUNC('week', created_at) AS week_start,
@@ -109,6 +133,10 @@ questions:
   - id: q6_new_customer_first_order_conversion
     text: "New-customer first-order conversion by channel."
     capabilities: [aggregation, join]
+    value_semantics:
+      field: status
+      business_terms: [paid, shipped, refunded]
+      expected_outcomes: [VS_HIT, VS_HIT, VS_HIT]
     evidence_sql: |
       WITH first_order AS (
         SELECT customer_id,
@@ -139,6 +167,10 @@ questions:
   - id: q7_aov_quantiles
     text: "AOV quantiles (P50/P90)."
     capabilities: [aggregation, statistics]
+    value_semantics:
+      field: status
+      business_terms: [paid, shipped, refunded]
+      expected_outcomes: [VS_HIT, VS_HIT, VS_HIT]
     evidence_sql: |
       SELECT PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY amount) AS p50_aov,
              PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY amount) AS p90_aov,
@@ -184,6 +216,10 @@ questions:
   - id: q9_tenant_scoped_summary
     text: "Tenant-scoped order and amount summary."
     capabilities: [aggregation, tenant-isolation]
+    value_semantics:
+      field: status
+      business_terms: [paid, shipped, refunded]
+      expected_outcomes: [VS_HIT, VS_HIT, VS_HIT]
     evidence_sql: |
       SELECT tenant_id,
              COUNT(*)        AS order_count,

@@ -45,6 +45,15 @@ class ModelErrorCode(StrEnum):
     INSTRUCTION_VERSION_INCOMPATIBLE = "INSTRUCTION_VERSION_INCOMPATIBLE"
     INSTRUCTION_BOUNDS_EXCEEDED = "INSTRUCTION_BOUNDS_EXCEEDED"
     UNSAFE_INSTRUCTION_CONTENT = "UNSAFE_INSTRUCTION_CONTENT"
+    #: VS_001 - a filter value missed the declared value mapping under the
+    #: reject policy. Resolution-stage failure, never a compiler error.
+    VALUE_UNKNOWN = "VS_001"
+    #: VS_002 - a filter applied an operator other than eq/in to a field
+    #: with declared value semantics (v4.1 operator whitelist).
+    VALUE_OPERATOR_DISALLOWED = "VS_002"
+    #: The bundle-referenced descriptor snapshot needed for value
+    #: resolution could not be located; resolution fails closed.
+    VALUE_SNAPSHOT_UNAVAILABLE = "VS_SNAPSHOT_UNAVAILABLE"
     UNKNOWN_MODEL_ERROR = "UNKNOWN_MODEL_ERROR"
 
 
@@ -64,6 +73,9 @@ _CATEGORY_BY_CODE: dict[ModelErrorCode, ModelErrorCategory] = {
     ModelErrorCode.INSTRUCTION_VERSION_INCOMPATIBLE: ModelErrorCategory.REQUEST,
     ModelErrorCode.INSTRUCTION_BOUNDS_EXCEEDED: ModelErrorCategory.BOUNDS,
     ModelErrorCode.UNSAFE_INSTRUCTION_CONTENT: ModelErrorCategory.REQUEST,
+    ModelErrorCode.VALUE_UNKNOWN: ModelErrorCategory.REQUEST,
+    ModelErrorCode.VALUE_OPERATOR_DISALLOWED: ModelErrorCategory.REQUEST,
+    ModelErrorCode.VALUE_SNAPSHOT_UNAVAILABLE: ModelErrorCategory.REQUEST,
     ModelErrorCode.UNKNOWN_MODEL_ERROR: ModelErrorCategory.UNKNOWN,
 }
 

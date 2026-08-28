@@ -15,6 +15,7 @@ from .models import (
     SemanticFieldDescriptor,
     SemanticRelationshipDescriptor,
     SemanticViewDefinition,
+    ValueSemantics,
     ViewMemberRestrictions,
     ViewProvenance,
 )
@@ -34,6 +35,7 @@ __all__ = [
     "SemanticFieldDescriptor",
     "SemanticRelationshipDescriptor",
     "SemanticViewDefinition",
+    "ValueSemantics",
     "ViewMemberRestrictions",
     "ViewProvenance",
     "ViewRegistry",

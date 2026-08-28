@@ -166,9 +166,14 @@ class IntentFilter(BaseModel):
     operator: FilterOperator
     value: Any = None
 
-    @field_validator("value")
+    @field_validator("value", mode="before")
     @classmethod
     def _validate_value(cls, value: Any) -> Any:
+        # Provider output crosses the JSON wire boundary as a list;
+        # normalize it to the canonical tuple shape (matching IRFilter)
+        # so ``in`` filters are usable end to end.
+        if isinstance(value, list):
+            value = tuple(value)
         if isinstance(value, tuple):
             for item in value:
                 _check_scalar(item)
@@ -338,6 +343,7 @@ class ResolvedIntent(BaseModel):
 
     kind: Literal["resolved"] = "resolved"
     intent: StructuredIntent
+    value_resolution: ValueResolutionOutcome | None = None
     fingerprint: str = Field(default="", pattern=_FINGERPRINT_PATTERN)
 
     @model_validator(mode="after")
@@ -479,6 +485,7 @@ class ResolvedMultiEntityIntent(BaseModel):
 
     kind: Literal["resolved_multi_entity"] = "resolved_multi_entity"
     intent: MultiEntityIntent
+    value_resolution: ValueResolutionOutcome | None = None
     fingerprint: str = Field(default="", pattern=_FINGERPRINT_PATTERN)
 
     @model_validator(mode="after")
@@ -509,9 +516,93 @@ class RejectedIntent(BaseModel):
 
     kind: Literal["rejected"] = "rejected"
     error: ModelErrorRecord
+    value_resolution: ValueResolutionOutcome | None = None
     fingerprint: str = Field(default="", pattern=_FINGERPRINT_PATTERN)
 
     @model_validator(mode="after")
     def _compute_fingerprint(self) -> RejectedIntent:
         object.__setattr__(self, "fingerprint", self.error.fingerprint)
         return self
+
+
+#: Bounded resolution outcome channel statuses (design D9): ``hit`` is a
+#: business word resolved from the mapping, ``pass_through`` a governed
+#: stored value accepted by membership, ``warned`` a warn-policy miss,
+#: ``miss`` a reject-policy miss (paired with VS_001), ``unpolicied`` a
+#: filter on a field without declared value semantics.
+ValueResolutionStatus = Literal[
+    "hit", "pass_through", "warned", "miss", "unpolicied"
+]
+
+
+class FilterValueOutcome(BaseModel):
+    """Resolution outcome of one filter value (bounded, evidence-safe)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    filter_id: str = Field(pattern=_IDENTIFIER_PATTERN)
+    field_id: str = Field(pattern=_IDENTIFIER_PATTERN)
+    value_index: int = Field(ge=0, le=1_000)
+    status: ValueResolutionStatus
+
+
+class FilterResolutionOutcome(BaseModel):
+    """Per-filter-occurrence aggregation of value outcomes."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    filter_id: str = Field(pattern=_IDENTIFIER_PATTERN)
+    field_id: str = Field(pattern=_IDENTIFIER_PATTERN)
+    operator: str = Field(pattern=_IDENTIFIER_PATTERN)
+    values: tuple[FilterValueOutcome, ...] = Field(max_length=1_001)
+
+
+class ValueResolutionOutcome(BaseModel):
+    """The resolution outcome channel (design D9).
+
+    Records one outcome per filter value, aggregated per filter
+    occurrence, plus the fingerprint of the descriptor snapshot the
+    mapping was read from (finest granularity: the descriptor
+    fingerprint, not the bundle fingerprint).  The channel is consumed
+    by orchestration and evaluation layers and never enters compilation
+    evidence, which stays fingerprints-only.  Raw filter values are not
+    recorded - only bounded statuses.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    snapshot_fingerprint: str | None = Field(
+        default=None, pattern=_FINGERPRINT_PATTERN
+    )
+    filters: tuple[FilterResolutionOutcome, ...] = Field(
+        default_factory=tuple, max_length=1_001
+    )
+
+    def status_count(self, status: ValueResolutionStatus) -> int:
+        """Bounded count of one status across every recorded filter value."""
+        return sum(
+            1
+            for filter_outcome in self.filters
+            for value_outcome in filter_outcome.values
+            if value_outcome.status == status
+        )
+
+    @property
+    def hit_count(self) -> int:
+        return self.status_count("hit")
+
+    @property
+    def pass_through_count(self) -> int:
+        return self.status_count("pass_through")
+
+    @property
+    def warned_count(self) -> int:
+        return self.status_count("warned")
+
+    @property
+    def miss_count(self) -> int:
+        return self.status_count("miss")
+
+    @property
+    def unpolicied_count(self) -> int:
+        return self.status_count("unpolicied")

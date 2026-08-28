@@ -48,10 +48,16 @@ from nl2data_core.ai.models import (
     ResolvedIntent,
     ResolvedMultiEntityIntent,
     StructuredIntent,
+    ValueResolutionOutcome,
 )
 from nl2data_core.ai.protocol import ModelProvider
+from nl2data_core.ai.value_semantics import (
+    resolve_intent_filters,
+    snapshot_unavailable_error,
+)
 from nl2data_core.canonical import canonical_json, sha256_fingerprint
 from nl2data_core.planning.validation import AuthorizedView
+from nl2data_core.views.models import SemanticDescriptor, ValueSemantics
 from nl2data_core.views.projection import ResolvedViewProjection
 
 #: Top-level fields a provider may emit in the structured output envelope.
@@ -237,6 +243,8 @@ class IntentResolver:
         policy_fingerprint: str | None = None,
         tenant_scope_fingerprint: str | None = None,
         instruction_bundle: ModelInstructionBundle | None = None,
+        value_semantics_snapshot: SemanticDescriptor | None = None,
+        value_semantics_anchored: bool = False,
     ) -> None:
         self._view = view
         self._projection = projection
@@ -261,6 +269,8 @@ class IntentResolver:
         self._policy_fingerprint = policy_fingerprint
         self._tenant_scope_fingerprint = tenant_scope_fingerprint
         self._instruction_bundle = instruction_bundle
+        self._value_semantics_snapshot = value_semantics_snapshot
+        self._value_semantics_anchored = value_semantics_anchored
         self._last_bundle: ModelInstructionBundle | None = None
 
     @property
@@ -277,6 +287,39 @@ class IntentResolver:
         may cross workflow and evaluation boundaries.
         """
         return self._last_bundle
+
+    def _value_semantics_lookup(
+        self,
+    ) -> tuple[
+        dict[str, ValueSemantics], SemanticDescriptor | None
+    ] | ModelErrorRecord:
+        """Resolve the value-semantics mapping source, fail-closed (D8).
+
+        When value-semantics anchoring is configured, mappings are read
+        only from the bundle-referenced descriptor snapshot - never a
+        live registry.  An unavailable snapshot, or one whose catalog
+        fingerprint does not match the authorized view's, fails
+        resolution closed.
+        """
+        if not self._value_semantics_anchored:
+            return {}, None
+        snapshot = self._value_semantics_snapshot
+        if snapshot is None:
+            return snapshot_unavailable_error()
+        view_catalog = self._view.catalog_fingerprint
+        if (
+            view_catalog is not None
+            and snapshot.catalog_fingerprint is not None
+            and snapshot.catalog_fingerprint != view_catalog
+        ):
+            return snapshot_unavailable_error()
+        lookup = {
+            field.field_id: field.value_semantics
+            for entity in snapshot.entities
+            for field in entity.fields
+            if field.value_semantics is not None
+        }
+        return lookup, snapshot
 
     async def resolve(
         self,
@@ -528,6 +571,26 @@ class IntentResolver:
             "model output is missing the intent contract",
         )
 
+    def _apply_value_resolution(
+        self, filters: Any
+    ) -> tuple[Any, ValueResolutionOutcome | None, ModelErrorRecord | None]:
+        """Resolve filter values before the IR freezes (design D1/D8-D10)."""
+        lookup_result = self._value_semantics_lookup()
+        if isinstance(lookup_result, ModelErrorRecord):
+            return filters, None, lookup_result
+        lookup, snapshot = lookup_result
+        if snapshot is None:
+            # Value semantics not anchored: fields are untouched.
+            return filters, None, None
+        resolved, outcome, error = resolve_intent_filters(filters, lookup.get)
+        # The snapshot fingerprint is attached even on the failure path so
+        # the outcome channel is auditable end to end (design D8/D9).
+        outcome = ValueResolutionOutcome(
+            snapshot_fingerprint=snapshot.fingerprint,
+            filters=outcome.filters,
+        )
+        return resolved, outcome, error
+
     def _intent(
         self,
         request: QueryRequest,
@@ -585,9 +648,21 @@ class IntentResolver:
                             "aggregation": selection.aggregation,
                         },
                     )
+        resolved_filters, outcome, vs_error = self._apply_value_resolution(
+            intent.filters
+        )
+        if vs_error is not None:
+            return RejectedIntent(error=vs_error, value_resolution=outcome)
+        if resolved_filters != intent.filters:
+            intent = StructuredIntent.model_validate(
+                {
+                    **intent.model_dump(),
+                    "filters": [f.model_dump() for f in resolved_filters],
+                }
+            )
         if intent.confidence < self._min_confidence:
             return self._clarification_from_alternatives(request, content.get("alternatives"))
-        return ResolvedIntent(intent=intent)
+        return ResolvedIntent(intent=intent, value_resolution=outcome)
 
     def _multi_entity_intent(
         self,
@@ -648,9 +723,21 @@ class IntentResolver:
                             "aggregation": metric.aggregation,
                         },
                     )
+        resolved_filters, outcome, vs_error = self._apply_value_resolution(
+            intent.filters
+        )
+        if vs_error is not None:
+            return RejectedIntent(error=vs_error, value_resolution=outcome)
+        if resolved_filters != intent.filters:
+            intent = MultiEntityIntent.model_validate(
+                {
+                    **intent.model_dump(),
+                    "filters": [f.model_dump() for f in resolved_filters],
+                }
+            )
         if intent.confidence < self._min_confidence:
             return self._clarification_from_alternatives(request, content.get("alternatives"))
-        return ResolvedMultiEntityIntent(intent=intent)
+        return ResolvedMultiEntityIntent(intent=intent, value_resolution=outcome)
 
     def _clarification(
         self, request: QueryRequest, raw: Any

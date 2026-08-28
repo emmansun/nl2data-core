@@ -147,6 +147,83 @@ flowchart TD
 逐步演练见[从元数据到激活 Bundle](../guides/metadata-to-bundle.zh-CN.md)；
 字段细节见 [CompositionProfile 参考](../reference/composition-profile.zh-CN.md)。
 
+## 值级语义（v4.1）
+
+枚举编码字段可以在其 `SemanticFieldDescriptor` 上声明 `ValueSemantics`
+块：从业务词（键）到存储值的有界 `value_mapping`，可选的
+`display_order` 与 `sample_values`，`pii` 标志，以及
+`unknown_value_policy`（`reject` | `warn`）。
+
+**映射做什么——不做什么。** 不变式 N4 重述为：*不允许概率性构造；
+允许确定性的受治理查找。* 模型仍然绝不会被要求发明或猜测值；意图
+解析器在 **IR 冻结之前** 对过滤值执行针对已声明映射的确定性查找，
+且映射只从 bundle 引用的描述符快照（按 catalog fingerprint）读取。
+快照不可用或指纹不匹配时解析 fail closed
+（`VALUE_SNAPSHOT_UNAVAILABLE`）——过期的注册表绝不可能泄漏进来。
+在 `reject` 策略下，既不是已知业务词也不是存储值的过滤值会失败关闭
+（`VALUE_UNKNOWN`，`VS_001`）；`warn` 策略下则带着 warned 结果继续。
+被映射字段只接受 `eq`/`in` 操作符（其余被 `VS_002` 拒绝）；存储值在
+类型严格成员判定下受控通过；混合 `in` 列表逐值解析并在冻结前去重。
+
+**VS_001 所有权变更。** 未知过滤值不再是延迟到编译阶段的失败：
+`VS_001` 在 **解析阶段**、IR 尚不存在时抛出，并携带有界、证据安全的
+细节集（字段、尝试值、已知业务词——绝不包含物理名或映射内容）。
+
+**结果通道。** 每个过滤值在解析结果通道上产生一个有界状态
+（`hit` / `pass_through` / `warned` / `miss` / `unpolicied`），同时携带
+描述符快照指纹。该通道由编排层与评估层消费——绝不进入编译证据，
+编译证据保持仅指纹。评估将状态聚合成按用例、按运行的 `VS_HIT` /
+`VS_PASS_THROUGH` / `VS_WARNED` / `VS_MISS` / `VS_UNPOLICIED` 归因
+（延迟的 `pii` 行为见
+[ADR：pii 掩码执行点](adr-pii-masking-enforcement-point.zh-CN.md)；
+该标志本身只是 schema + 指纹属性）。
+
+**延迟行为（v2 展望）。** `pii` 掩码在 v4.1 没有运行时实现：该标志只是
+schema + 指纹属性，延迟到
+[pii ADR](adr-pii-masking-enforcement-point.zh-CN.md) 之后的变更。同样，
+`display_order` 仅在 schema 中保留而无行为——v4.1 绝不会从它派生排序
+（例如 `ORDER BY` 生成）。它未来是通过专用 IR 指令驱动排序，还是保持
+纯展示用途，属于 v2 关注点，v1 不做任何承诺。
+
+### 映射升级清单
+
+任何 `ValueSemantics` 内容修改——映射条目、样本值、未知值策略或
+展示顺序——都是 **快照破坏事件**，必须遵循完整清单：
+
+1. 在描述符中修改映射：描述符 fingerprint 随之改变。
+2. catalog snapshot fingerprint 一并改变。
+3. 引用旧快照的 Bundle **校验失败** `catalog_incompatible`——这是
+   预期的 fail-closed 行为，不是事故。
+4. 针对新快照重新发布 Bundle。
+5. 重新审计旧 Bundle 下签发的证据：既有授权、checkpoint 与结果均已
+   过期，需要重新校验。
+
+### 切片门禁（路线图）
+
+下一个语义层切片（v4.2，计算字段）在 v4.1 质量门禁达成前
+**不得启动**：**`VS_HIT` ≥ 90%**，覆盖带标注的 demo/评估语料，
+从完整语料运行的归因摘要
+（`EvaluationReport.value_semantics_summary()`）读取。门禁记录在
+本路线图说明中，不在代码里——归因维度就是被测量的输入。
+
+## 可选成员评审清单（N6）
+
+未来每一个*可选*描述符成员（例如 v4.2 的 `CalculatedField` 或 v4.3 的
+`Metric`）都继承不变式 **N6**：未设置的成员必须完全从
+`canonical_payload()` 中省略，而不是序列化为 `null`，这样引入该成员后，
+所有 descriptor、snapshot 与 bundle 的 fingerprint 保持逐字节一致。
+合并新的可选成员前请确认：
+
+- `canonical_payload()` 仅在成员已设置时包含对应键。
+- 模型校验器拒绝"提供了但为空"的容器（"set means non-empty"），
+  并拒绝会威胁 fingerprint 稳定性的值（`bool`、`float`、超长词项）。
+- 有单元测试固定不变式三元组——在显式 `None` 成员存在与否两种情况下，
+  descriptor payload、snapshot fingerprint、bundle fingerprint 完全一致——
+  并有快照破坏测试证明修改成员内容会改变 snapshot fingerprint，
+  且对基于旧快照构建的 Bundle 校验失败（`catalog_incompatible`）。
+  `tests/unit/test_value_semantics.py` 是参考模式
+  （`TestN6OmitWhenUnset`、`TestSnapshotBreakingChain`）。
+
 ## 下一步
 
 - [从元数据到激活 Bundle](../guides/metadata-to-bundle.zh-CN.md) — 生命周期演练

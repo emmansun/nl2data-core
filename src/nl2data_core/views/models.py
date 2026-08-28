@@ -15,7 +15,7 @@ deeply immutable so a resolved view can never be mutated after binding.
 from __future__ import annotations
 
 import re
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -52,6 +52,11 @@ _SQL_TEXT = re.compile(
     r"\b(select|insert|update|delete|drop|create|alter|merge)\b[\s\S]{0,200}\b(from|into|set|table|values)\b",
     re.IGNORECASE,
 )
+
+#: Bounded limits for value-semantics members.
+_MAX_VALUE_MAPPING_ENTRIES = 4_096
+_MAX_VALUE_TERMS = 4_096
+_MAX_VALUE_TERM_CHARS = 128
 
 
 class _FrozenDict(dict[str, Any]):
@@ -93,6 +98,139 @@ def _freeze_mapping(value: dict[str, str]) -> dict[str, str]:
     return cast(dict[str, str], _FrozenDict(value))
 
 
+class ValueSemantics(BaseModel):
+    """Business-word to stored-value semantics for one enum-coded field.
+
+    ``value_mapping`` is the only member that constrains SQL generation:
+    it maps business words (keys) to stored values, and intent resolution
+    performs a deterministic governed lookup against it.  The reverse
+    direction (result interpretation) is an adapter/result-layer
+    responsibility, never a semantic-layer one.
+
+    ``sample_values`` is prompt-context enrichment only - it is never a
+    SQL constraint, filter expansion, or enum-domain declaration.
+    Confusing sample values with the mapping would let non-binding prompt
+    hints masquerade as an exhaustive domain.
+
+    The v4.1 value domain is ``str | int`` only: ``float`` is excluded so
+    canonical-JSON float representation cannot threaten fingerprint
+    stability, and ``bool`` (an ``int`` subclass) is rejected explicitly.
+    The member is fully inside the descriptor fingerprint domain and is
+    omitted from the canonical payload when unset (invariant N6).  JSON
+    -wire safe: ``dict``/``list`` fields only, never a ``frozenset``.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    value_mapping: dict[str, str | int] = Field(
+        max_length=_MAX_VALUE_MAPPING_ENTRIES
+    )
+    display_order: tuple[str, ...] | None = Field(
+        default=None, max_length=_MAX_VALUE_TERMS
+    )
+    sample_values: tuple[str | int, ...] | None = Field(
+        default=None, max_length=_MAX_VALUE_TERMS
+    )
+    pii: bool = False
+    unknown_value_policy: Literal["reject", "warn"] = "reject"
+
+    @field_validator("value_mapping", mode="before")
+    @classmethod
+    def _reject_boolean_mapping_values(
+        cls, value: Any
+    ) -> Any:
+        # Pydantic lax coercion would silently turn ``True`` into ``1``
+        # before the typed validator runs, so booleans are rejected at
+        # the raw-input boundary (bool is an ``int`` subclass).
+        if isinstance(value, dict) and any(
+            isinstance(mapped, bool) for mapped in value.values()
+        ):
+            raise ValueError(
+                "value_mapping stored values must be str or int; bool and "
+                "float are rejected to keep canonical fingerprints stable"
+            )
+        return value
+
+    @field_validator("value_mapping")
+    @classmethod
+    def _valid_mapping(
+        cls, value: dict[str, str | int]
+    ) -> dict[str, str | int]:
+        if not value:
+            raise ValueError(
+                "a provided ValueSemantics must carry a non-empty value_mapping "
+                "(set means non-empty)"
+            )
+        for key, mapped in value.items():
+            if not key or len(key) > _MAX_VALUE_TERM_CHARS:
+                raise ValueError("value_mapping keys must be 1-128 characters")
+            if isinstance(mapped, bool) or not isinstance(mapped, (str, int)):
+                raise ValueError(
+                    "value_mapping stored values must be str or int; bool and "
+                    "float are rejected to keep canonical fingerprints stable"
+                )
+        return cast(dict[str, str | int], _FrozenDict(value))
+
+    @field_validator("display_order")
+    @classmethod
+    def _valid_display_order(
+        cls, value: tuple[str, ...] | None
+    ) -> tuple[str, ...] | None:
+        if value is None:
+            return None
+        for term in value:
+            if not term or len(term) > _MAX_VALUE_TERM_CHARS:
+                raise ValueError("display_order terms must be 1-128 characters")
+        if len(value) != len(set(value)):
+            raise ValueError("display_order terms must be unique")
+        return value
+
+    @field_validator("sample_values", mode="before")
+    @classmethod
+    def _reject_boolean_sample_values(cls, value: Any) -> Any:
+        if isinstance(value, (list, tuple)) and any(
+            isinstance(sample, bool) for sample in value
+        ):
+            raise ValueError(
+                "sample_values must be str or int; bool and float are rejected"
+            )
+        return value
+
+    @field_validator("sample_values")
+    @classmethod
+    def _valid_sample_values(
+        cls, value: tuple[str | int, ...] | None
+    ) -> tuple[str | int, ...] | None:
+        if value is None:
+            return None
+        for sample in value:
+            if isinstance(sample, bool) or not isinstance(sample, (str, int)):
+                raise ValueError(
+                    "sample_values must be str or int; bool and float are rejected"
+                )
+            if isinstance(sample, str) and len(sample) > _MAX_VALUE_TERM_CHARS:
+                raise ValueError("sample_values terms must be 1-128 characters")
+        return value
+
+    @property
+    def known_business_terms(self) -> tuple[str, ...]:
+        """The bounded, sorted business words declared by the mapping."""
+        return tuple(sorted(self.value_mapping))
+
+    def canonical_payload(self) -> dict[str, Any]:
+        return {
+            "value_mapping": dict(sorted(self.value_mapping.items())),
+            "display_order": list(self.display_order)
+            if self.display_order is not None
+            else None,
+            "sample_values": list(self.sample_values)
+            if self.sample_values is not None
+            else None,
+            "pii": self.pii,
+            "unknown_value_policy": self.unknown_value_policy,
+        }
+
+
 def validate_safe_description(value: str) -> str:
     """Reject credential/connection/executable material in semantic text.
 
@@ -117,6 +255,7 @@ class SemanticFieldDescriptor(BaseModel):
     description: str = Field(default="", max_length=_MAX_DESCRIPTION_CHARS)
     data_type: str = Field(pattern=_IDENTIFIER_PATTERN)
     allowed_aggregations: frozenset[AggregationKind] = Field(default_factory=frozenset)
+    value_semantics: ValueSemantics | None = None
 
     @field_validator("description")
     @classmethod
@@ -124,13 +263,19 @@ class SemanticFieldDescriptor(BaseModel):
         return validate_safe_description(value)
 
     def canonical_payload(self) -> dict[str, Any]:
-        return {
+        # Invariant N6: an optional semantic member that is unset MUST be
+        # omitted from the canonical payload so its introduction cannot
+        # change the fingerprint of any descriptor that does not use it.
+        payload: dict[str, Any] = {
             "field_id": self.field_id,
             "label": self.label,
             "description": self.description,
             "data_type": self.data_type,
             "allowed_aggregations": sorted(self.allowed_aggregations),
         }
+        if self.value_semantics is not None:
+            payload["value_semantics"] = self.value_semantics.canonical_payload()
+        return payload
 
 
 class SemanticRelationshipDescriptor(BaseModel):

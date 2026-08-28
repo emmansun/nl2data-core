@@ -178,6 +178,100 @@ The step-by-step walkthrough lives in
 [Metadata to active Bundle](../guides/metadata-to-bundle.md); the field
 details are in the [CompositionProfile reference](../reference/composition-profile.md).
 
+## Value-level semantics (v4.1)
+
+Enum-coded fields can declare a `ValueSemantics` block on their
+`SemanticFieldDescriptor`: a bounded `value_mapping` from business words
+(keys) to stored values, optional `display_order` and `sample_values`, a
+`pii` flag, and an `unknown_value_policy` (`reject` | `warn`).
+
+**What the mapping does — and what it does not.** Invariant N4 is
+restated as: *no probabilistic construction; deterministic governed
+lookup permitted.* The model is still never asked to invent or guess
+values; the intent resolver performs a deterministic lookup of filter
+values against the declared mapping **before the IR freezes**, reading
+the mapping only from the bundle-referenced descriptor snapshot (by
+catalog fingerprint). An unavailable or fingerprint-mismatched snapshot
+fails resolution closed (`VALUE_SNAPSHOT_UNAVAILABLE`) — a stale
+registry can never leak in. A filter value that is neither a known
+business term nor a stored value fails closed under the `reject` policy
+(`VALUE_UNKNOWN`, `VS_001`) or proceeds with a warned outcome under
+`warn`. Mapped fields accept only `eq`/`in` operators (`VS_002` rejects
+others); stored values pass through under type-strict membership; mixed
+`in` lists resolve per value with duplicates removed before the freeze.
+
+**VS_001 ownership change.** Unknown filter values are no longer a
+delayed compiler-stage failure: `VS_001` is raised at the **resolution
+stage**, before the IR exists, and travels with a bounded, evidence-safe
+detail set (field, attempted value, known business terms — never
+physical names or mapping contents).
+
+**Outcome channel.** Every filter value produces a bounded status
+(`hit` / `pass_through` / `warned` / `miss` / `unpolicied`) on the
+resolution outcome channel, together with the descriptor-snapshot
+fingerprint. The channel is consumed by orchestration and evaluation
+layers — it never enters compilation evidence, which stays
+fingerprints-only. Evaluation aggregates the statuses into `VS_HIT` /
+`VS_PASS_THROUGH` / `VS_WARNED` / `VS_MISS` / `VS_UNPOLICIED` attribution
+per case and per run (see
+[ADR: pii masking enforcement point](adr-pii-masking-enforcement-point.md)
+for the deferred `pii` behavior; the flag itself is schema + fingerprint
+only).
+
+**Deferred behavior (v2 outlook).** `pii` masking has no runtime
+implementation in v4.1: the flag is schema + fingerprint only, deferred
+behind the [pii ADR](adr-pii-masking-enforcement-point.md). Likewise,
+`display_order` is reserved in the schema without behavior — v4.1 never
+derives ordering (such as `ORDER BY` generation) from it. Whether it
+later drives ordering through a dedicated IR directive or stays
+presentation-only is a v2 concern with no v1 commitment.
+
+### Mapping upgrade checklist
+
+Any `ValueSemantics` content edit — a mapping entry, sample values, the
+unknown-value policy, or the display order — is a **snapshot-breaking
+event** and must follow the full checklist:
+
+1. Edit the mapping in the descriptor: the descriptor fingerprint
+   changes.
+2. The catalog snapshot fingerprint changes with it.
+3. Bundles referencing the old snapshot **fail** `catalog_incompatible`
+   validation — expected fail-closed behavior, not an incident.
+4. Republish the bundle against the new snapshot.
+5. Re-audit evidence issued under the old bundle: previously issued
+   authorizations, checkpoints, and results are stale and require
+   re-verification.
+
+### Slice gate (roadmap)
+
+The next semantic-layer slice (v4.2, calculated fields) **must not
+start** until the v4.1 quality gate is met: **`VS_HIT` ≥ 90%** across
+the annotated demo/evaluation corpus, read from the attribution summary
+(`EvaluationReport.value_semantics_summary()`) of a full corpus run.
+The gate lives in this roadmap note, not in code — the attribution
+dimensions are the measured inputs.
+
+## Optional-member review checklist (N6)
+
+Every future *optional* descriptor member (for example `CalculatedField`
+in v4.2 or `Metric` in v4.3) inherits invariant **N6**: an unset member
+must be omitted from `canonical_payload()` entirely, never serialized as
+`null`, so that introducing the member leaves every descriptor,
+snapshot, and bundle fingerprint byte-identical. Before merging a new
+optional member, confirm:
+
+- `canonical_payload()` includes the key only when the member is set.
+- Model validators reject an empty-but-provided container ("set means
+  non-empty") and values that would threaten fingerprint stability
+  (`bool`, `float`, oversized terms).
+- A unit test pins the invariance triple — descriptor payload,
+  snapshot fingerprint, and bundle fingerprint are identical with and
+  without an explicitly `None` member — plus a snapshot-breaking test
+  showing that editing member content changes the snapshot fingerprint
+  and fails `catalog_incompatible` against bundles built from the prior
+  snapshot. `tests/unit/test_value_semantics.py` is the reference
+  pattern (`TestN6OmitWhenUnset`, `TestSnapshotBreakingChain`).
+
 ## Next steps
 
 - [Metadata to active Bundle](../guides/metadata-to-bundle.md) — the

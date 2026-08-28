@@ -35,6 +35,12 @@ from nl2data_core.planning.validation import AuthorizedView
 _FINGERPRINT_PATTERN = r"^sha256:[0-9a-f]{64}$"
 _IDENTIFIER_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_\-\.]{0,127}$"
 
+#: Activation switch for planner-identity versioning strictness (ADR-033).
+#: When versioning becomes active, evidence missing ``planner_identity``
+#: is rejected outright - strictness lands before version divergence so
+#: no evidence can exist in an "unversioned" state.
+PLANNER_IDENTITY_VERSIONING = False
+
 
 def _utc_now() -> datetime:
     return datetime.now(UTC)
@@ -290,15 +296,24 @@ def verify_pre_execution_guard(
     guard: ArtifactGuardResult,
     authorization: ExecutionAuthorization | None,
     now: datetime | None = None,
+    identity_versioning: bool | None = None,
 ) -> tuple[str, ...]:
     """Re-verify the full compiler-governance chain immediately before execution.
 
     The boundary rejects stale or missing evidence, unguarded or
     obligation-incomplete artifacts, unsupported capabilities, unbounded
-    results, and expired or mismatched authorizations.  Returns human-safe
-    reasons; an empty tuple means the chain verified and execution may
-    proceed.  The boundary never raises and never broadens.
+    results, expired or mismatched authorizations, and planner-identity
+    drift (design D5): any identity mismatch between evidence and context,
+    and any one-sided identity - context without evidence or evidence
+    without context - fails the guard because a one-sided identity cannot
+    be drift-checked.  When ``identity_versioning`` is active (default:
+    :data:`PLANNER_IDENTITY_VERSIONING`), evidence missing a planner
+    identity is rejected outright.  Returns human-safe reasons; an empty
+    tuple means the chain verified and execution may proceed.  The
+    boundary never raises and never broadens.
     """
+    if identity_versioning is None:
+        identity_versioning = PLANNER_IDENTITY_VERSIONING
     reasons: list[str] = []
 
     if evidence.ir_version != context.ir.ir_version:
@@ -313,6 +328,31 @@ def verify_pre_execution_guard(
         reasons.append("compilation evidence does not match the current policy")
     if evidence.tenant_scope_fingerprint != context.tenant_scope_fingerprint:
         reasons.append("compilation evidence does not match the current tenant scope")
+    # Planner-identity drift guard (design D5): symmetric, fail-closed.
+    if context.planner_identity is not None and evidence.planner_identity is None:
+        reasons.append(
+            "compilation evidence lacks the planner identity declared by the "
+            "compilation context"
+        )
+    elif context.planner_identity is None and evidence.planner_identity is not None:
+        reasons.append(
+            "compilation evidence carries a planner identity the compilation "
+            "context does not declare"
+        )
+    elif (
+        context.planner_identity is not None
+        and evidence.planner_identity is not None
+        and evidence.planner_identity != context.planner_identity
+    ):
+        reasons.append(
+            "compilation evidence planner identity does not match the current "
+            "planner identity"
+        )
+    if identity_versioning and evidence.planner_identity is None:
+        reasons.append(
+            "compilation evidence is missing a planner identity and planner "
+            "identity versioning is active"
+        )
     if evidence.purpose != context.purpose:
         reasons.append("compilation evidence does not match the current purpose")
     if evidence.adapter_type != context.adapter_capabilities.adapter_type:

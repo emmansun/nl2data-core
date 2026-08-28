@@ -102,7 +102,19 @@ code: `MODEL_TIMEOUT`, `PROVIDER_UNAVAILABLE` (retryable), `INVALID_REQUEST`,
 `MALFORMED_RESPONSE`, `OUTPUT_LIMIT_EXCEEDED`, `RETRY_EXHAUSTED`,
 `UNSAFE_OUTPUT`, `INSTRUCTION_VERSION_INCOMPATIBLE`,
 `INSTRUCTION_BOUNDS_EXCEEDED`, `UNSAFE_INSTRUCTION_CONTENT`,
-`UNKNOWN_MODEL_ERROR`.
+`UNKNOWN_MODEL_ERROR`, `VS_001`, `VS_002`, `VS_SNAPSHOT_UNAVAILABLE`.
+
+Value-semantics resolution failures (v4.1) are **resolution-stage**
+errors raised in the intent resolver before the IR freezes — never
+compiler errors: `VS_001` (the internal VALUE_UNKNOWN member: a filter
+value is not a known business term for a mapped field; details carry the
+field, the attempted value, and the bounded known business terms),
+`VS_002` (the internal VALUE_OPERATOR_DISALLOWED member: a mapped field
+filtered with an operator other than `eq`/`in`), and
+`VS_SNAPSHOT_UNAVAILABLE` (the internal VALUE_SNAPSHOT_UNAVAILABLE
+member: the bundle-referenced descriptor snapshot is unavailable or its
+catalog fingerprint does not match the authorized view — value
+resolution fails closed).
 
 ### Durable state
 

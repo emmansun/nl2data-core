@@ -15,6 +15,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from nl2data.errors import ErrorRecord
+from nl2data_core.ai.models import ValueResolutionOutcome
 from nl2data_core.canonical import sha256_fingerprint
 from nl2data_core.fixtures.models import FIXED_TIMEZONE, TIME_ANCHOR
 from nl2data_core.planning.ir.models import SemanticQueryIR
@@ -31,6 +32,59 @@ class CaseOutcome(StrEnum):
     FAIL = "fail"
     SKIPPED = "skipped"
     UNAVAILABLE = "unavailable"
+
+
+class ValueSemanticsAttribution(StrEnum):
+    """Bounded, evidence-safe value-semantics attribution codes.
+
+    Derived from the resolution outcome channel (design D7/D9):
+    ``VS_HIT`` is a filter value resolved from the declared mapping,
+    ``VS_PASS_THROUGH`` a governed stored value accepted by membership
+    (reported distinctly so audits separate business-word hits from
+    accepted stored values), ``VS_WARNED`` a warn-policy miss,
+    ``VS_MISS`` a reject-policy miss, and ``VS_UNPOLICIED`` a filter on
+    a field with no value semantics declared.
+    """
+
+    VS_HIT = "VS_HIT"
+    VS_PASS_THROUGH = "VS_PASS_THROUGH"
+    VS_WARNED = "VS_WARNED"
+    VS_MISS = "VS_MISS"
+    VS_UNPOLICIED = "VS_UNPOLICIED"
+
+
+_ATTRIBUTION_BY_STATUS = {
+    "hit": ValueSemanticsAttribution.VS_HIT,
+    "pass_through": ValueSemanticsAttribution.VS_PASS_THROUGH,
+    "warned": ValueSemanticsAttribution.VS_WARNED,
+    "miss": ValueSemanticsAttribution.VS_MISS,
+    "unpolicied": ValueSemanticsAttribution.VS_UNPOLICIED,
+}
+
+
+class ValueSemanticsAttributionRecord(BaseModel):
+    """One per-filter-value attribution record (bounded codes, no values)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    filter_id: str = Field(pattern=_IDENTIFIER_PATTERN)
+    field_id: str = Field(pattern=_IDENTIFIER_PATTERN)
+    attribution: ValueSemanticsAttribution
+
+
+def value_semantics_attribution_records(
+    outcome: ValueResolutionOutcome,
+) -> tuple[ValueSemanticsAttributionRecord, ...]:
+    """Derive evaluation-layer attribution from the outcome channel."""
+    return tuple(
+        ValueSemanticsAttributionRecord(
+            filter_id=value_outcome.filter_id,
+            field_id=value_outcome.field_id,
+            attribution=_ATTRIBUTION_BY_STATUS[value_outcome.status],
+        )
+        for filter_outcome in outcome.filters
+        for value_outcome in filter_outcome.values
+    )
 
 
 class MandatoryAssertion(BaseModel):
@@ -123,6 +177,9 @@ class CaseEvidence(BaseModel):
     result_fingerprint: str | None = Field(default=None, pattern=_FINGERPRINT_PATTERN)
     columns: tuple[str, ...] = Field(default_factory=tuple, max_length=1_000)
     rows: tuple[tuple[Any, ...], ...] = Field(default_factory=tuple, max_length=1_000_000)
+    value_semantics_attribution: tuple[ValueSemanticsAttributionRecord, ...] = Field(
+        default_factory=tuple, max_length=1_000
+    )
     error: ErrorRecord | None = None
     fingerprint: str = Field(default="", pattern=_FINGERPRINT_PATTERN)
 
@@ -134,6 +191,10 @@ class CaseEvidence(BaseModel):
                 "result_fingerprint": self.result_fingerprint,
                 "columns": self.columns,
                 "rows": self.rows,
+                "value_semantics_attribution": [
+                    record.model_dump()
+                    for record in self.value_semantics_attribution
+                ],
                 "error": self.error.safe_dump() if self.error is not None else None,
             }
         )
@@ -221,6 +282,21 @@ class EvaluationReport(BaseModel):
     @property
     def all_passed(self) -> bool:
         return bool(self.results) and self.fail_count == 0 and self.unavailable_count == 0
+
+    def value_semantics_summary(self) -> dict[str, int]:
+        """Per-run attribution summary readable by stage gates.
+
+        Counts bounded attribution codes across every case's evidence so
+        the roadmap gate (``VS_HIT >= 90%``) reads this report directly;
+        no raw values are included.
+        """
+        summary: dict[str, int] = {code.value: 0 for code in ValueSemanticsAttribution}
+        for result in self.results:
+            if result.evidence is None:
+                continue
+            for record in result.evidence.value_semantics_attribution:
+                summary[record.attribution.value] += 1
+        return summary
 
     def to_json(self) -> str:
         """Deterministic JSON rendering of the full report."""

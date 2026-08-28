@@ -81,6 +81,7 @@ execute real work. See the [quickstart](docs/getting-started/quickstart.md).
 | Memory (Redis) | Implemented; service-verified in CI | `redis` extra + service |
 | Metadata discovery (PostgreSQL/MongoDB) | Implemented; service-verified in CI | `nl2data-postgres`/`nl2data-mongodb` package + service |
 | AI intent resolution + evaluation | Implemented + conformant | `nl2data-openai` for live provider |
+| Value-level semantics (enum value mapping) | Implemented + conformant | None |
 | OpenAI structured-output provider | Implemented; live-verified on demand | `nl2data-openai` + credentials |
 
 Status vocabulary: **Implemented** (exists in source), **Conformant**
@@ -88,6 +89,14 @@ Status vocabulary: **Implemented** (exists in source), **Conformant**
 real-service/live-provider run). Nothing in this repository claims
 general **production support** for unverified adapters, transports, or
 deployment topologies — see [Production readiness](docs/reference/production-readiness.md).
+
+**Value-level semantics (v4.1)**: enum-coded fields may declare a
+governed `value_mapping`. Filter values resolve by deterministic lookup
+at the intent-resolution stage — **before the IR freezes** — never by
+model invention (invariant N4: *no probabilistic construction;
+deterministic governed lookup permitted*). Unknown values fail at the
+resolution stage (`VS_001`), not at the compiler. See the
+[Semantic layer](docs/architecture/semantic-layer.md).
 
 ## Limitations
 
