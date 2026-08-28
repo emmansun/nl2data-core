@@ -187,4 +187,4 @@ class TestPostgresFixture:
     def test_schema_is_shared_with_sqlite(self) -> None:
         """The PostgreSQL profile provisions the same logical tables."""
         assert PostgresFixtureProfile().spec.fixture_id == FIXTURE_SPEC.fixture_id
-        assert set(SCHEMA) == {"customers", "orders"}
+        assert set(SCHEMA) == {"customers", "orders", "products", "order_items"}

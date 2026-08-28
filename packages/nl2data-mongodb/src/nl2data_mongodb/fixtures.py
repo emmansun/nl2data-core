@@ -12,8 +12,7 @@ from typing import Any
 
 from nl2data_core.canonical import sha256_fingerprint
 from nl2data_core.fixtures.base import FixtureProfile
-from nl2data_core.fixtures.data import EXPECTED_COUNTS
-from nl2data_core.fixtures.models import FixtureSpec, FixtureVerificationError
+from nl2data_core.fixtures.models import FixtureSpec, FixtureVerificationError, TableCount
 
 from .fake import FakeMongoExecutor
 from .models import MongoOperation, MongoQuerySpec
@@ -57,6 +56,12 @@ def _build_mongo_seed() -> dict[str, tuple[dict[str, Any], ...]]:
 
 #: Deterministic MongoDB seed; insertion order is stable by construction.
 MONGO_SEED: dict[str, tuple[dict[str, Any], ...]] = _build_mongo_seed()
+
+#: Expected document counts for the MongoDB fixture (customers + orders only).
+MONGO_EXPECTED_COUNTS: tuple[TableCount, ...] = (
+    TableCount(table="customers", count=len(MONGO_SEED["customers"])),
+    TableCount(table="orders", count=len(MONGO_SEED["orders"])),
+)
 
 #: Canonical setup fingerprint of the MongoDB schema + seed.
 MONGO_FIXTURE_SETUP_FINGERPRINT: str = sha256_fingerprint(
@@ -142,7 +147,7 @@ class MongoFixtureProfile(FixtureProfile):
             fixture_id="sales-orders-mongo-v1",
             dialect="mongo",
             reset_strategy="recreate",
-            expected_counts=EXPECTED_COUNTS,
+            expected_counts=MONGO_EXPECTED_COUNTS,
         )
         self._expected_setup_fingerprint = expected_setup_fingerprint
         self._executor: FakeMongoExecutor | None = None
@@ -183,7 +188,7 @@ class MongoFixtureProfile(FixtureProfile):
         """Verify expected document counts; raise on any mismatch."""
         if self._executor is None:
             raise FixtureVerificationError("mongo fixture is not provisioned")
-        for table_count in EXPECTED_COUNTS:
+        for table_count in MONGO_EXPECTED_COUNTS:
             count = self._executor.count_documents(
                 collection=table_count.table, filter_={}
             )

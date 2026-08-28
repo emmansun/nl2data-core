@@ -17,6 +17,7 @@ from typing import Any
 import pytest
 import yaml
 from demo.run.demo_deterministic import run_demo as deterministic_demo
+from demo.run.demo_real_service import run_join_demo as real_service_join_demo
 
 pytestmark = pytest.mark.integration
 
@@ -117,6 +118,30 @@ class TestDemoEvidenceSuite:
                     assert len(rows) >= shape["min_rows"], entry["id"]
         finally:
             connection.close()
+
+
+class TestRealServiceJoinDemo:
+    async def test_real_service_join_demo_passes(self) -> None:
+        connection = _require_postgres_service()
+        _require_seeded_dataset(connection)
+        connection.close()
+        assert DSN is not None
+        redis_url = os.environ.get("NL2DATA_REDIS_URL")
+        passed = await real_service_join_demo(
+            dsn=DSN, redis_url=redis_url, run_id="join-a"
+        )
+        assert passed
+
+    def test_real_service_join_demo_entrypoint(self) -> None:
+        connection = _require_postgres_service()
+        _require_seeded_dataset(connection)
+        connection.close()
+        assert DSN is not None
+        redis_url = os.environ.get("NL2DATA_REDIS_URL")
+        passed = asyncio.run(
+            real_service_join_demo(dsn=DSN, redis_url=redis_url, run_id="join-b")
+        )
+        assert passed
 
 
 class TestDeterministicProfileStillRuns:

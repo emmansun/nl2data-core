@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 import yaml
 from demo.run.demo_deterministic import run_demo as deterministic_demo
+from demo.run.demo_deterministic import run_join_demo as deterministic_join_demo
 
 #: Standard 10-question suite with SQL evidence and shape checks.
 DEMO_QUESTIONS = Path(__file__).resolve().parents[2] / "demo" / "questions" / "questions.yml"
@@ -28,6 +29,19 @@ class TestDeterministicMainflowDemo:
     def test_deterministic_demo_entrypoint(self) -> None:
         with tempfile.TemporaryDirectory(prefix="nl2data-demo-") as tmp:
             passed = asyncio.run(deterministic_demo(db_dir=Path(tmp)))
+        assert passed
+
+
+@pytest.mark.integration
+class TestDeterministicJoinDemo:
+    async def test_deterministic_join_demo_passes(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="nl2data-join-demo-") as tmp:
+            passed = await deterministic_join_demo(db_dir=Path(tmp))
+        assert passed
+
+    def test_deterministic_join_demo_entrypoint(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="nl2data-join-demo-") as tmp:
+            passed = asyncio.run(deterministic_join_demo(db_dir=Path(tmp)))
         assert passed
 
 

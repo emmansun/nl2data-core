@@ -28,6 +28,11 @@ SCHEMA: dict[str, str] = {
         "CREATE TABLE orders (order_id INT, customer_id INT, amount REAL, "
         "region TEXT, status INT, created_at TEXT)"
     ),
+    "products": "CREATE TABLE products (product_id INT, category TEXT, unit_price REAL)",
+    "order_items": (
+        "CREATE TABLE order_items (item_id INT, order_id INT, product_id INT, "
+        "quantity INT, unit_price REAL)"
+    ),
 }
 
 
@@ -55,7 +60,35 @@ def _build_seed() -> dict[str, tuple[tuple[Any, ...], ...]]:
                     f"2026-01-{offset + 1:02d}",
                 )
             )
-    return {"customers": tuple(customers), "orders": tuple(orders)}
+    products = (
+        (1, "electronics", 299.99),
+        (2, "appliances", 89.5),
+        (3, "furniture", 450.0),
+        (4, "clothing", 29.99),
+    )
+    product_price = {product_id: price for product_id, _category, price in products}
+    order_items: list[tuple[Any, ...]] = []
+    item_id = 0
+    for order_id, _ in enumerate(orders, start=1):
+        for index in range(2):
+            item_id += 1
+            product_id = ((order_id + index - 1) % len(products)) + 1
+            quantity = index + 1
+            order_items.append(
+                (
+                    item_id,
+                    order_id,
+                    product_id,
+                    quantity,
+                    product_price[product_id],
+                )
+            )
+    return {
+        "customers": tuple(customers),
+        "orders": tuple(orders),
+        "products": tuple(products),
+        "order_items": tuple(order_items),
+    }
 
 
 #: Deterministic synthetic seed shared by all profiles.
@@ -65,6 +98,8 @@ SEED: dict[str, tuple[tuple[Any, ...], ...]] = _build_seed()
 EXPECTED_COUNTS: tuple[TableCount, ...] = (
     TableCount(table="customers", count=len(SEED["customers"])),
     TableCount(table="orders", count=len(SEED["orders"])),
+    TableCount(table="products", count=len(SEED["products"])),
+    TableCount(table="order_items", count=len(SEED["order_items"])),
 )
 
 #: Canonical setup fingerprint of schema + seed; identical for every profile
@@ -207,5 +242,15 @@ RESULT_ASSERTIONS: tuple[ResultAssertion, ...] = (
         sql="SELECT MAX(order_id) AS latest FROM orders",
         columns=("latest",),
         rows=((24,),),
+    ),
+    ResultAssertion(
+        name="emea orders with customer name",
+        sql=(
+            "SELECT o.order_id, c.name FROM orders o "
+            "INNER JOIN customers c ON o.customer_id = c.customer_id "
+            "WHERE o.region = 'emea' ORDER BY o.amount DESC LIMIT 3"
+        ),
+        columns=("order_id", "name"),
+        rows=((18, "Gamma"), (17, "Gamma"), (16, "Gamma")),
     ),
 )

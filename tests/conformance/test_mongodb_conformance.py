@@ -78,11 +78,13 @@ class TestMongoFixtureProfile:
 
     def test_shared_logical_seed_covers_both_profiles(self) -> None:
         """SQL and Mongo declarations carry the same logical expectations."""
-        assert len(RESULT_ASSERTIONS) == len(MONGO_RESULT_ASSERTIONS)
-        for sql_assertion, mongo_assertion in zip(
-            RESULT_ASSERTIONS, MONGO_RESULT_ASSERTIONS, strict=True
-        ):
-            assert sql_assertion.name == mongo_assertion.name
+        mongo_by_name = {assertion.name: assertion for assertion in MONGO_RESULT_ASSERTIONS}
+        for sql_assertion in RESULT_ASSERTIONS:
+            mongo_assertion = mongo_by_name.get(sql_assertion.name)
+            if mongo_assertion is None:
+                # SQL-only assertions (e.g. cross-table JOINs) have no Mongo
+                # equivalent in the fake-driver profile.
+                continue
             assert sql_assertion.rows == mongo_assertion.rows
             assert set(sql_assertion.columns) == set(mongo_assertion.columns)
 
@@ -166,9 +168,13 @@ class TestSqlMongoEquivalence:
         mongo.provision()
         try:
             adapter = make_adapter(mongo)
-            for sql_assertion, mongo_assertion in zip(
-                RESULT_ASSERTIONS, MONGO_RESULT_ASSERTIONS, strict=True
-            ):
+            mongo_by_name = {assertion.name: assertion for assertion in MONGO_RESULT_ASSERTIONS}
+            for sql_assertion in RESULT_ASSERTIONS:
+                mongo_assertion = mongo_by_name.get(sql_assertion.name)
+                if mongo_assertion is None:
+                    # SQL-only assertions (e.g. cross-table JOINs) have no
+                    # Mongo equivalent in the fake-driver profile.
+                    continue
                 sql_result = execute_sql(sql_assertion.sql, db_path=sqlite.db_path)
                 payload = mongo_spec_json(mongo_assertion.spec)
                 mongo_result = await adapter.execute(
