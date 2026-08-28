@@ -242,6 +242,13 @@ event** and must follow the full checklist:
    authorizations, checkpoints, and results are stale and require
    re-verification.
 
+**First adoption on an existing field.** Declaring value semantics on a
+field that previously had none is a behavior switch for that field: the
+`eq`/`in` whitelist (`VS_002`) activates for every new resolution, so
+previously working filters on that field using other operators (`ne`,
+comparisons) start failing at the resolution stage. Before adopting,
+assess the operator distribution of existing queries against the field.
+
 ### Slice gate (roadmap)
 
 The next semantic-layer slice (v4.2, calculated fields) **must not

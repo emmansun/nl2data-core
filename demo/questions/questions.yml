@@ -8,7 +8,13 @@
 # attribution each filter value is expected to produce (VS_HIT when the
 # model uses a governed business word, VS_PASS_THROUGH when it uses a
 # stored value).  Annotations are documentation for evaluation runs; the
-# evidence SQL stays authoritative for runbook verification.
+# evidence SQL stays authoritative for runbook verification.  An actual
+# outcome that differs from the annotation (for example VS_PASS_THROUGH
+# where VS_HIT was annotated) is an acceptable, recorded attribution
+# deviation - not a case failure; the stage gate reads the VS_HIT rate
+# from the per-run attribution summary.  When a bundle descriptor first
+# declares the mapping, keep these annotations in sync with it: they are
+# metadata only and are not cross-validated against the bundle.
 
 questions:
   - id: q1_gmv_top_regions
