@@ -494,8 +494,6 @@ async def run_join_demo(
         allowed_columns=COMPOUND_FIELDS,
     )
 
-    state_store = PostgreSQLStateStore(dsn=dsn) if PostgreSQLStateStore is not None else None
-
     memory = None
     if redis_url and RedisMemoryProvider is not None and RedisMemoryConfig is not None:
         candidate = RedisMemoryProvider(RedisMemoryConfig(namespace="demo"), url=redis_url)
@@ -526,6 +524,11 @@ async def run_join_demo(
     )
 
     # 2-entity JOIN: orders -> customers
+    # Each facade owns its state-store instance: facade.close() closes the
+    # store, so a shared instance would fail closed for the next facade.
+    join_state_store = (
+        PostgreSQLStateStore(dsn=dsn) if PostgreSQLStateStore is not None else None
+    )
     join_profile = CompositionProfile(
         provider=None,
         adapter=join_adapter,
@@ -533,7 +536,7 @@ async def run_join_demo(
         view=JOIN_VIEW,
         plan_resolver=StaticPlanResolver(JOIN_IR),
         binding=JOIN_BINDING,
-        state_store=state_store,
+        state_store=join_state_store,
         plan_compiler=join_compiler,
         memory=memory,
     )
@@ -555,6 +558,9 @@ async def run_join_demo(
     await join_facade.close()
 
     # 3-entity compound JOIN: orders -> order_items -> products
+    compound_state_store = (
+        PostgreSQLStateStore(dsn=dsn) if PostgreSQLStateStore is not None else None
+    )
     compound_profile = CompositionProfile(
         provider=None,
         adapter=compound_adapter,
@@ -562,7 +568,7 @@ async def run_join_demo(
         view=COMPOUND_VIEW,
         plan_resolver=StaticPlanResolver(COMPOUND_IR),
         binding=COMPOUND_BINDING,
-        state_store=state_store,
+        state_store=compound_state_store,
         plan_compiler=compound_compiler,
         memory=memory,
     )
