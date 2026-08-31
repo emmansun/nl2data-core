@@ -5,10 +5,10 @@
 
 ## The lifecycle at a glance
 
-Metadata flows from a source catalog to an activated Semantic Model
-Bundle through four explicit phases. **Inference is never authority**:
-only approved proposals become bundle inputs, and only trusted
-View/governance resolution grants access.
+Metadata flows from a source catalog or manual assertions to an activated
+Semantic Model Bundle through explicit assembly phases. **Inference is never
+authority**: proposals first become assertions, assertion review is bound to
+payload hashes, and only trusted View/governance resolution grants access.
 
 ```mermaid
 flowchart TD
@@ -21,22 +21,24 @@ flowchart TD
 
     DIS --> SNAP --> INF
 
-    subgraph INFERENCE["2. Inference and review"]
+    subgraph INFERENCE["2. Inference and assembly"]
         INF["infer_proposals<br/>entity/field/relationship/measure/..."]
-        REV["SemanticProposalSet<br/>approve / reject / revise"]
-        CONV["convert_approved_proposals<br/>APPROVED only"]
+      REV["SemanticProposalSet<br/>approve / reject / revise"]
+      DRAFT["AssemblyDraft<br/>discovery or manual<br/>no Bundle fingerprint"]
+      ASSERT["SemanticAssertion review<br/>payload-hash binding"]
+      APPROVE["approved frozen draft"]
     end
 
-    INF --> REV --> CONV
+    MAN["Manual assertions"] --> DRAFT
+    INF --> REV --> DRAFT --> ASSERT --> APPROVE
 
     subgraph BUNDLE["3. Bundle publication"]
-        VAL["validate_bundle<br/>cross-refs, completeness,<br/>schema compatibility"]
-        PUB["SemanticBundleCatalog.publish<br/>validated only, no duplicates"]
-        ACT["activate<br/>dependencies published +<br/>fingerprints match"]
+      PUB["publish_assembly<br/>verify + fingerprint +<br/>manifest + audit atomically"]
+      ACT["activate_fingerprint<br/>dependencies published +<br/>fingerprints match"]
         ACTSNAP["Active snapshot<br/>(immutable)"]
     end
 
-    CONV --> VAL --> PUB --> ACT --> ACTSNAP
+    APPROVE --> PUB --> ACT --> ACTSNAP
 
     subgraph USE["4. Consumption"]
         VIEW["ViewRegistry resolution<br/>bundle fingerprint required<br/>when bundle-bound"]
@@ -55,16 +57,14 @@ bundle that gates query execution, and where can the pipeline stop?
 **Text equivalent**: discovery reads the source catalog read-only,
 bounded by allowlists and limits, and produces an immutable, versioned
 `MetadataSnapshot` with a canonical SHA-256 fingerprint. Inference
-derives proposals (entities, fields, relationships, measures, grain,
-aliases, classifications) with method, evidence, confidence, trust, and
-freshness attached. The review workflow supports explicit
-`approve`/`reject`/`revise`; **only `APPROVED` proposals convert** into
-bundle inputs — PENDING/REJECTED/REVISED facts never become bundle
-inputs, never grant View visibility, and never create mandatory filters
-or execution authorization. Publication validates structure and
-completeness, rejects duplicate versions, activates atomically (every
-declared dependency must be published with a matching fingerprint), and
-exposes an immutable active snapshot. View resolution bound to the
+derives proposals with method, evidence, confidence, trust, and freshness.
+Approved proposals and manual input converge as deterministic assertions in an
+`AssemblyDraft`. Draft submission, assertion decisions, and approval are
+revision guarded; an assertion payload edit invalidates its review binding.
+Publish then verifies the frozen approved draft and atomically persists the
+immutable Bundle, its publish-time semantic fingerprint, accepted-assertion
+manifest, publish audit, and supersession edge. Activation by fingerprint is a
+separate atomic pointer change. View resolution bound to the
 bundle requires a matching `bundle_fingerprint` in the resolution
 context; workflow checkpoints and Memory records carry the view/bundle
 identity so a changed bundle invalidates every previously recorded
@@ -132,12 +132,12 @@ authorize anything outside its decision.
 
 ## Manual fallback and rollback
 
-- Discovery is **optional**: manually authored descriptors/bundles and
-  adapters without snapshot bindings keep working unchanged
-  (`expected_snapshot_fingerprint=None`).
-- To roll back an activation, activate a previous registered snapshot
-  under the same policy, or re-register and re-activate the prior
-  discovery snapshot.
+- Discovery is **optional**: `create_manual_draft` places hand-authored
+  assertions into the same review and approval lifecycle. Manual input does
+  not bypass assertion review or receive a pre-publication fingerprint.
+- Published versions are immutable and form a supersession chain. Rollback by
+  fingerprint changes only the active pointer to a valid prior artifact; it
+  never republishes, mutates, or deletes Bundle, manifest, or audit history.
 
 ## Operational evidence
 

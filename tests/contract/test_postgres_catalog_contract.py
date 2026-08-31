@@ -17,11 +17,24 @@ import threading
 
 import pytest
 
+from nl2data_core.assembly import (
+    ASSEMBLY_API_VERSION,
+    AcceptedAssertionManifest,
+    AssemblyDraft,
+    AssemblyState,
+    DeploymentBinding,
+    DraftRevisionConflict,
+)
 from nl2data_core.bundles import (
+    AssertionProvenanceSummary,
     BundleDependency,
     BundleProvenance,
     BundleQualityStatus,
+    DeploymentBindingRedactionSummary,
     InMemorySemanticBundleCatalog,
+    PublishAuditRecord,
+    PublishIdempotencyStatus,
+    PublishVerificationSummary,
     SemanticModelBundle,
     SemanticSourceReference,
 )
@@ -48,7 +61,10 @@ from nl2data_semantic_catalog_postgres.errors import (
     SemanticCatalogError,
     SemanticCatalogErrorCode,
 )
-from nl2data_semantic_catalog_postgres.fake_postgres import FakePostgresPool
+from nl2data_semantic_catalog_postgres.fake_postgres import (
+    FakePostgresPool,
+    OperationalError,
+)
 from nl2data_semantic_catalog_postgres.store import (
     MIGRATIONS,
     SQL_TEMPLATES,
@@ -170,10 +186,321 @@ def make_bundle(**overrides: object) -> SemanticModelBundle:
     return SemanticModelBundle(**values)  # type: ignore[arg-type]
 
 
+def make_bundle_v2(**overrides: object) -> SemanticModelBundle:
+    values: dict[str, object] = {
+        "model_version": "2.0.0",
+        "descriptor": make_descriptor(version=2),
+    }
+    values.update(overrides)
+    return make_bundle(**values)
+
+
 def make_postgres_catalog() -> tuple[PostgreSQLSemanticCatalog, FakePostgresPool]:
     pool = FakePostgresPool()
     catalog = PostgreSQLSemanticCatalog(pool=pool, now=pool.clock.now)
     return catalog, pool
+
+
+def make_draft(**overrides: object) -> AssemblyDraft:
+    values: dict[str, object] = {
+        "apiVersion": ASSEMBLY_API_VERSION,
+        "draft_id": "draft-sales",
+        "bundle_id": "sales_model",
+        "source_id": "sales",
+        "model_version": "1.0.0",
+        "author_reference": "operator-author",
+    }
+    values.update(overrides)
+    return AssemblyDraft.model_validate(values)
+
+
+def make_approved_draft(**overrides: object) -> AssemblyDraft:
+    values: dict[str, object] = {
+        "state": AssemblyState.APPROVED,
+        "draft_revision": 3,
+    }
+    values.update(overrides)
+    return make_draft(**values)
+
+
+def make_audit(bundle: SemanticModelBundle, **overrides: object) -> PublishAuditRecord:
+    values: dict[str, object] = {
+        "audit_id": f"publish-{bundle.fingerprint[-16:]}",
+        "bundle_id": bundle.bundle_id,
+        "bundle_fingerprint": bundle.fingerprint,
+        "approval_chain": ("author-1", "reviewer-1", "publisher-1"),
+        "assertion_provenance": AssertionProvenanceSummary(),
+        "verification": PublishVerificationSummary(
+            structural_valid=True,
+            manifest_equivalent=True,
+            host_callback_count=1,
+        ),
+        "idempotency_status": PublishIdempotencyStatus.CREATED,
+        "deployment_bindings": DeploymentBindingRedactionSummary(),
+        "separation_mode": "strict",
+        "separation_reason_code": "authorized",
+    }
+    values.update(overrides)
+    return PublishAuditRecord.model_validate(values)
+
+
+class TestDurableAssemblyDrafts:
+    def test_draft_survives_catalog_restart(self) -> None:
+        pool = FakePostgresPool()
+        catalog_a = PostgreSQLSemanticCatalog(pool=pool, now=pool.clock.now)
+        draft = make_draft()
+        catalog_a.create(draft, tenant_scope_fingerprint=TENANT_A)
+
+        catalog_b = PostgreSQLSemanticCatalog(pool=pool, now=pool.clock.now)
+        assert catalog_b.get_draft(
+            draft.draft_id, tenant_scope_fingerprint=TENANT_A
+        ) == draft
+        assert catalog_b.get_draft(
+            draft.draft_id, tenant_scope_fingerprint=TENANT_B
+        ) is None
+
+    def test_stale_revision_compare_and_swap_preserves_newer_draft(self) -> None:
+        catalog, _ = make_postgres_catalog()
+        draft = make_draft()
+        catalog.create(draft, tenant_scope_fingerprint=TENANT_A)
+        updated = draft.mutate(expected_revision=0, model_version="1.1.0")
+        catalog.replace(
+            updated,
+            expected_revision=0,
+            tenant_scope_fingerprint=TENANT_A,
+        )
+        stale = draft.mutate(expected_revision=0, model_version="1.2.0")
+        with pytest.raises(DraftRevisionConflict):
+            catalog.replace(
+                stale,
+                expected_revision=0,
+                tenant_scope_fingerprint=TENANT_A,
+            )
+        assert catalog.get_draft(
+            draft.draft_id, tenant_scope_fingerprint=TENANT_A
+        ) == updated
+
+
+class TestDurableAssemblyPublication:
+    def _publish(
+        self,
+        catalog: PostgreSQLSemanticCatalog,
+        draft: AssemblyDraft,
+        bundle: SemanticModelBundle,
+        *,
+        idempotency_key: str = "publish-sales-v1",
+    ):
+        manifest = AcceptedAssertionManifest.from_draft(
+            draft,
+            bundle_fingerprint=bundle.fingerprint,
+        )
+        audit = make_audit(bundle)
+        return catalog.publish(
+            bundle,
+            accepted_assertion_manifest=manifest,
+            audit=audit,
+            draft=draft,
+            expected_revision=draft.draft_revision,
+            idempotency_key=idempotency_key,
+            tenant_scope_fingerprint=TENANT_A,
+        )
+
+    def test_publication_records_survive_restart_and_reload_by_fingerprint(self) -> None:
+        pool = FakePostgresPool()
+        catalog_a = PostgreSQLSemanticCatalog(pool=pool, now=pool.clock.now)
+        draft = make_approved_draft()
+        bundle = make_bundle()
+        catalog_a.create(draft, tenant_scope_fingerprint=TENANT_A)
+        outcome = self._publish(catalog_a, draft, bundle)
+        assert outcome.kind == "published"
+
+        catalog_b = PostgreSQLSemanticCatalog(pool=pool, now=pool.clock.now)
+        assert catalog_b.get_by_fingerprint(
+            bundle.bundle_id,
+            bundle.fingerprint,
+            tenant_scope_fingerprint=TENANT_A,
+        ) == bundle
+        assert catalog_b.accepted_assertion_manifest(
+            bundle.bundle_id,
+            bundle.fingerprint,
+            tenant_scope_fingerprint=TENANT_A,
+        ) == AcceptedAssertionManifest.from_draft(
+            draft, bundle_fingerprint=bundle.fingerprint
+        )
+        loaded_audit = catalog_b.publish_audit(
+            bundle.bundle_id,
+            bundle.fingerprint,
+            tenant_scope_fingerprint=TENANT_A,
+        )
+        assert loaded_audit is not None
+        assert loaded_audit.audit_id == make_audit(bundle).audit_id
+        assert loaded_audit.bundle_fingerprint == bundle.fingerprint
+        assert loaded_audit.verification.manifest_equivalent
+        records = catalog_b.publication_records(
+            bundle.bundle_id, tenant_scope_fingerprint=TENANT_A
+        )
+        assert len(records) == 1
+        assert records[0].bundle == bundle
+
+    def test_publish_rejects_stale_persisted_draft_revision(self) -> None:
+        catalog, pool = make_postgres_catalog()
+        draft = make_approved_draft()
+        catalog.create(draft, tenant_scope_fingerprint=TENANT_A)
+        reopened = draft.transition(
+            expected_revision=draft.draft_revision,
+            state=AssemblyState.REVIEW,
+        )
+        catalog.replace(
+            reopened,
+            expected_revision=draft.draft_revision,
+            tenant_scope_fingerprint=TENANT_A,
+        )
+        outcome = self._publish(catalog, draft, make_bundle())
+        assert outcome.kind == "conflict"
+        assert outcome.issue_codes() == ["draft_revision_conflict"]
+        assert pool.publications == {}
+        assert pool.accepted_manifests == {}
+        assert pool.publish_audits == {}
+        assert pool.published_versions == {}
+
+    def test_identical_fingerprint_and_key_reuse_one_publication(self) -> None:
+        catalog, pool = make_postgres_catalog()
+        draft = make_approved_draft()
+        bundle = make_bundle()
+        catalog.create(draft, tenant_scope_fingerprint=TENANT_A)
+        assert self._publish(catalog, draft, bundle).kind == "published"
+        reused = self._publish(catalog, draft, bundle)
+        assert reused.kind == "reused"
+        assert reused.audit_reference == make_audit(bundle).audit_id
+        assert reused.idempotency_status is PublishIdempotencyStatus.REUSED
+        assert len(pool.publications) == 1
+        assert len(pool.accepted_manifests) == 1
+        assert len(pool.publish_audits) == 1
+        assert len(pool.published_versions) == 1
+
+    def test_failed_audit_write_rolls_back_every_lifecycle_record(self) -> None:
+        catalog, pool = make_postgres_catalog()
+        draft = make_approved_draft()
+        bundle = make_bundle()
+        catalog.create(draft, tenant_scope_fingerprint=TENANT_A)
+        pool.fail_next(OperationalError("audit insert failed"), after=6)
+        with pytest.raises(SemanticCatalogError):
+            self._publish(catalog, draft, bundle)
+        assert pool.publications == {}
+        assert pool.accepted_manifests == {}
+        assert pool.publish_audits == {}
+        assert pool.published_versions == {}
+        assert pool.supersession_edges == {}
+
+    def test_concurrent_publish_serializes_to_created_then_reused(self) -> None:
+        pool = FakePostgresPool()
+        catalog_a = PostgreSQLSemanticCatalog(pool=pool, now=pool.clock.now)
+        catalog_b = PostgreSQLSemanticCatalog(pool=pool, now=pool.clock.now)
+        draft = make_approved_draft()
+        bundle = make_bundle()
+        catalog_a.create(draft, tenant_scope_fingerprint=TENANT_A)
+        barrier = threading.Barrier(2)
+        results: list[str] = []
+
+        def worker(catalog: PostgreSQLSemanticCatalog) -> None:
+            barrier.wait()
+            results.append(self._publish(catalog, draft, bundle).kind)
+
+        threads = [
+            threading.Thread(target=worker, args=(catalog_a,)),
+            threading.Thread(target=worker, args=(catalog_b,)),
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=10)
+        assert sorted(results) == ["published", "reused"]
+        assert len(pool.publications) == 1
+
+    def test_supersession_traversal_and_fingerprint_rollback(self) -> None:
+        catalog, _ = make_postgres_catalog()
+        first_draft = make_approved_draft()
+        first = make_bundle()
+        catalog.create(first_draft, tenant_scope_fingerprint=TENANT_A)
+        assert self._publish(catalog, first_draft, first).success
+        second_draft = make_approved_draft(
+            draft_id="draft-sales-v2",
+            model_version="2.0.0",
+        )
+        second = make_bundle_v2()
+        catalog.create(second_draft, tenant_scope_fingerprint=TENANT_A)
+        assert self._publish(
+            catalog,
+            second_draft,
+            second,
+            idempotency_key="publish-sales-v2",
+        ).success
+        chain = catalog.supersession_chain(
+            "sales_model", tenant_scope_fingerprint=TENANT_A
+        )
+        assert [record.bundle.fingerprint for record in chain] == [
+            first.fingerprint,
+            second.fingerprint,
+        ]
+        assert chain[0].supersession.successor_fingerprint == second.fingerprint
+        assert chain[1].supersession.predecessor_fingerprint == first.fingerprint
+        assert catalog.activate_fingerprint(
+            "sales_model",
+            second.fingerprint,
+            tenant_scope_fingerprint=TENANT_A,
+        ).success
+        assert catalog.rollback_to_fingerprint(
+            "sales_model",
+            first.fingerprint,
+            tenant_scope_fingerprint=TENANT_A,
+        ).kind == "rolled_back"
+        assert catalog.active(
+            "sales_model", tenant_scope_fingerprint=TENANT_A
+        ) == first
+
+    def test_safe_deployment_reference_persists_without_resolved_secret(self) -> None:
+        catalog, pool = make_postgres_catalog()
+        draft = make_approved_draft(
+            deployment_bindings=(
+                DeploymentBinding(
+                    binding_id="production",
+                    environment="production",
+                    source_id="sales",
+                    connection_reference="env:SALES_DSN",
+                ),
+            )
+        )
+        bundle = make_bundle()
+        catalog.create(draft, tenant_scope_fingerprint=TENANT_A)
+        audit = make_audit(
+            bundle,
+            deployment_bindings=DeploymentBindingRedactionSummary(
+                binding_count=1,
+                reference_schemes=("env",),
+            ),
+        )
+        manifest = AcceptedAssertionManifest.from_draft(
+            draft, bundle_fingerprint=bundle.fingerprint
+        )
+        catalog.publish(
+            bundle,
+            accepted_assertion_manifest=manifest,
+            audit=audit,
+            draft=draft,
+            expected_revision=draft.draft_revision,
+            tenant_scope_fingerprint=TENANT_A,
+        )
+        persisted = str(
+            (
+                pool.assembly_drafts,
+                pool.publications,
+                pool.accepted_manifests,
+                pool.publish_audits,
+                pool.published_versions,
+            )
+        )
+        assert "env:SALES_DSN" in persisted
+        assert "resolved-password-hunter2" not in persisted
 
 
 def exercise_bundle_lifecycle(catalog: object) -> None:
@@ -190,7 +517,7 @@ def exercise_bundle_lifecycle(catalog: object) -> None:
     assert catalog.activate("sales_model", "1.0.0").kind == "activated"  # type: ignore[attr-defined]
     assert catalog.active("sales_model") == v1  # type: ignore[attr-defined]
 
-    v2 = make_bundle(model_version="2.0.0")
+    v2 = make_bundle_v2()
     assert catalog.publish(v2).kind == "published"  # type: ignore[attr-defined]
     assert catalog.activate("sales_model", "2.0.0").kind == "activated"  # type: ignore[attr-defined]
     assert catalog.active("sales_model") == v2  # type: ignore[attr-defined]
@@ -227,7 +554,7 @@ class TestSharedBundleBehavior:
         catalog, _ = make_postgres_catalog()
         bundle = make_bundle()
         assert catalog.publish(bundle).kind == "published"
-        assert catalog.publish(bundle).kind == "published"
+        assert catalog.publish(bundle).kind == "reused"
         assert len(catalog.versions("sales_model")) == 1
 
     def test_duplicate_version_with_different_fingerprint_conflicts(self) -> None:
@@ -322,7 +649,7 @@ class TestSharedBundleBehavior:
     def test_rollback_never_mutates_published_artifacts(self) -> None:
         catalog, _ = make_postgres_catalog()
         v1 = make_bundle()
-        v2 = make_bundle(model_version="2.0.0")
+        v2 = make_bundle_v2()
         catalog.publish(v1)
         catalog.publish(v2)
         catalog.activate("sales_model", "1.0.0")
@@ -428,7 +755,7 @@ class TestConcurrentActivation:
         catalog_a = PostgreSQLSemanticCatalog(pool=pool, now=pool.clock.now)
         catalog_b = PostgreSQLSemanticCatalog(pool=pool, now=pool.clock.now)
         v1 = make_bundle()
-        v2 = make_bundle(model_version="2.0.0")
+        v2 = make_bundle_v2()
         assert catalog_a.publish(v1).kind == "published"
         assert catalog_b.publish(v2).kind == "published"
 
@@ -481,7 +808,7 @@ class TestWorkflowStateSeparation:
             " ".join(migration) for migration in MIGRATIONS.values()
         )
         for table in self.WORKFLOW_TABLES:
-            assert table not in statements
+            assert f"{{schema}}.{table}" not in statements
 
     def test_catalog_migrations_are_namespace_rendered_before_execution(self) -> None:
         catalog, _ = make_postgres_catalog()

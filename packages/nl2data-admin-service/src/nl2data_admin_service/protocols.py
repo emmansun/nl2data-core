@@ -4,6 +4,16 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
+from nl2data_core.assembly import (
+    AssemblyDraftStore,
+    LifecycleAuthorizer,
+    SeparationOfDutiesMode,
+)
+from nl2data_core.assembly.publishing import (
+    AssemblyPublicationCatalog,
+    ManifestBundleVerifier,
+    SemanticBundleEmitter,
+)
 from nl2data_core.metadata.catalog import SemanticSnapshotCatalog
 from nl2data_core.metadata.models import MetadataSnapshot
 
@@ -83,6 +93,12 @@ class AdminServiceDependencies(Protocol):
     catalog: SemanticSnapshotCatalog | None
     discoverer: MetadataDiscoverer | None
     job_runner: JobRunner | None
+    draft_store: AssemblyDraftStore | None
+    lifecycle_catalog: AssemblyPublicationCatalog | None
+    lifecycle_authorizer: LifecycleAuthorizer | None
+    bundle_emitter: SemanticBundleEmitter | None
+    manifest_verifier: ManifestBundleVerifier | None
+    separation_mode: SeparationOfDutiesMode
 
     @property
     def audit_reference(self) -> str:

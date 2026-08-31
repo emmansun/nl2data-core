@@ -537,3 +537,62 @@ class TestSnapshotBreakingChain:
         removed = make_cf_descriptor(calculated_fields=None)
         assert old_fp != removed.fingerprint
         assert new_fp != removed.fingerprint
+
+    @pytest.mark.parametrize(
+        ("member", "overrides"),
+        [
+            ("name", {"name": "gross_margin"}),
+            ("label", {"label": "Gross margin"}),
+            ("description", {"description": "Revenue less cost"}),
+            (
+                "expression",
+                {
+                    "expression": ExprNode(
+                        op="add",
+                        left=ExprNode(op="field", field_id="revenue"),
+                        right=ExprNode(op="field", field_id="cost"),
+                    )
+                },
+            ),
+            (
+                "output_type",
+                {
+                    "expression": ExprNode(
+                        op="div",
+                        left=ExprNode(op="field", field_id="revenue"),
+                        right=ExprNode(op="field", field_id="cost"),
+                    ),
+                    "output_type": "float",
+                },
+            ),
+            (
+                "requires",
+                {
+                    "expression": ExprNode(
+                        op="add",
+                        left=ExprNode(op="field", field_id="revenue"),
+                        right=ExprNode(op="field", field_id="price"),
+                    ),
+                    "output_type": "float",
+                    "requires": ("revenue", "price"),
+                },
+            ),
+            ("zero_division_policy", {"zero_division_policy": "error"}),
+        ],
+    )
+    def test_every_canonical_member_changes_bundle_and_projection_anchor(
+        self,
+        member: str,
+        overrides: dict[str, object],
+    ) -> None:
+        baseline = make_cf()
+        changed = make_cf(**overrides)
+        assert baseline.canonical_payload()[member] != changed.canonical_payload()[member]
+        baseline_bundle = make_cf_bundle(
+            make_cf_descriptor(calculated_fields=(baseline,))
+        )
+        changed_bundle = make_cf_bundle(
+            make_cf_descriptor(calculated_fields=(changed,))
+        )
+        assert baseline_bundle.fingerprint != changed_bundle.fingerprint
+        assert baseline.content_hash() != changed.content_hash()

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import unicodedata
 from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
@@ -17,10 +18,13 @@ from typing import Any
 def canonical_value(value: Any) -> Any:
     """Normalize a value into a JSON-serializable, order-independent form."""
     if isinstance(value, Mapping):
-        return {
-            str(k): canonical_value(v)
-            for k, v in sorted(value.items(), key=lambda item: str(item[0]))
-        }
+        normalized: dict[str, Any] = {}
+        for key, item in value.items():
+            normalized_key = unicodedata.normalize("NFC", str(key))
+            if normalized_key in normalized:
+                raise ValueError("canonical object keys must be unique after NFC normalization")
+            normalized[normalized_key] = canonical_value(item)
+        return dict(sorted(normalized.items()))
     if isinstance(value, (set, frozenset)):
         return [
             canonical_value(item)
@@ -30,7 +34,9 @@ def canonical_value(value: Any) -> Any:
         return [canonical_value(item) for item in value]
     if isinstance(value, datetime):
         return value.isoformat()
-    if isinstance(value, (str, int, float, bool, type(None))):
+    if isinstance(value, str):
+        return unicodedata.normalize("NFC", value)
+    if isinstance(value, (int, float, bool, type(None))):
         return value
     return str(value)
 
@@ -42,6 +48,7 @@ def canonical_json(payload: Any) -> str:
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=False,
+        allow_nan=False,
     )
 
 

@@ -23,6 +23,8 @@ class ServiceSchema(BaseModel):
 
 
 _COMMAND_DTOS: tuple[type[BaseModel], ...] = (
+    dtos.AssertionDecisionCommand,
+    dtos.DraftRevisionCommand,
     dtos.ReviewCommand,
     dtos.BundleLifecycleCommand,
     dtos.PaginationParams,
@@ -44,6 +46,15 @@ _RESULT_DTOS: tuple[type[BaseModel], ...] = (
     dtos.CapabilitiesResult,
     dtos.PaginatedResult,
     dtos.ErrorDetail,
+    dtos.AssemblyAssertionSummary,
+    dtos.DeploymentBindingSummary,
+    dtos.AssemblyDraftSummary,
+    dtos.AssemblyDraftDetail,
+    dtos.DraftMutationResult,
+    dtos.PublishAssemblyResult,
+    dtos.PublishAuditSummary,
+    dtos.PublishedVersionItem,
+    dtos.VersionListResult,
 )
 
 

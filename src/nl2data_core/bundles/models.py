@@ -397,28 +397,47 @@ class SemanticModelBundle(BaseModel):
         return self
 
     def canonical_payload(self) -> dict[str, Any]:
-        """The canonical payload the fingerprint is derived from."""
+        """The semantic-only canonical payload the fingerprint is derived from."""
+        return {
+            "descriptor": self.descriptor.canonical_payload(),
+            "measures": [
+                measure.canonical_payload()
+                for measure in sorted(self.measures, key=lambda item: item.measure_id)
+            ],
+            "grains": [
+                grain.canonical_payload()
+                for grain in sorted(self.grains, key=lambda item: item.grain_id)
+            ],
+            "sources": [
+                source.canonical_payload()
+                for source in sorted(self.sources, key=lambda item: item.reference_id)
+            ],
+            "dependencies": [
+                dependency.canonical_payload()
+                for dependency in sorted(
+                    self.dependencies, key=lambda item: item.dependency_id
+                )
+            ],
+            "compatibility": self.compatibility.canonical_payload(),
+        }
+
+    def file_payload(self) -> dict[str, Any]:
+        """Return the safe publication envelope including non-semantic metadata."""
         return {
             "schema_version": self.schema_version,
             "bundle_id": self.bundle_id,
             "model_version": self.model_version,
-            "descriptor": self.descriptor.canonical_payload(),
-            "measures": [measure.canonical_payload() for measure in self.measures],
-            "grains": [grain.canonical_payload() for grain in self.grains],
-            "sources": [source.canonical_payload() for source in self.sources],
-            "dependencies": [
-                dependency.canonical_payload() for dependency in self.dependencies
-            ],
+            **self.canonical_payload(),
             "trust_markers": [
-                marker.canonical_payload() for marker in self.trust_markers
+                marker.canonical_payload()
+                for marker in sorted(self.trust_markers, key=lambda item: item.marker_id)
             ],
-            "compatibility": self.compatibility.canonical_payload(),
             "provenance": self.provenance.canonical_payload(),
         }
 
     def serialize_canonical(self) -> str:
-        """Canonical JSON with explicit schema version and sorted keys."""
-        return canonical_json(self.canonical_payload())
+        """Canonical safe envelope with explicit schema version and sorted keys."""
+        return canonical_json(self.file_payload())
 
     def safe_payload(self) -> dict[str, Any]:
         """Serialize with safe references and descriptions only.
@@ -427,7 +446,7 @@ class SemanticModelBundle(BaseModel):
         credentials, physical bindings, or authorization claims - and the
         fingerprint itself is included for evidence.
         """
-        payload = self.canonical_payload()
+        payload = self.file_payload()
         payload["fingerprint"] = self.fingerprint
         return payload
 

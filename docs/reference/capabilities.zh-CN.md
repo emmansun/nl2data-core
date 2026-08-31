@@ -17,7 +17,8 @@
 | 严格版本化配置 + 指纹 | Implemented + conformant | 单元套件 | — |
 | Semantic IR + 规范指纹 | Implemented + conformant | 契约套件 | — |
 | Semantic View 解析（fail-closed） | Implemented + conformant | 契约 + 安全套件 | — |
-| Semantic Model Bundles + 目录 | Implemented + conformant | 契约 + 安全套件 | — |
+| Semantic assembly draft、assertion review、approval 与 publish audit | Implemented + conformant | 单元 + 契约 + 安全套件 | — |
+| Semantic Model Bundles + fingerprint 发布/supersession 目录 | Implemented + conformant | 契约 + 安全套件 | — |
 | 持久化语义目录（PostgreSQL） | Implemented + verified | 真实服务 CI 配置 | `nl2data-semantic-catalog-postgres` + 服务 |
 | 受治理工作流运行时（确定性） | Implemented + conformant | 一致性套件 | — |
 | 查询生命周期：澄清、取消、句柄、能力/健康 | Implemented + conformant | 集成套件 | — |
@@ -32,7 +33,7 @@
 | AI 意图解析 + 指令契约 | Implemented + conformant | 评估套件（fake provider） | — |
 | OpenAI 结构化输出提供方 | Implemented；按需实时验证 | `run_openai_live.py` | `nl2data-openai` + 凭据 |
 | 租户隔离 + 范围指纹 | Implemented + conformant | 一致性套件 | — |
-| 管理控制平面服务（传输中立） | Implemented + conformant | 契约 + 安全套件 | `nl2data-admin-service` |
+| 管理控制平面服务（传输中立生命周期 DTO） | Implemented + conformant | 契约 + 安全套件 | `nl2data-admin-service` |
 | 遥测/审计端口（in-memory 汇点） | Implemented + conformant | 契约套件 | — |
 
 ## 当前不支持的内容

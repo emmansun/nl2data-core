@@ -4,7 +4,9 @@ Every artifact persisted by the catalog is wrapped in a versioned envelope::
 
     {
         "schema_version": 1,
-        "kind": "snapshot" | "proposal_set" | "bundle",
+        "kind": "snapshot" | "proposal_set" | "bundle" |
+            "assembly_draft" | "accepted_assertion_manifest" |
+            "publish_audit",
         "fingerprint": "sha256:<64 hex>",
         "payload": { ... canonical safe payload ... }
     }
@@ -54,6 +56,9 @@ class ArtifactKind(StrEnum):
     SNAPSHOT = "snapshot"
     PROPOSAL_SET = "proposal_set"
     BUNDLE = "bundle"
+    ASSEMBLY_DRAFT = "assembly_draft"
+    ACCEPTED_ASSERTION_MANIFEST = "accepted_assertion_manifest"
+    PUBLISH_AUDIT = "publish_audit"
 
 
 class EnvelopeRejectedError(Exception):

@@ -31,6 +31,25 @@ payloads, or native provider exception objects.
 | `ENGINE_CLOSED` | No | Operation on a closed facade/engine |
 | `ASYNC_REQUIRED` | No | Sync convenience used inside an active event loop |
 
+Assembly/admin control-plane failures use bounded lower-case outcome codes
+rather than query `ErrorCode` members:
+
+| Code | Retryable | Meaning |
+| --- | --- | --- |
+| `conflict` | After reread | Stale `draft_revision`; reload the draft before retrying the mutation |
+| `authorization_denied` | No | Trusted lifecycle role/scope is absent or denied |
+| `draft_not_approved` | No | Publish requested before the draft reached `approved` |
+| `pending_assertions` | No | At least one assertion lacks a valid review binding |
+| `separation_of_duties_failed` | No | Host lifecycle role-separation policy rejected publication |
+| `bundle_identity_mismatch` | No | Emitted Bundle identity differs from the frozen approved draft |
+| `bundle_emission_failed` / `verification_failed` | Depends on host | Safe publish callback failure; no partial publication is committed |
+| `manifest_mismatch` / `audit_mismatch` | No | Manifest or audit reference does not match the emitted Bundle fingerprint |
+| `version_exists` | No | Business version is already assigned to different semantic content |
+
+Publish issue codes are returned in `PublishAssemblyResult.issues`. A successful
+identical-content retry reports `reused`, not an error. Unknown backend failures
+cross the admin boundary only as `internal_service_error` with bounded text.
+
 ### Validation / input
 
 | Code | Retryable | Meaning |

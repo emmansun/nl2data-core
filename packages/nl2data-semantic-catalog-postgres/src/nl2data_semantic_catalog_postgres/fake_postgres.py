@@ -116,7 +116,12 @@ class FakePostgresPool:
         self.snapshots: dict[tuple[str, str], dict[str, Any]] = {}
         self.snapshot_pointers: dict[tuple[str, str], dict[str, Any]] = {}
         self.proposal_sets: dict[tuple[str, str], dict[str, Any]] = {}
+        self.assembly_drafts: dict[tuple[str, str], dict[str, Any]] = {}
         self.publications: dict[tuple[str, str, str], dict[str, Any]] = {}
+        self.accepted_manifests: dict[tuple[str, str, str], dict[str, Any]] = {}
+        self.publish_audits: dict[tuple[str, str, str], dict[str, Any]] = {}
+        self.published_versions: dict[tuple[str, str, str], dict[str, Any]] = {}
+        self.supersession_edges: dict[tuple[str, str, str], dict[str, Any]] = {}
         self.bundle_pointers: dict[tuple[str, str], dict[str, Any]] = {}
         self.bundle_history: dict[tuple[str, str], dict[int, dict[str, Any]]] = {}
         self.events: dict[tuple[str, str], dict[str, Any]] = {}
@@ -126,6 +131,7 @@ class FakePostgresPool:
         self._lock_owner: dict[tuple[Any, ...], str] = {}
         self._lock_cond = threading.Condition(self._struct_lock)
         self._pending_failures: list[BaseException | _PassFailure] = []
+        self.statement_journal: list[str] = []
         self._statement_names = {
             _normalize(template.format(schema='"catalog"')): name
             for name, template in SQL_TEMPLATES.items()
@@ -214,6 +220,7 @@ class FakePostgresPool:
         name = self._statement_names.get(normalized)
         if name is None:
             raise AssertionError(f"fake pool does not recognize statement: {sql[:240]}")
+        self.statement_journal.append(name)
         handler = _HANDLERS[name]
         rows, rowcount = handler(self, connection, params or (), timeout)
         return _FakeCursor(self, connection, rows, rowcount)
@@ -323,7 +330,12 @@ _TABLE_ATTRS: dict[str, str] = {
     "snapshots": "snapshots",
     "snapshot_pointers": "snapshot_pointers",
     "proposal_sets": "proposal_sets",
+    "assembly_drafts": "assembly_drafts",
     "publications": "publications",
+    "accepted_manifests": "accepted_manifests",
+    "publish_audits": "publish_audits",
+    "published_versions": "published_versions",
+    "supersession_edges": "supersession_edges",
     "bundle_pointers": "bundle_pointers",
     "bundle_history": "bundle_history",
     "events": "events",
@@ -342,10 +354,38 @@ def _proposal_key(namespace: str, fingerprint: str) -> tuple[Any, ...]:
     return ("proposal_sets", namespace, fingerprint)
 
 
+def _draft_key(namespace: str, draft_id: str) -> tuple[Any, ...]:
+    return ("assembly_drafts", namespace, draft_id)
+
+
 def _publication_key(
     namespace: str, bundle_id: str, version: str
 ) -> tuple[Any, ...]:
     return ("publications", namespace, bundle_id, version)
+
+
+def _manifest_key(
+    namespace: str, bundle_id: str, fingerprint: str
+) -> tuple[Any, ...]:
+    return ("accepted_manifests", namespace, bundle_id, fingerprint)
+
+
+def _audit_key(
+    namespace: str, bundle_id: str, fingerprint: str
+) -> tuple[Any, ...]:
+    return ("publish_audits", namespace, bundle_id, fingerprint)
+
+
+def _version_key(
+    namespace: str, bundle_id: str, fingerprint: str
+) -> tuple[Any, ...]:
+    return ("published_versions", namespace, bundle_id, fingerprint)
+
+
+def _supersession_key(
+    namespace: str, bundle_id: str, successor: str
+) -> tuple[Any, ...]:
+    return ("supersession_edges", namespace, bundle_id, successor)
 
 
 def _bundle_pointer_key(namespace: str, bundle_id: str) -> tuple[Any, ...]:
@@ -574,6 +614,85 @@ def _h_read_proposal_set(
     return ([{"envelope": row["envelope"], "schema_version": row["schema_version"]}], 0)
 
 
+def _h_insert_assembly_draft(
+    pool: FakePostgresPool, conn: _FakeConnection, params: tuple[Any, ...], timeout: float
+) -> tuple[list[dict[str, Any]], int]:
+    namespace, draft_id = params[0], params[1]
+    key = _draft_key(namespace, draft_id)
+    _lock_or_fail(pool, conn, key, timeout)
+    if (namespace, draft_id) in pool.assembly_drafts:
+        return ([], 0)
+    conn._touch(key)
+    pool.assembly_drafts[(namespace, draft_id)] = {
+        "scope_namespace": namespace,
+        "draft_id": draft_id,
+        "bundle_id": params[2],
+        "source_id": params[3],
+        "draft_revision": params[4],
+        "state": params[5],
+        "schema_version": params[6],
+        "envelope": params[7],
+        "updated_at": _as_dt(params[8]),
+    }
+    return ([], 1)
+
+
+def _h_read_assembly_draft(
+    pool: FakePostgresPool, conn: _FakeConnection, params: tuple[Any, ...], timeout: float
+) -> tuple[list[dict[str, Any]], int]:
+    row = pool.assembly_drafts.get((params[0], params[1]))
+    if row is None:
+        return ([], 0)
+    return ([{
+        "envelope": row["envelope"],
+        "schema_version": row["schema_version"],
+        "draft_revision": row["draft_revision"],
+    }], 0)
+
+
+def _h_lock_assembly_draft(
+    pool: FakePostgresPool, conn: _FakeConnection, params: tuple[Any, ...], timeout: float
+) -> tuple[list[dict[str, Any]], int]:
+    row = pool.assembly_drafts.get((params[0], params[1]))
+    if row is None:
+        return ([], 0)
+    _lock_or_fail(pool, conn, _draft_key(params[0], params[1]), timeout)
+    return ([{
+        "envelope": row["envelope"],
+        "schema_version": row["schema_version"],
+        "draft_revision": row["draft_revision"],
+    }], 0)
+
+
+def _h_lock_publication_series(
+    pool: FakePostgresPool, conn: _FakeConnection, params: tuple[Any, ...], timeout: float
+) -> tuple[list[dict[str, Any]], int]:
+    _lock_or_fail(pool, conn, ("publication_series", params[0], params[1]), timeout)
+    return ([{"pg_advisory_xact_lock": None}], 0)
+
+
+def _h_replace_assembly_draft(
+    pool: FakePostgresPool, conn: _FakeConnection, params: tuple[Any, ...], timeout: float
+) -> tuple[list[dict[str, Any]], int]:
+    namespace, draft_id, expected_revision = params[7], params[8], params[9]
+    key = _draft_key(namespace, draft_id)
+    _lock_or_fail(pool, conn, key, timeout)
+    row = pool.assembly_drafts.get((namespace, draft_id))
+    if row is None or row["draft_revision"] != expected_revision:
+        return ([], 0)
+    conn._touch(key)
+    row.update(
+        bundle_id=params[0],
+        source_id=params[1],
+        draft_revision=params[2],
+        state=params[3],
+        schema_version=params[4],
+        envelope=params[5],
+        updated_at=_as_dt(params[6]),
+    )
+    return ([], 1)
+
+
 def _h_insert_publication(
     pool: FakePostgresPool, conn: _FakeConnection, params: tuple[Any, ...], timeout: float
 ) -> tuple[list[dict[str, Any]], int]:
@@ -624,6 +743,25 @@ def _h_read_publication_fingerprint(
     return ([{"bundle_fingerprint": row["bundle_fingerprint"]}], 0)
 
 
+def _h_read_publication_by_fingerprint(
+    pool: FakePostgresPool, conn: _FakeConnection, params: tuple[Any, ...], timeout: float
+) -> tuple[list[dict[str, Any]], int]:
+    namespace, bundle_id, fingerprint = params
+    for (scope, candidate_id, _version), row in pool.publications.items():
+        if (
+            scope == namespace
+            and candidate_id == bundle_id
+            and row["bundle_fingerprint"] == fingerprint
+        ):
+            return ([{
+                "envelope": row["envelope"],
+                "schema_version": row["schema_version"],
+                "published_at": row["published_at"],
+                "model_version": row["model_version"],
+            }], 0)
+    return ([], 0)
+
+
 def _h_list_publications(
     pool: FakePostgresPool, conn: _FakeConnection, params: tuple[Any, ...], timeout: float
 ) -> tuple[list[dict[str, Any]], int]:
@@ -648,6 +786,207 @@ def _h_list_publications(
         for _published_at, model_version, schema_version, envelope in items
     ]
     return (rows, len(rows))
+
+
+def _h_insert_accepted_manifest(
+    pool: FakePostgresPool, conn: _FakeConnection, params: tuple[Any, ...], timeout: float
+) -> tuple[list[dict[str, Any]], int]:
+    key = _manifest_key(params[0], params[1], params[2])
+    _lock_or_fail(pool, conn, key, timeout)
+    if key[1:] in pool.accepted_manifests:
+        raise UniqueViolation("accepted manifest already exists")
+    conn._touch(key)
+    pool.accepted_manifests[key[1:]] = {
+        "scope_namespace": params[0],
+        "bundle_id": params[1],
+        "bundle_fingerprint": params[2],
+        "schema_version": params[3],
+        "envelope": params[4],
+        "created_at": _as_dt(params[5]),
+    }
+    return ([], 1)
+
+
+def _h_read_accepted_manifest(
+    pool: FakePostgresPool, conn: _FakeConnection, params: tuple[Any, ...], timeout: float
+) -> tuple[list[dict[str, Any]], int]:
+    row = pool.accepted_manifests.get(params)
+    if row is None:
+        return ([], 0)
+    return ([{"envelope": row["envelope"], "schema_version": row["schema_version"]}], 0)
+
+
+def _h_insert_publish_audit(
+    pool: FakePostgresPool, conn: _FakeConnection, params: tuple[Any, ...], timeout: float
+) -> tuple[list[dict[str, Any]], int]:
+    key = _audit_key(params[0], params[1], params[2])
+    _lock_or_fail(pool, conn, key, timeout)
+    if key[1:] in pool.publish_audits:
+        raise UniqueViolation("publish audit already exists")
+    if params[4] is not None and any(
+        row["scope_namespace"] == params[0]
+        and row["idempotency_key"] == params[4]
+        for row in pool.publish_audits.values()
+    ):
+        raise UniqueViolation("idempotency key already exists")
+    conn._touch(key)
+    pool.publish_audits[key[1:]] = {
+        "scope_namespace": params[0],
+        "bundle_id": params[1],
+        "bundle_fingerprint": params[2],
+        "audit_id": params[3],
+        "idempotency_key": params[4],
+        "schema_version": params[5],
+        "envelope": params[6],
+        "created_at": _as_dt(params[7]),
+    }
+    return ([], 1)
+
+
+def _h_read_publish_audit(
+    pool: FakePostgresPool, conn: _FakeConnection, params: tuple[Any, ...], timeout: float
+) -> tuple[list[dict[str, Any]], int]:
+    row = pool.publish_audits.get(params)
+    if row is None:
+        return ([], 0)
+    return ([{"envelope": row["envelope"], "schema_version": row["schema_version"]}], 0)
+
+
+def _h_read_publish_by_idempotency_key(
+    pool: FakePostgresPool, conn: _FakeConnection, params: tuple[Any, ...], timeout: float
+) -> tuple[list[dict[str, Any]], int]:
+    namespace, idempotency_key = params
+    for row in pool.publish_audits.values():
+        if (
+            row["scope_namespace"] == namespace
+            and row["idempotency_key"] == idempotency_key
+        ):
+            return ([{
+                "bundle_id": row["bundle_id"],
+                "bundle_fingerprint": row["bundle_fingerprint"],
+            }], 0)
+    return ([], 0)
+
+
+def _h_read_latest_version(
+    pool: FakePostgresPool, conn: _FakeConnection, params: tuple[Any, ...], timeout: float
+) -> tuple[list[dict[str, Any]], int]:
+    namespace, bundle_id = params
+    candidates = [
+        row
+        for (scope, candidate_id, _fingerprint), row in pool.published_versions.items()
+        if scope == namespace and candidate_id == bundle_id
+    ]
+    if not candidates:
+        return ([], 0)
+    row = max(candidates, key=lambda item: (item["published_at"], item["model_version"]))
+    _lock_or_fail(
+        pool,
+        conn,
+        _version_key(namespace, bundle_id, row["bundle_fingerprint"]),
+        timeout,
+    )
+    return ([{
+        "bundle_fingerprint": row["bundle_fingerprint"],
+        "lifecycle_state": row["lifecycle_state"],
+    }], 0)
+
+
+def _h_insert_published_version(
+    pool: FakePostgresPool, conn: _FakeConnection, params: tuple[Any, ...], timeout: float
+) -> tuple[list[dict[str, Any]], int]:
+    key = _version_key(params[0], params[1], params[2])
+    _lock_or_fail(pool, conn, key, timeout)
+    if key[1:] in pool.published_versions or any(
+        scope == params[0]
+        and bundle_id == params[1]
+        and row["model_version"] == params[3]
+        for (scope, bundle_id, _fingerprint), row in pool.published_versions.items()
+    ):
+        raise UniqueViolation("published version already exists")
+    conn._touch(key)
+    pool.published_versions[key[1:]] = {
+        "scope_namespace": params[0],
+        "bundle_id": params[1],
+        "bundle_fingerprint": params[2],
+        "model_version": params[3],
+        "lifecycle_state": params[4],
+        "predecessor_fingerprint": params[5],
+        "successor_fingerprint": params[6],
+        "audit_id": params[7],
+        "published_at": _as_dt(params[8]),
+    }
+    return ([], 1)
+
+
+def _h_update_version_successor(
+    pool: FakePostgresPool, conn: _FakeConnection, params: tuple[Any, ...], timeout: float
+) -> tuple[list[dict[str, Any]], int]:
+    successor, namespace, bundle_id, fingerprint = params
+    key = _version_key(namespace, bundle_id, fingerprint)
+    _lock_or_fail(pool, conn, key, timeout)
+    row = pool.published_versions.get(key[1:])
+    if row is None:
+        return ([], 0)
+    conn._touch(key)
+    row["successor_fingerprint"] = successor
+    if row["lifecycle_state"] != "active":
+        row["lifecycle_state"] = "superseded"
+    return ([], 1)
+
+
+def _h_insert_supersession_edge(
+    pool: FakePostgresPool, conn: _FakeConnection, params: tuple[Any, ...], timeout: float
+) -> tuple[list[dict[str, Any]], int]:
+    key = _supersession_key(params[0], params[1], params[3])
+    _lock_or_fail(pool, conn, key, timeout)
+    if key[1:] in pool.supersession_edges:
+        raise UniqueViolation("supersession edge already exists")
+    conn._touch(key)
+    pool.supersession_edges[key[1:]] = {
+        "scope_namespace": params[0],
+        "bundle_id": params[1],
+        "predecessor_fingerprint": params[2],
+        "successor_fingerprint": params[3],
+        "created_at": _as_dt(params[4]),
+    }
+    return ([], 1)
+
+
+def _h_read_published_version(
+    pool: FakePostgresPool, conn: _FakeConnection, params: tuple[Any, ...], timeout: float
+) -> tuple[list[dict[str, Any]], int]:
+    row = pool.published_versions.get(params)
+    if row is None:
+        return ([], 0)
+    return ([dict(row)], 0)
+
+
+def _h_list_published_versions(
+    pool: FakePostgresPool, conn: _FakeConnection, params: tuple[Any, ...], timeout: float
+) -> tuple[list[dict[str, Any]], int]:
+    namespace, bundle_id = params
+    rows = [
+        dict(row)
+        for (scope, candidate_id, _fingerprint), row in pool.published_versions.items()
+        if scope == namespace and candidate_id == bundle_id
+    ]
+    rows.sort(key=lambda row: (row["published_at"], row["model_version"]))
+    return (rows, len(rows))
+
+
+def _h_set_published_version_state(
+    pool: FakePostgresPool, conn: _FakeConnection, params: tuple[Any, ...], timeout: float
+) -> tuple[list[dict[str, Any]], int]:
+    state, namespace, bundle_id, fingerprint = params
+    key = _version_key(namespace, bundle_id, fingerprint)
+    _lock_or_fail(pool, conn, key, timeout)
+    row = pool.published_versions.get(key[1:])
+    if row is None:
+        return ([], 0)
+    conn._touch(key)
+    row["lifecycle_state"] = state
+    return ([], 1)
 
 
 def _h_upsert_bundle_pointer(
@@ -1026,10 +1365,28 @@ _HANDLERS: dict[str, Callable[..., tuple[list[dict[str, Any]], int]]] = {
     "list_snapshot_pointers": _h_list_snapshot_pointers,
     "upsert_proposal_set": _h_upsert_proposal_set,
     "read_proposal_set": _h_read_proposal_set,
+    "insert_assembly_draft": _h_insert_assembly_draft,
+    "read_assembly_draft": _h_read_assembly_draft,
+    "lock_assembly_draft": _h_lock_assembly_draft,
+    "replace_assembly_draft": _h_replace_assembly_draft,
     "insert_publication": _h_insert_publication,
     "read_publication": _h_read_publication,
     "read_publication_fingerprint": _h_read_publication_fingerprint,
+    "read_publication_by_fingerprint": _h_read_publication_by_fingerprint,
+    "lock_publication_series": _h_lock_publication_series,
     "list_publications": _h_list_publications,
+    "insert_accepted_manifest": _h_insert_accepted_manifest,
+    "read_accepted_manifest": _h_read_accepted_manifest,
+    "insert_publish_audit": _h_insert_publish_audit,
+    "read_publish_audit": _h_read_publish_audit,
+    "read_publish_by_idempotency_key": _h_read_publish_by_idempotency_key,
+    "read_latest_version": _h_read_latest_version,
+    "insert_published_version": _h_insert_published_version,
+    "update_version_successor": _h_update_version_successor,
+    "insert_supersession_edge": _h_insert_supersession_edge,
+    "read_published_version": _h_read_published_version,
+    "list_published_versions": _h_list_published_versions,
+    "set_published_version_state": _h_set_published_version_state,
     "upsert_bundle_pointer": _h_upsert_bundle_pointer,
     "read_bundle_pointer": _h_read_bundle_pointer,
     "lock_bundle_pointer": _h_lock_bundle_pointer,

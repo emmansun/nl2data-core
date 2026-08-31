@@ -22,9 +22,20 @@ from uuid import uuid4
 
 import pytest
 
+from nl2data_core.assembly import (
+    ASSEMBLY_API_VERSION,
+    AcceptedAssertionManifest,
+    AssemblyDraft,
+    AssemblyState,
+)
 from nl2data_core.bundles import (
+    AssertionProvenanceSummary,
     BundleProvenance,
     BundleQualityStatus,
+    DeploymentBindingRedactionSummary,
+    PublishAuditRecord,
+    PublishIdempotencyStatus,
+    PublishVerificationSummary,
     SemanticModelBundle,
     SemanticSourceReference,
 )
@@ -169,6 +180,47 @@ def make_bundle(**overrides: object) -> SemanticModelBundle:
     return SemanticModelBundle(**values)  # type: ignore[arg-type]
 
 
+def make_bundle_v2(**overrides: object) -> SemanticModelBundle:
+    values: dict[str, object] = {
+        "model_version": "2.0.0",
+        "descriptor": make_descriptor(version=2),
+    }
+    values.update(overrides)
+    return make_bundle(**values)
+
+
+def make_approved_draft() -> AssemblyDraft:
+    return AssemblyDraft(
+        apiVersion=ASSEMBLY_API_VERSION,
+        draft_id="draft-sales",
+        bundle_id="sales_model",
+        source_id="sales",
+        model_version="1.0.0",
+        state=AssemblyState.APPROVED,
+        draft_revision=3,
+        author_reference="author-1",
+    )
+
+
+def make_audit(bundle: SemanticModelBundle) -> PublishAuditRecord:
+    return PublishAuditRecord(
+        audit_id=f"publish-{bundle.fingerprint[-16:]}",
+        bundle_id=bundle.bundle_id,
+        bundle_fingerprint=bundle.fingerprint,
+        approval_chain=("author-1", "reviewer-1", "publisher-1"),
+        assertion_provenance=AssertionProvenanceSummary(),
+        verification=PublishVerificationSummary(
+            structural_valid=True,
+            manifest_equivalent=True,
+            host_callback_count=1,
+        ),
+        idempotency_status=PublishIdempotencyStatus.CREATED,
+        deployment_bindings=DeploymentBindingRedactionSummary(),
+        separation_mode="strict",
+        separation_reason_code="authorized",
+    )
+
+
 def _maintenance_profile(dsn: str) -> PostgresFixtureProfile:
     """A fixture profile used only for infrastructure connections."""
     return PostgresFixtureProfile(dsn=dsn)
@@ -266,7 +318,7 @@ class TestRestartReload:
         snapshot = make_snapshot()
         proposals = infer_proposals(snapshot)
         v1 = make_bundle()
-        v2 = make_bundle(model_version="2.0.0")
+        v2 = make_bundle_v2()
         try:
             record = catalog_a.register_snapshot(
                 snapshot, tenant_scope_fingerprint=TENANT_A, retained_for_seconds=3600
@@ -314,6 +366,62 @@ class TestRestartReload:
         finally:
             catalog_b.close()
 
+    def test_assembly_publication_survives_restart(
+        self, postgres_dsn: str, catalog_namespace: str
+    ) -> None:
+        draft = make_approved_draft()
+        bundle = make_bundle()
+        manifest = AcceptedAssertionManifest.from_draft(
+            draft, bundle_fingerprint=bundle.fingerprint
+        )
+        audit = make_audit(bundle)
+        catalog_a = PostgreSQLSemanticCatalog(
+            dsn=postgres_dsn,
+            config=SemanticCatalogConfig(namespace=catalog_namespace),
+        )
+        try:
+            catalog_a.create(draft, tenant_scope_fingerprint=TENANT_A)
+            outcome = catalog_a.publish(
+                bundle,
+                accepted_assertion_manifest=manifest,
+                audit=audit,
+                draft=draft,
+                expected_revision=draft.draft_revision,
+                idempotency_key="publish-sales-v1",
+                tenant_scope_fingerprint=TENANT_A,
+            )
+            assert outcome.kind == "published"
+        finally:
+            catalog_a.close()
+
+        catalog_b = PostgreSQLSemanticCatalog(
+            dsn=postgres_dsn,
+            config=SemanticCatalogConfig(namespace=catalog_namespace),
+        )
+        try:
+            assert catalog_b.get(
+                draft.draft_id, tenant_scope_fingerprint=TENANT_A
+            ) == draft
+            assert catalog_b.get_by_fingerprint(
+                bundle.bundle_id,
+                bundle.fingerprint,
+                tenant_scope_fingerprint=TENANT_A,
+            ) == bundle
+            assert catalog_b.accepted_assertion_manifest(
+                bundle.bundle_id,
+                bundle.fingerprint,
+                tenant_scope_fingerprint=TENANT_A,
+            ) == manifest
+            loaded_audit = catalog_b.publish_audit(
+                bundle.bundle_id,
+                bundle.fingerprint,
+                tenant_scope_fingerprint=TENANT_A,
+            )
+            assert loaded_audit is not None
+            assert loaded_audit.audit_id == audit.audit_id
+        finally:
+            catalog_b.close()
+
 
 class TestConcurrentPublishActivate:
     def test_concurrent_workers_leave_one_complete_active_pointer(
@@ -329,7 +437,7 @@ class TestConcurrentPublishActivate:
             config=SemanticCatalogConfig(namespace=catalog_namespace),
         )
         v1 = make_bundle()
-        v2 = make_bundle(model_version="2.0.0")
+        v2 = make_bundle_v2()
         try:
             assert catalog_a.publish(v1).kind == "published"
             assert catalog_b.publish(v2).kind == "published"
@@ -455,7 +563,7 @@ class TestRollback:
         self, catalog: PostgreSQLSemanticCatalog
     ) -> None:
         v1 = make_bundle()
-        v2 = make_bundle(model_version="2.0.0")
+        v2 = make_bundle_v2()
         assert catalog.publish(v1).kind == "published"
         assert catalog.publish(v2).kind == "published"
         assert catalog.activate("sales_model", "1.0.0").success
@@ -472,7 +580,7 @@ class TestRollback:
         self, catalog: PostgreSQLSemanticCatalog
     ) -> None:
         v1 = make_bundle()
-        v2 = make_bundle(model_version="2.0.0")
+        v2 = make_bundle_v2()
         catalog.publish(v1)
         catalog.publish(v2)
         catalog.activate("sales_model", "1.0.0")
@@ -523,7 +631,7 @@ class TestRetentionCleanup:
         ).activated
 
         v1 = make_bundle()
-        v2 = make_bundle(model_version="2.0.0")
+        v2 = make_bundle_v2()
         assert catalog.publish(v1).kind == "published"
         assert catalog.publish(v2).kind == "published"
         assert catalog.activate("sales_model", "1.0.0").success

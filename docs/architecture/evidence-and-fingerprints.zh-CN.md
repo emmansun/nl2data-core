@@ -34,7 +34,8 @@
 | --- | --- | --- |
 | 生效配置 | 所有核心字段的规范快照（秘密被替换为引用，绝不出现明文） | capabilities 上的 `config_fingerprint`、遥测/审计上下文 |
 | Semantic View / 投影 | 视图身份/版本、模型/目录、活跃 Bundle 身份/版本/指纹、租户范围、主体授权、目的、策略、适配器能力、特性开关 | IR 引用、工作流证据、Memory 记录 |
-| Semantic Model Bundle | 规范载荷（描述符 + 度量、聚合、粒度、来源、信任标记、出处） | 激活、View 解析、检查点 |
+| Semantic Model Bundle | Publish 时的 canonical semantic payload（描述符、计算字段、度量、聚合、粒度、来源、依赖与信任语义） | 发布身份、激活、View 解析、检查点 |
+| Accepted-assertion manifest | 已批准 assertion 的 ID、type、canonical payload 与 payload hash，并链接到一个已发布 Bundle fingerprint | 增量 rediscovery 与 publish 等价校验；位于 Bundle fingerprint domain 之外 |
 | 元数据快照 | 按对象/关系 id 排序的规范序列化 | 账本、激活策略、漂移比较 |
 | 策略范围 | 规范策略内容 + 租户绑定 | 治理事实、授权工件 |
 | 租户范围 | 规范受信任范围（绝不使用原始租户/主体 ID） | 治理、工作流状态、命名空间、结果 |
@@ -53,6 +54,17 @@
 - 原始结果行、文档或提供方响应；
 - 原生对象（游标、连接、驱动值、SDK 客户端）；
 - 未获批准的租户/主体标识符与客户端声明。
+
+对于 Bundle 身份，生命周期元数据也被排除：assertion provenance、review state/binding、
+reviewer identity、approval chain、rejected assertion、deployment binding、文件
+`apiVersion`、注释/表现形式、publish audit、activation state 与 supersession link。
+不同环境的 deployment reference 可以变化而不改变语义身份；语义内容（包括计算字段的
+每个 canonical member）变化则会改变 fingerprint。
+
+`AssemblyDraft` 没有 Bundle fingerprint。内存中的 Bundle 候选对象可以预先计算
+确定性的语义 fingerprint 用于校验，但该值只有在原子 publish 成功时才成为权威且
+对外可见的发布身份；此时同时持久化不可变 Bundle、accepted-assertion manifest 与 audit reference。
+相同语义内容按 fingerprint 幂等；rollback 只是重新选择已有 fingerprint，不会计算新值。
 
 这种过滤是**安全过滤器，而非有损优化**：包含被排除材料的输入会被拒绝
 或消毒，且所得身份对被排除内容不透露任何信息。

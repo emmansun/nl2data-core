@@ -20,16 +20,19 @@
 
 ```mermaid
 flowchart LR
-    S[数据源目录] --> D[1. Discovery 发现]
-    D --> P[2. Semantic inference 语义推断]
-    P --> R{3. 人工评审}
-    R -->|approve 批准| C[转换已批准 proposals]
-    R -->|reject / revise 拒绝或修订| P
-    C --> V[校验 Bundle]
-    V --> U[4. Publish 发布]
-    U --> A[激活不可变版本]
+    S[数据源目录] --> D[1. Discovery 与 inference]
+    D --> P[评审 proposals]
+    P --> DA[Discovery AssemblyDraft]
+    M[手工 assertions] --> MA[Manual AssemblyDraft]
+    DA --> R[2. 提交并评审 assertions]
+    MA --> R
+    R -->|edit / reject / approve| R
+    R --> G[3. 批准冻结 draft]
+    G --> U[4. 原子 Publish]
+    U --> F[Bundle fingerprint + manifest + audit]
+    F --> A[5. 按 fingerprint 激活]
     A --> Q[解析授权 Semantic View]
-    Q --> M[组装模型上下文并查询]
+    Q --> QRY[组装模型上下文并查询]
 ```
 
 前四步属于**控制面流程**，用于生成可供多次查询复用的、版本化的语义资产，
@@ -48,9 +51,10 @@ runtime，因此控制面入口由 Host 应用负责。单个团队可以使用�
 | --- | --- | --- |
 | 启动有界 discovery | CLI、定时任务或 service API | discovery 与 `SnapshotLedger.register` |
 | 查看 proposals | UI 或 review API | 读取 `SemanticProposalSet` |
-| 批准/拒绝/修订 | UI 或受保护的 review API | proposal-set review methods |
-| 构建并校验 Bundle | service job 或 release pipeline | `convert_approved_proposals` 与 Bundle validation |
-| 发布/激活/回滚 | 受保护的 admin API 或 release pipeline | `catalog.publish`、`.activate`、`.rollback` |
+| 创建 assembly draft | CLI、UI 或 service API | `create_discovery_draft` 或 `create_manual_draft` |
+| 评审 assertions | UI 或受保护的 review API | `submit_for_review`、`decide_assertion`、`edit_assertion` |
+| 批准 draft | 受保护的 approval API | 使用当前 `draft_revision` 调用 `approve_draft` |
+| 发布/激活/回滚 | 受保护的 admin API 或 release pipeline | `publish_assembly`、`activate_fingerprint`、`rollback_to_fingerprint` |
 | 查询时解析 | 应用 runtime | `ViewRegistry.resolve` |
 
 Review 和 activation endpoint 必须认证操作人员，强制 tenant/source scope，记录批准与
@@ -90,50 +94,72 @@ Host 选择数据源、allowlist、租户 scope 和有界 discovery 配置。
 **人工工作**：初始 proposals 通常可由程序生成，但数据 steward 应在批准前检查它们。
 如果技术字段名对应的业务含义不正确，可以拒绝或修订 proposal。
 
-## 3. Review / approval：主要人工检查点
+## 3. Assembly / review / approval：人工检查点
 
-这是需要明确人工或等价治理批准的阶段。评审人依据数据源和业务语义逐项处理 proposal：
+Proposal review 只决定哪些 discovery 候选可以进入 assembly，并不授予发布权。
+`create_discovery_draft(...)` 把已批准 proposals 适配为待评审的
+`SemanticAssertion`；手工 bundle-as-code 使用 `create_manual_draft(...)`，
+两条路径最终得到相同的 `AssemblyDraft`。二者都必须声明
+`apiVersion: nl2data.io/semantic-assembly/v1alpha1`，且发布前都没有语义 Bundle
+fingerprint。
 
-- `approve`：允许转换为 Bundle 输入
-- `reject`：排除该 proposal
-- `revise`：旧 proposal 被替代，新 proposal 仍为 `PENDING`，必须再次批准
+Author 使用 `submit_for_review(...)` 提交 draft。Reviewer 按数据源和业务语义
+逐项处理 assertion：
 
-`SemanticProposalSet.approve(...)`、`.reject(...)` 和 `.revise(...)` 返回新的不可变集合。
-未知 proposal ID 会报错；评审不能静默跳过目标。未经批准的 inferred 或 observed 事实不能
-自行授予 View 可见性、租户访问权、强制过滤条件或执行授权。
+- `approve`：把决定绑定到 assertion 的 canonical payload hash
+- `reject`：保留有界负面证据，但从已接受语义载荷中排除
+- `edit`：把责任转为 manual provenance，并让变更后的 assertion 回到 `pending`
+    以重新决策
 
-生产流程还应由 Host 记录批准者、批准时间和被评审的 snapshot fingerprint。核心模型保留
-安全的 provenance 引用，人工身份和审批系统由外围 Host 管理。
+Assertion ID 来自按类型定义的身份语义。身份稳定时修改 payload 会被视为 modified，
+并使旧 review binding 失效；修改身份则是 delete/add。每次 edit、review、approval 与
+publish 都必须提交观察到的 `draft_revision`，过期客户端只会得到 conflict，不会覆盖
+更新内容。LLM-suggested 或高置信 assertion 也必须经过显式授权评审。
 
-## 4. Convert / publish / activate：程序化闸门
+全部 assertions 都有有效的 approved 或 rejected binding 后，Approver 调用
+`approve_draft(...)`，将语义内容冻结在 `approved` 状态。Host policy 分别提供
+Author、Reviewer、Approver、Publisher 角色；如启用单人模式豁免，publish audit 会记录它。
 
-`convert_approved_proposals(...)` 只把 `APPROVED` proposals 转换成 Bundle 输入。没有任何已批准
-proposal 时不会产生输入。源 snapshot fingerprint 和 proposal references 会继续保留，避免
-过期评审被误当成当前元数据。
+## 4. Publish / activate：程序化闸门
 
-Host 随后构造并校验 `SemanticModelBundle`。校验包括结构、交叉引用、版本、源兼容性、信任与
-proposal 引用、有界限制和不安全内容。通过校验后调用：
+`publish_assembly(...)` 是唯一会发射 `SemanticModelBundle` 并让其语义 fingerprint
+对外可见的转换。它校验预期 draft revision 与 approved 状态，重新执行 Bundle 和
+calculated-field 校验，发射 canonical semantic content，派生并验证 accepted-assertion
+manifest，检测相同内容，并以一个事务写入不可变 Bundle、manifest、publish audit 与
+supersession edge。失败时 draft 保持 approved 以供重试，不会暴露部分 publication。
+
+Manifest 以 Bundle fingerprint 为键，只含 accepted assertion 的 ID、type、canonical
+payload 与 payload hash，用于后续 rediscovery 对齐，但不进入 Bundle fingerprint domain。
+Publish audit 只含有界的 approval、provenance、verification、idempotency 与已打码的
+deployment-binding 摘要。
+
+激活是按已发布 fingerprint 进行的独立指针切换：
 
 ```python
-catalog.publish(bundle, production=production_context)
-catalog.activate(bundle.bundle_id, bundle.model_version,
-                 production=production_context)
-active = catalog.active(bundle.bundle_id)
+outcome = publish_assembly(approved_draft, ...)
+published = outcome.bundle
+assert published is not None
+
+catalog.activate_fingerprint(
+    published.bundle_id,
+    published.fingerprint,
+    production=production_context,
+)
+active = catalog.active(published.bundle_id)
 ```
 
-`publish` 保存不可变版本，但不会自动激活；重复版本会被拒绝。提供 production context 时，
-还会校验当前 discovery snapshot、租户/数据源 scope、新鲜度、完整性和 drift policy；依赖的
-Bundle 也必须已发布且 fingerprint 匹配。
-
-激活是一次原子指针切换。候选 Bundle 被拒绝时，原有 active Bundle 保持不变。回滚只是把
-active 指针切回之前有效的不可变版本，不修改旧 artifact。
+等价语义内容按 fingerprint 幂等，复用已有 publication 与 audit reference。同名 Bundle
+的不同内容会追加不可变 supersession version。Production activation 还会校验当前 discovery
+snapshot、tenant/source scope、新鲜度、完整性、drift 与依赖 fingerprint。回滚使用
+`rollback_to_fingerprint(...)`，只移动 active 指针，绝不重新发布或修改任一 artifact。
 
 **人工工作**：批准语义变更，并按 Host 的变更管理流程批准发布。结构和兼容性校验由运行时
 和 catalog 完成，人工不能绕过这些检查。
 
-**存储位置**：当前提供的 `InMemorySemanticBundleCatalog` 是有界的进程内参考 catalog，
-在内存中保存不可变 publication、active 指针和激活历史。当前 core 没有自动提供共享的持久化
-Bundle catalog。不要把它和 `nl2data-workflow-postgres` 的 `PostgreSQLStateStore` 混淆，后者保存的是 workflow state 和幂等记录。
+**存储位置**：`InMemoryAssemblyDraftStore` 与 `InMemorySemanticBundleCatalog` 是有界的
+进程内参考实现。`nl2data-semantic-catalog-postgres` 提供持久化 draft revision、不可变
+Bundle/manifest/audit、supersession chain、active pointer 与 rollback history。它不同于
+保存查询 workflow state 的 `nl2data-workflow-postgres`。
 
 ## 查询如何引用结果
 
@@ -205,14 +231,14 @@ facade = NL2Data(composition=profile)
 | 变化 | 从哪一步重新开始 | 典型动作 |
 | --- | --- | --- |
 | 新表/字段或类型变化 | Discovery | 注册新快照并比较 drift |
-| 新业务定义或别名 | Inference/review | 修订或添加 proposal，再批准 |
-| 已批准的语义模型发布 | Convert/publish | 发布新的不可变 Bundle 版本 |
+| 新业务定义或别名 | Draft/review | 修改 assertion，并重新建立已失效的 review binding |
+| 已批准的语义模型发布 | Publish | 发布新的不可变 Bundle 与 supersession edge |
 | 部署发布 | Activate | 通过校验后切换 active 指针 |
 | 不同租户或用途 | View resolution | 解析不同的授权 View |
 | 新的自然语言问题 | Query intent | 为本次请求组装上下文并识别 intent |
 
-Discovery 和 Bundle 的持久化是 Host 管理的扩展点。多进程生产部署应提供具备相同 fingerprint、
-授权、原子激活和 fail-closed 语义的共享实现，不能把进程内内存当作生产数据库。
+多进程生产部署应使用 PostgreSQL semantic catalog，或提供具备相同 revision 校验、发布事务、
+fingerprint 身份、授权与 fail-closed 语义的共享实现，不能把进程内内存当作生产数据库。
 
 ## 相关页面
 

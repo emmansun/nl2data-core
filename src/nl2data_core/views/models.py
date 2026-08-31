@@ -521,18 +521,8 @@ class CalculatedField(BaseModel):
         return self
 
     def content_hash(self) -> str:
-        """sha256 over the canonical tree, policy, and output type (D6).
-
-        Both ``zero_division_policy`` and ``output_type`` affect execution
-        semantics and CAST behavior, so both are definition identity.
-        """
-        return sha256_fingerprint(
-            {
-                "expression": self.expression.canonical_payload(),
-                "zero_division_policy": self.zero_division_policy,
-                "output_type": self.output_type,
-            }
-        )
+        """Safe hash anchor over the complete published definition."""
+        return sha256_fingerprint(self.canonical_payload())
 
     def canonical_payload(self) -> dict[str, Any]:
         return {

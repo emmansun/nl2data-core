@@ -34,6 +34,15 @@ from .models import (
     SemanticTrustKind,
     SemanticTrustMarker,
 )
+from .publication import (
+    AssertionProvenanceSummary,
+    DeploymentBindingRedactionSummary,
+    PublishAuditRecord,
+    PublishedVersionState,
+    PublishIdempotencyStatus,
+    PublishVerificationSummary,
+    SupersessionMetadata,
+)
 from .validation import (
     BundleValidationIssue,
     BundleValidationResult,
@@ -42,6 +51,7 @@ from .validation import (
 
 __all__ = [
     "BUNDLE_SCHEMA_VERSION",
+    "AssertionProvenanceSummary",
     "BundleCatalogIssue",
     "BundleCatalogOutcome",
     "BundleCompatibility",
@@ -53,7 +63,12 @@ __all__ = [
     "BundleValidationIssue",
     "BundleValidationResult",
     "CanonicalBundleLoader",
+    "DeploymentBindingRedactionSummary",
     "InMemorySemanticBundleCatalog",
+    "PublishedVersionState",
+    "PublishAuditRecord",
+    "PublishIdempotencyStatus",
+    "PublishVerificationSummary",
     "SemanticBundleCatalog",
     "SemanticBundleLoader",
     "SemanticGrain",
@@ -62,5 +77,6 @@ __all__ = [
     "SemanticSourceReference",
     "SemanticTrustKind",
     "SemanticTrustMarker",
+    "SupersessionMetadata",
     "validate_bundle",
 ]

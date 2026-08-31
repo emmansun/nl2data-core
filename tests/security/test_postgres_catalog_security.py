@@ -16,6 +16,11 @@ import json
 import pytest
 from pydantic import ValidationError
 
+from nl2data_core.assembly import (
+    ASSEMBLY_API_VERSION,
+    AssemblyDraft,
+    DeploymentBinding,
+)
 from nl2data_core.bundles import (
     BundleProvenance,
     BundleQualityStatus,
@@ -411,6 +416,29 @@ class TestSafeEnvelopeRejection:
 
 
 class TestSecretAndDsnExclusion:
+    def test_draft_persistence_keeps_reference_but_not_resolved_credential(self) -> None:
+        catalog, pool = make_postgres_catalog()
+        draft = AssemblyDraft(
+            apiVersion=ASSEMBLY_API_VERSION,
+            draft_id="draft-sales",
+            bundle_id="sales-model",
+            source_id="sales",
+            model_version="1.0.0",
+            deployment_bindings=(
+                DeploymentBinding(
+                    binding_id="production",
+                    environment="production",
+                    source_id="sales",
+                    connection_reference="vault:secret/data/sales",
+                ),
+            ),
+            author_reference="author-1",
+        )
+        catalog.create(draft, tenant_scope_fingerprint=TENANT_A)
+        persisted = str(pool.assembly_drafts)
+        assert "vault:secret/data/sales" in persisted
+        assert "resolved-password-hunter2" not in persisted
+
     def test_config_never_carries_the_dsn(self) -> None:
         config = SemanticCatalogConfig(
             namespace="deploy_a", dsn_secret_ref="NL2DATA_CATALOG_DSN"

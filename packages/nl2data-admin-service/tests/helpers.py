@@ -6,6 +6,15 @@ from datetime import datetime
 from typing import Any
 
 import pytest
+from nl2data_core.assembly import (
+    InMemoryAssemblyDraftStore,
+    LifecycleAuthorizationDecision,
+    LifecycleAuthorizationRequest,
+    LifecycleRole,
+    SeparationOfDutiesMode,
+)
+from nl2data_core.assembly.publishing import ManifestBundleVerification
+from nl2data_core.bundles import InMemorySemanticBundleCatalog
 from nl2data_core.bundles.catalog import BundleCatalogIssue, BundleCatalogOutcome
 from nl2data_core.bundles.models import (
     BundleCompatibility,
@@ -15,6 +24,7 @@ from nl2data_core.bundles.models import (
     SemanticModelBundle,
     SemanticSourceReference,
 )
+from nl2data_core.views import SemanticEntityDescriptor
 from nl2data_core.metadata.catalog import SemanticSnapshotCatalog
 from nl2data_core.metadata.models import (
     MetadataConfidence,
@@ -163,6 +173,14 @@ class _FakeDependencies:
         self.catalog: _FakeCatalog = _FakeCatalog()
         self.discoverer: Any = None
         self.job_runner: Any = None
+        self.draft_store = InMemoryAssemblyDraftStore()
+        self.lifecycle_authorizer = _AllowLifecycleAuthorizer()
+        self.lifecycle_catalog = InMemorySemanticBundleCatalog(
+            draft_store=self.draft_store
+        )
+        self.bundle_emitter = _FakeBundleEmitter()
+        self.manifest_verifier = _AllowManifestVerifier()
+        self.separation_mode = SeparationOfDutiesMode.SOLO_WITH_WAIVER
 
     @property
     def audit_reference(self) -> str:
@@ -190,12 +208,44 @@ class _FakeDiscoverer:
         return source_id in {"source-1", "source-2"}
 
 
-def _make_auth(permissions: list[Permission] | None = None) -> AuthContext:
+class _AllowLifecycleAuthorizer:
+    def __init__(self) -> None:
+        self.requests: list[LifecycleAuthorizationRequest] = []
+
+    def authorize(
+        self,
+        request: LifecycleAuthorizationRequest,
+    ) -> LifecycleAuthorizationDecision:
+        self.requests.append(request)
+        return LifecycleAuthorizationDecision(allowed=True)
+
+
+class _FakeBundleEmitter:
+    def emit(self, draft: Any) -> SemanticModelBundle:
+        return _make_bundle().model_copy(
+            update={
+                "bundle_id": draft.bundle_id,
+                "model_version": draft.model_version,
+            }
+        )
+
+
+class _AllowManifestVerifier:
+    def verify(self, draft: Any, manifest: Any, bundle: Any) -> ManifestBundleVerification:
+        return ManifestBundleVerification(valid=True)
+
+
+def _make_auth(
+    permissions: list[Permission] | None = None,
+    *,
+    lifecycle_roles: frozenset[LifecycleRole] = frozenset(),
+) -> AuthContext:
     return AuthContext(
         operator_id="op-1",
         tenant_scope_fingerprint=_FINGERPRINT,
         source_ids=frozenset(["source-1"]),
         permissions=frozenset(permissions or []),
+        lifecycle_roles=lifecycle_roles,
         audit_reference="audit-1",
     )
 
@@ -245,6 +295,7 @@ def _make_bundle() -> SemanticModelBundle:
             descriptor_id="desc-1",
             version=1,
             source_id="source-1",
+            entities=(SemanticEntityDescriptor(entity_id="orders", label="Orders"),),
         ),
         sources=(
             SemanticSourceReference(

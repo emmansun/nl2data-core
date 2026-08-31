@@ -18,16 +18,19 @@ This guide answers four practical questions:
 
 ```mermaid
 flowchart LR
-    S[Source catalog] --> D[1. Discover]
-    D --> P[2. Infer proposals]
-    P --> R{3. Human review}
-    R -->|approve| C[Convert approved proposals]
-    R -->|reject / revise| P
-    C --> V[Validate bundle]
-    V --> U[4. Publish]
-    U --> A[Activate immutable version]
+    S[Source catalog] --> D[1. Discover and infer]
+    D --> P[Review proposals]
+    P --> DA[Discovery AssemblyDraft]
+    M[Manual assertions] --> MA[Manual AssemblyDraft]
+    DA --> R[2. Submit and review assertions]
+    MA --> R
+    R -->|edit / reject / approve| R
+    R --> G[3. Approve frozen draft]
+    G --> U[4. Publish atomically]
+    U --> F[Bundle fingerprint + manifest + audit]
+    F --> A[5. Activate by fingerprint]
     A --> Q[Resolve authorized Semantic View]
-    Q --> M[Build model context and query]
+    Q --> QRY[Build model context and query]
 ```
 
 The first four stages are a **control-plane workflow**. They produce a
@@ -49,9 +52,10 @@ contracts:
 | --- | --- | --- |
 | Start bounded discovery | CLI, scheduled job, or service API | discover and `SnapshotLedger.register` |
 | Inspect proposals | UI or review API | read `SemanticProposalSet` |
-| Approve/reject/revise | UI or protected review API | proposal-set review methods |
-| Build and validate Bundle | service job or release pipeline | `convert_approved_proposals` and Bundle validation |
-| Publish/activate/rollback | protected admin API or release pipeline | `catalog.publish`, `.activate`, `.rollback` |
+| Create an assembly draft | CLI, UI, or service API | `create_discovery_draft` or `create_manual_draft` |
+| Review assertions | UI or protected review API | `submit_for_review`, `decide_assertion`, `edit_assertion` |
+| Approve the draft | protected approval API | `approve_draft` with current `draft_revision` |
+| Publish/activate/rollback | protected admin API or release pipeline | `publish_assembly`, `activate_fingerprint`, `rollback_to_fingerprint` |
 | Resolve for querying | application runtime | `ViewRegistry.resolve` |
 
 The review and activation endpoints must authenticate the operator, enforce
@@ -100,66 +104,84 @@ proposals, but a data steward should inspect them before approval. A proposal
 can be rejected or revised when a technical name has the wrong business
 meaning.
 
-## 3. Review and approval: the main human checkpoint
+## 3. Assemble, review, and approve: the human checkpoints
 
-This is the stage that requires explicit human or equivalent governed
-approval. A reviewer examines each proposal against the source and business
-semantics, then chooses:
+Proposal review decides which discovery candidates may enter assembly; it is
+not publication authority. `create_discovery_draft(...)` adapts approved
+proposals into pending `SemanticAssertion` records. Hand-authored bundle-as-code
+uses `create_manual_draft(...)` and produces the same `AssemblyDraft` shape.
+Both paths require `apiVersion: nl2data.io/semantic-assembly/v1alpha1` and both
+remain pre-publication artifacts with no semantic Bundle fingerprint.
 
-- `approve`: proposal is eligible for Bundle input
-- `reject`: proposal is excluded
-- `revise`: the old proposal is superseded and a new `PENDING` proposal must be
-  approved separately
+The author submits the draft with `submit_for_review(...)`. A reviewer then
+examines each assertion against the source and business semantics and chooses:
 
-`SemanticProposalSet.approve(...)`, `.reject(...)`, and `.revise(...)` return
-new immutable sets. Unknown proposal IDs are errors; review cannot silently
-skip a requested item. An inferred or merely observed proposal cannot grant
-View visibility, tenant access, mandatory filters, or execution authorization.
+- `approve`: bind the decision to the assertion's canonical payload hash
+- `reject`: retain bounded negative evidence but exclude the assertion from the
+    accepted semantic payload
+- `edit`: transfer responsibility to manual provenance and return the changed
+    assertion to `pending` for a fresh decision
 
-For a production workflow, record who/what approved the set, when, and which
-snapshot fingerprint was reviewed. The core proposal model preserves safe
-provenance references; the surrounding host owns the human identity and
-approval workflow.
+Assertion IDs derive from type-specific identity semantics. A payload edit with
+stable identity is a modification and invalidates its review binding; an
+identity edit is a delete/add. Every edit, review, approval, and publish attempt
+must present the observed `draft_revision`, so stale clients receive a conflict
+without overwriting newer work. LLM-suggested and high-confidence assertions
+still require an explicit authorized review decision.
 
-## 4. Convert, publish, and activate: programmatic gates
+After every assertion has a valid approved or rejected binding, an authorized
+approver calls `approve_draft(...)`. This freezes the semantic content in the
+`approved` state. Host policy supplies distinct Author, Reviewer, Approver, and
+Publisher roles; a configured solo-mode waiver is recorded in publish audit.
 
-`convert_approved_proposals(...)` converts only `APPROVED` proposals into a
-Bundle input. If no proposal is approved, it returns no input. The source
-snapshot fingerprint and proposal references remain attached so stale review
-cannot be mistaken for current metadata.
+## 4. Publish and activate: programmatic gates
 
-The host then constructs and validates a `SemanticModelBundle`. Validation
-checks structure, cross-references, versions, source compatibility, trust and
-proposal references, bounds, and unsafe content. A valid Bundle is published
-with `SemanticBundleCatalog.publish(...)`; publication stores an immutable
-version and does not make it active. Duplicate versions are rejected.
+`publish_assembly(...)` is the only transition that emits a
+`SemanticModelBundle` and makes its semantic fingerprint externally visible.
+It checks the expected draft revision and approved state, reruns Bundle and
+calculated-field validation, emits canonical semantic content, derives and
+verifies the accepted-assertion manifest, detects identical content, and writes
+the immutable Bundle, manifest, publish audit, and supersession edge atomically.
+Failure leaves the draft approved for retry and exposes no partial publication.
 
-Activation is an explicit pointer change:
+The manifest is keyed by Bundle fingerprint and contains accepted assertion IDs,
+types, canonical payloads, and payload hashes. It supports later rediscovery
+alignment but remains outside the Bundle fingerprint domain. The publish audit
+contains bounded approval, provenance, verification, idempotency, and redacted
+deployment-binding summaries.
+
+Activation is a separate explicit pointer change by published fingerprint:
 
 ```python
-catalog.publish(bundle, production=production_context)
-catalog.activate(bundle.bundle_id, bundle.model_version,
-                 production=production_context)
-active = catalog.active(bundle.bundle_id)
+outcome = publish_assembly(approved_draft, ...)
+published = outcome.bundle
+assert published is not None
+
+catalog.activate_fingerprint(
+    published.bundle_id,
+    published.fingerprint,
+    production=production_context,
+)
+active = catalog.active(published.bundle_id)
 ```
 
-When production context is supplied, publication/activation also checks the
-active discovery snapshot, tenant/source scope, freshness, completeness, and
-drift policy. Dependencies must be published with matching fingerprints.
-Activation is atomic: a rejected candidate leaves the existing active Bundle
-unchanged. Rollback points the active pointer at a previous valid immutable
-version; it does not mutate the old artifact.
+Equivalent semantic content is idempotent by fingerprint and reuses the existing
+publication and audit reference. Different content under the same Bundle name
+appends an immutable supersession version. Production activation also checks the
+active discovery snapshot, tenant/source scope, freshness, completeness, drift,
+and dependency fingerprints. Rollback uses `rollback_to_fingerprint(...)`: it
+moves only the active pointer and never republishes or mutates either artifact.
 
 **Human work:** approve the change and authorize the release according to the
 host's change-management policy. The structural and compatibility checks are
 performed by the runtime and catalog; a human does not manually bypass them.
 
-**Stored where:** the repository provides `InMemorySemanticBundleCatalog` as a
-bounded process-local reference catalog. It keeps immutable publications, an
-active pointer, and activation history in memory. A durable/shared Bundle
-catalog is host-owned and is not silently provided by the current core. Do not
-confuse it with `nl2data-workflow-postgres`'s `PostgreSQLStateStore`, which
-stores safe workflow state and idempotency records.
+**Stored where:** `InMemoryAssemblyDraftStore` and
+`InMemorySemanticBundleCatalog` are bounded process-local references. The
+`nl2data-semantic-catalog-postgres` package provides durable draft revisions,
+immutable Bundle/manifest/audit persistence, supersession chains, active
+pointers, and rollback history. It is separate from
+`nl2data-workflow-postgres`, which stores query workflow state.
 
 ## How a query references the result
 
@@ -240,16 +262,15 @@ transitively through the view fingerprint.
 | Change | Repeat from | Typical action |
 | --- | --- | --- |
 | New table/field or changed type | Discovery | Register a new snapshot and compare drift |
-| New business definition or alias | Inference/review | Revise or add proposals, then approve |
-| Approved semantic model release | Convert/publish | Publish a new immutable Bundle version |
+| New business definition or alias | Draft/review | Modify assertions and renew invalidated review bindings |
+| Approved semantic model release | Publish | Publish a new immutable Bundle and supersession edge |
 | Deployment release | Activate | Move the active pointer after checks |
 | Different tenant or purpose | View resolution | Resolve a different authorized View |
 | New natural-language request | Query intent | Build context and identify this request's intent |
 
-Discovery and Bundle persistence are deliberately host-owned extension points.
-For a durable multi-process deployment, provide a shared implementation with
-the same fingerprint, authorization, atomic activation, and fail-closed
-semantics rather than treating process memory as a production database.
+For a durable multi-process deployment, use the PostgreSQL semantic catalog or
+provide a shared implementation with the same revision checks, publication
+transaction, fingerprint identity, authorization, and fail-closed semantics.
 
 ## Related pages
 

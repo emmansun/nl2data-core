@@ -39,7 +39,8 @@ deliberately not a serialization of secrets or raw user material.
 | --- | --- | --- |
 | Effective configuration | Canonical snapshot of all core fields (secrets replaced by references, never plaintext) | `config_fingerprint` on capabilities, telemetry/audit context |
 | Semantic View / projection | View identity/version, model/catalog, active bundle identity/version/fingerprint, tenant scope, principal authorization, purpose, policy, adapter capabilities, feature flags | IR references, workflow evidence, Memory records |
-| Semantic Model Bundle | Canonical payload (descriptor + measures, aggregations, grain, sources, trust markers, provenance) | Activation, View resolution, checkpoints |
+| Semantic Model Bundle | Publish-time canonical semantic payload (descriptor, calculated fields, measures, aggregations, grain, sources, dependencies, trust semantics) | Publication identity, activation, View resolution, checkpoints |
+| Accepted-assertion manifest | Approved assertion IDs, types, canonical payloads, and payload hashes, linked to one published Bundle fingerprint | Incremental rediscovery and publish equivalence checks; outside the Bundle fingerprint domain |
 | Metadata snapshot | Canonical serialization sorted by object/relationship id | Ledger, activation policy, drift comparison |
 | Policy scope | Canonical policy content + tenant binding | Governance facts, authorization artifacts |
 | Tenant scope | Canonical trusted scope (never raw tenant/principal IDs) | Governance, workflow state, namespaces, outcomes |
@@ -58,6 +59,21 @@ enter canonicalization, fingerprints, or any downstream evidence:
 - raw result rows, documents, or provider responses;
 - native objects (cursors, connections, driver values, SDK clients);
 - unapproved tenant/principal identifiers and client claims.
+
+For Bundle identity, lifecycle metadata is also excluded: assertion provenance,
+review state/bindings, reviewer identities, approval chains, rejected
+assertions, deployment bindings, file `apiVersion`, comments/presentation,
+publish audit, activation state, and supersession links. Deployment references
+may change between environments without changing semantic identity. Semantic
+content, including every canonical calculated-field member, does change it.
+
+An `AssemblyDraft` has no Bundle fingerprint. An in-memory Bundle candidate may
+precompute its deterministic semantic fingerprint for validation, but that
+value becomes authoritative and externally visible only inside successful
+atomic publish, alongside the immutable Bundle, accepted-assertion manifest,
+and audit reference. Identical semantic
+content is idempotent by fingerprint; rollback reselects an existing fingerprint
+and never computes a replacement.
 
 This filtering is a **safety filter, not a lossy optimization**: inputs
 containing excluded material are rejected or sanitized, and the

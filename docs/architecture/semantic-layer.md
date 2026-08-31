@@ -17,7 +17,8 @@ fail closed on every trust dimension before any adapter executes.
 | Artifact | Owned by | Carries | Role |
 | --- | --- | --- | --- |
 | `SemanticDescriptor` | Metadata lifecycle (discovery + inference + review) or manual authoring | Entities, fields, relationships, `catalog_fingerprint` | The bounded semantic vocabulary of one source; field ids are unique across entities |
-| `SemanticModelBundle` | Lifecycle publication | Validated descriptor + approved semantics, active snapshot identity | Immutable release unit; activation requires dependency and fingerprint checks |
+| `AssemblyDraft` | Control-plane lifecycle | Deterministic assertions, provenance, review bindings, deployment references, `draft_revision` | Editable pre-publication workspace in `draft`, `review`, or `approved`; never carries a Bundle fingerprint |
+| `SemanticModelBundle` | Lifecycle publication | Validated descriptor + approved semantic payload, active snapshot identity | Immutable publish output; receives its semantic fingerprint at publish and activates by fingerprint |
 | `SemanticViewDefinition` | Lifecycle or manual authoring | Allowed purposes, member restrictions, bound policy/tenant/principal fingerprints, capabilities, feature flags | The *contract*: which parts of the descriptor a caller may see under which trusted context |
 | `ViewRegistry` + `ResolutionContext` | Host composition layer | Registry holds descriptors, definitions, and the active Bundle; context carries trusted fingerprints | Resolution: every security dimension is checked before any projection is returned |
 | `ResolvedViewProjection` | `ViewRegistry.resolve(...)` | `root_entity_ids`, `field_ids`, resolved entities, allowed operations/relationships, view + Bundle fingerprints | The query-time handoff: the single source of truth for the authorized surface |
@@ -28,6 +29,14 @@ fail closed on every trust dimension before any adapter executes.
 Semantic artifacts carry *only* semantic references and safe descriptions —
 never credentials, physical bindings, or hidden policy rules. Physical
 names live exclusively in host-owned binding/configuration.
+
+Assertion review is control-plane metadata. Approved/rejected decisions bind to
+the canonical assertion payload hash, so changing semantic content returns the
+assertion to `pending`; rejected assertions remain negative evidence and never
+enter runtime authority. Publish derives an immutable accepted-assertion
+manifest for rediscovery alignment and an audit record for approvals,
+verification, provenance, idempotency, and redacted deployment bindings.
+Neither artifact enters the Bundle fingerprint domain.
 
 ## Why the layer exists
 
@@ -42,6 +51,9 @@ names live exclusively in host-owned binding/configuration.
 - **Opaque evidence**: view and Bundle identities are `sha256` fingerprints
   in checkpoints, authorization records, and result lineage — never raw
   identifiers or payloads.
+- **Semantic identity**: the Bundle fingerprint covers canonical semantic
+  payload only. Provenance, reviewer identity, review state, deployment
+  bindings, audit, activation, supersession, and file presentation are excluded.
 - **Physical isolation**: the semantic layer never leaks table names; the
   compiler receives them only through the host-owned binding.
 - **AI safety**: the model provider sees bounded semantic context (fields,

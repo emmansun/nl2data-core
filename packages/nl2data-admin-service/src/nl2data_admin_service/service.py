@@ -7,6 +7,30 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any, TypeVar, cast
 
+from nl2data_core.assembly import (
+    AssemblyDraft,
+    AssemblyDraftStore,
+    AssemblyState,
+    AssertionProvenance,
+    AssertionProvenanceKind,
+    DeploymentBinding,
+    DraftRevisionConflict,
+    LifecycleAction,
+    LifecycleAuthorizationContext,
+    LifecycleAuthorizationError,
+    LifecycleRole,
+    ReviewState,
+    SemanticAssertion,
+    SeparationOfDutiesMode,
+    evaluate_separation_of_duties,
+    require_lifecycle_authorization,
+)
+from nl2data_core.assembly import approve_draft as core_approve_draft
+from nl2data_core.assembly import create_discovery_draft as core_create_discovery_draft
+from nl2data_core.assembly import decide_assertion as core_decide_assertion
+from nl2data_core.assembly import edit_assertion as core_edit_assertion
+from nl2data_core.assembly import submit_for_review as core_submit_for_review
+from nl2data_core.assembly.publishing import publish_assembly
 from nl2data_core.bundles.models import SemanticModelBundle
 from nl2data_core.bundles.validation import validate_bundle as core_validate_bundle
 from nl2data_core.metadata.models import MetadataSnapshot
@@ -15,6 +39,11 @@ from nl2data_core.metadata.proposals import SemanticProposalSet
 from .auth import AuthContext, Permission
 from .config import AdminServiceConfig
 from .dtos import (
+    AssemblyAssertionSummary,
+    AssemblyDraftDetail,
+    AssemblyDraftSummary,
+    AssertionDecisionAction,
+    AssertionDecisionCommand,
     BundleDetail,
     BundleLifecycleCommand,
     BundleLifecycleResult,
@@ -22,6 +51,9 @@ from .dtos import (
     BundleValidationResult,
     CapabilitiesResult,
     Capability,
+    DeploymentBindingSummary,
+    DraftMutationResult,
+    DraftRevisionCommand,
     DriftStatus,
     ErrorCategory,
     ErrorDetail,
@@ -32,10 +64,14 @@ from .dtos import (
     PaginationParams,
     ProposalListItem,
     ProposalSetDetail,
+    PublishAssemblyResult,
+    PublishAuditSummary,
+    PublishedVersionItem,
     ReviewAction,
     ReviewCommand,
     ReviewResult,
     SnapshotDetail,
+    VersionListResult,
 )
 from .errors import (
     AdminServiceError,
@@ -65,6 +101,10 @@ def _normalize_errors(method: _F) -> _F:
             return method(self, *args, **kwargs)
         except AdminServiceError:
             raise
+        except DraftRevisionConflict as err:
+            raise ConflictError("Draft revision conflict") from err
+        except LifecycleAuthorizationError as err:
+            raise AuthorizationDeniedError("Lifecycle authorization denied") from err
         except ValueError as err:
             raise ValidationError((str(err) or "invalid request")[:256]) from err
         except Exception:
@@ -102,6 +142,74 @@ class AdminService:
         if discoverer is None:
             raise DiscoveryError("No metadata discoverer configured")
         return discoverer
+
+    def _require_draft_store(self) -> AssemblyDraftStore:
+        store = self._deps.draft_store
+        if store is None:
+            raise NotFoundError("assembly draft store")
+        return store
+
+    def _require_lifecycle_authorizer(self) -> Any:
+        authorizer = getattr(self._deps, "lifecycle_authorizer", None)
+        if authorizer is None:
+            raise AuthorizationDeniedError("Lifecycle authorizer not configured")
+        return authorizer
+
+    def _require_lifecycle_catalog(self) -> Any:
+        catalog = getattr(self._deps, "lifecycle_catalog", None)
+        if catalog is None:
+            raise NotFoundError("lifecycle catalog")
+        return catalog
+
+    def _require_bundle_emitter(self) -> Any:
+        emitter = getattr(self._deps, "bundle_emitter", None)
+        if emitter is None:
+            raise NotFoundError("semantic bundle emitter")
+        return emitter
+
+    def _require_manifest_verifier(self) -> Any:
+        verifier = getattr(self._deps, "manifest_verifier", None)
+        if verifier is None:
+            raise NotFoundError("manifest verifier")
+        return verifier
+
+    def _lifecycle_context(
+        self,
+        auth_context: AuthContext,
+        source_id: str,
+    ) -> LifecycleAuthorizationContext:
+        reference = auth_context.audit_reference or self._deps.audit_reference
+        if not reference:
+            raise AuthorizationDeniedError("Bounded operator audit reference required")
+        return LifecycleAuthorizationContext(
+            operator_reference=reference,
+            tenant_scope_fingerprint=auth_context.tenant_scope_fingerprint,
+            source_id=source_id,
+            roles=auth_context.lifecycle_roles,
+        )
+
+    def _get_draft(self, draft_id: str, auth_context: AuthContext) -> AssemblyDraft:
+        draft = self._require_draft_store().get(
+            draft_id,
+            tenant_scope_fingerprint=auth_context.tenant_scope_fingerprint,
+        )
+        if draft is None:
+            raise NotFoundError("assembly draft")
+        self._check_source(auth_context, draft.source_id)
+        return draft
+
+    def _save_draft(
+        self,
+        draft: AssemblyDraft,
+        *,
+        expected_revision: int,
+        auth_context: AuthContext,
+    ) -> None:
+        self._require_draft_store().replace(
+            draft,
+            expected_revision=expected_revision,
+            tenant_scope_fingerprint=auth_context.tenant_scope_fingerprint,
+        )
 
     def _check_permission(self, auth_context: AuthContext, permission: Permission) -> None:
         if not auth_context.is_allowed(permission):
@@ -142,6 +250,11 @@ class AdminService:
                     Capability(name="job cancel", permission=Permission.JOB_CANCEL),
                     Capability(name="proposal read", permission=Permission.PROPOSAL_READ),
                     Capability(name="proposal review", permission=Permission.PROPOSAL_REVIEW),
+                    Capability(name="assembly read", permission=Permission.ASSEMBLY_READ),
+                    Capability(name="assembly write", permission=Permission.ASSEMBLY_WRITE),
+                    Capability(name="assembly review", permission=Permission.ASSEMBLY_REVIEW),
+                    Capability(name="assembly approve", permission=Permission.ASSEMBLY_APPROVE),
+                    Capability(name="assembly audit", permission=Permission.ASSEMBLY_AUDIT),
                     Capability(name="bundle read", permission=Permission.BUNDLE_READ),
                     Capability(name="bundle validate", permission=Permission.BUNDLE_VALIDATE),
                     Capability(name="bundle publish", permission=Permission.BUNDLE_PUBLISH),
@@ -331,6 +444,494 @@ class AdminService:
         )
 
     # ------------------------------------------------------------------
+    # assembly drafts
+    # ------------------------------------------------------------------
+    @_normalize_errors
+    def create_draft(
+        self,
+        draft: AssemblyDraft,
+        *,
+        auth_context: AuthContext,
+    ) -> DraftMutationResult:
+        self._check_permission(auth_context, Permission.ASSEMBLY_WRITE)
+        self._check_source(auth_context, draft.source_id)
+        authorization = self._lifecycle_context(auth_context, draft.source_id)
+        require_lifecycle_authorization(
+            context=authorization,
+            authorizer=self._require_lifecycle_authorizer(),
+            required_role=LifecycleRole.AUTHOR,
+            action=LifecycleAction.CREATE_DRAFT,
+            resource_id=draft.draft_id,
+        )
+        if draft.state is not AssemblyState.DRAFT or draft.draft_revision != 0:
+            raise ValidationError("new assembly drafts must start at draft revision 0")
+        if draft.review_submitted_by is not None or draft.approved_by is not None:
+            raise ValidationError("new assembly drafts cannot carry review metadata")
+        if any(
+            assertion.review_state is not ReviewState.PENDING
+            or assertion.review_binding is not None
+            for assertion in draft.assertions
+        ):
+            raise ValidationError("new assembly draft assertions must be pending")
+        draft = AssemblyDraft.model_validate(
+            {
+                **draft.model_dump(mode="python", by_alias=True),
+                "author_reference": authorization.operator_reference,
+            }
+        )
+        self._require_draft_store().create(
+            draft,
+            tenant_scope_fingerprint=auth_context.tenant_scope_fingerprint,
+        )
+        return DraftMutationResult(
+            draft=_draft_to_summary(draft),
+            audit_reference=authorization.operator_reference,
+        )
+
+    @_normalize_errors
+    def get_draft(
+        self,
+        draft_id: str,
+        *,
+        auth_context: AuthContext,
+    ) -> AssemblyDraftDetail:
+        self._check_permission(auth_context, Permission.ASSEMBLY_READ)
+        return _draft_to_detail(self._get_draft(draft_id, auth_context))
+
+    @_normalize_errors
+    def edit_draft(
+        self,
+        draft_id: str,
+        *,
+        expected_revision: int,
+        assertions: tuple[SemanticAssertion, ...] | None = None,
+        deployment_bindings: tuple[DeploymentBinding, ...] | None = None,
+        auth_context: AuthContext,
+    ) -> DraftMutationResult:
+        self._check_permission(auth_context, Permission.ASSEMBLY_WRITE)
+        current = self._get_draft(draft_id, auth_context)
+        authorization = self._lifecycle_context(auth_context, current.source_id)
+        require_lifecycle_authorization(
+            context=authorization,
+            authorizer=self._require_lifecycle_authorizer(),
+            required_role=LifecycleRole.AUTHOR,
+            action=LifecycleAction.EDIT_DRAFT,
+            resource_id=draft_id,
+        )
+        changes: dict[str, object] = {}
+        if assertions is not None:
+            current_by_id = {assertion.id: assertion for assertion in current.assertions}
+            normalized: list[SemanticAssertion] = []
+            for assertion in assertions:
+                authoritative = current_by_id.get(assertion.id)
+                if (
+                    authoritative is not None
+                    and authoritative.type is assertion.type
+                    and authoritative.payload_hash() == assertion.payload_hash()
+                    and authoritative.provenance == assertion.provenance
+                ):
+                    normalized.append(authoritative)
+                    continue
+                normalized.append(
+                    SemanticAssertion.create(
+                        type=assertion.type,
+                        payload=assertion.payload,
+                        provenance=AssertionProvenance(
+                            kind=AssertionProvenanceKind.MANUAL,
+                            source_reference=(
+                                f"seed:{authoritative.id}"
+                                if authoritative is not None
+                                else None
+                            ),
+                        ),
+                    )
+                )
+            changes["assertions"] = tuple(normalized)
+        if deployment_bindings is not None:
+            changes["deployment_bindings"] = deployment_bindings
+        updated = current.mutate(expected_revision=expected_revision, **changes)
+        self._save_draft(
+            updated,
+            expected_revision=expected_revision,
+            auth_context=auth_context,
+        )
+        return DraftMutationResult(
+            draft=_draft_to_summary(updated),
+            audit_reference=authorization.operator_reference,
+        )
+
+    @_normalize_errors
+    def submit_draft_for_review(
+        self,
+        draft_id: str,
+        command: DraftRevisionCommand,
+        *,
+        auth_context: AuthContext,
+    ) -> DraftMutationResult:
+        self._check_permission(auth_context, Permission.ASSEMBLY_WRITE)
+        current = self._get_draft(draft_id, auth_context)
+        authorization = self._lifecycle_context(auth_context, current.source_id)
+        outcome = core_submit_for_review(
+            current,
+            expected_revision=command.expected_revision,
+            authorization=authorization,
+            authorizer=self._require_lifecycle_authorizer(),
+        )
+        self._save_draft(
+            outcome.draft,
+            expected_revision=command.expected_revision,
+            auth_context=auth_context,
+        )
+        return DraftMutationResult(
+            draft=_draft_to_summary(outcome.draft),
+            audit_reference=authorization.operator_reference,
+        )
+
+    @_normalize_errors
+    def decide_draft_assertion(
+        self,
+        draft_id: str,
+        command: AssertionDecisionCommand,
+        *,
+        auth_context: AuthContext,
+    ) -> DraftMutationResult:
+        self._check_permission(auth_context, Permission.ASSEMBLY_REVIEW)
+        current = self._get_draft(draft_id, auth_context)
+        authorization = self._lifecycle_context(auth_context, current.source_id)
+        if command.action is AssertionDecisionAction.EDIT:
+            if command.semantic_payload is None:
+                raise ValidationError("assertion edit requires semantic_payload")
+            outcome = core_edit_assertion(
+                current,
+                assertion_id=command.assertion_id,
+                payload=command.semantic_payload,
+                expected_revision=command.expected_revision,
+                authorization=authorization,
+                authorizer=self._require_lifecycle_authorizer(),
+                reason=command.reason,
+            )
+        else:
+            decision = (
+                ReviewState.APPROVED
+                if command.action is AssertionDecisionAction.APPROVE
+                else ReviewState.REJECTED
+            )
+            outcome = core_decide_assertion(
+                current,
+                assertion_id=command.assertion_id,
+                decision=decision,
+                expected_revision=command.expected_revision,
+                authorization=authorization,
+                authorizer=self._require_lifecycle_authorizer(),
+                reason=command.reason,
+            )
+        self._save_draft(
+            outcome.draft,
+            expected_revision=command.expected_revision,
+            auth_context=auth_context,
+        )
+        return DraftMutationResult(
+            draft=_draft_to_summary(outcome.draft),
+            audit_reference=authorization.operator_reference,
+        )
+
+    @_normalize_errors
+    def approve_assembly_draft(
+        self,
+        draft_id: str,
+        command: DraftRevisionCommand,
+        *,
+        auth_context: AuthContext,
+    ) -> DraftMutationResult:
+        self._check_permission(auth_context, Permission.ASSEMBLY_APPROVE)
+        current = self._get_draft(draft_id, auth_context)
+        authorization = self._lifecycle_context(auth_context, current.source_id)
+        outcome = core_approve_draft(
+            current,
+            expected_revision=command.expected_revision,
+            authorization=authorization,
+            authorizer=self._require_lifecycle_authorizer(),
+        )
+        self._save_draft(
+            outcome.draft,
+            expected_revision=command.expected_revision,
+            auth_context=auth_context,
+        )
+        return DraftMutationResult(
+            draft=_draft_to_summary(outcome.draft),
+            audit_reference=authorization.operator_reference,
+        )
+
+    @_normalize_errors
+    def create_draft_from_proposals(
+        self,
+        snapshot_fingerprint: str,
+        *,
+        descriptor_id: str,
+        draft_id: str,
+        bundle_id: str,
+        model_version: str,
+        auth_context: AuthContext,
+    ) -> DraftMutationResult:
+        self._check_permission(auth_context, Permission.ASSEMBLY_WRITE)
+        catalog = self._require_catalog()
+        proposal_set = catalog.proposal_set(
+            snapshot_fingerprint,
+            tenant_scope_fingerprint=auth_context.tenant_scope_fingerprint,
+        )
+        if proposal_set is None:
+            raise NotFoundError("proposal set")
+        snapshot = catalog.snapshot(
+            snapshot_fingerprint,
+            tenant_scope_fingerprint=auth_context.tenant_scope_fingerprint,
+        )
+        if snapshot is None:
+            raise NotFoundError("snapshot")
+        self._check_source(auth_context, snapshot.source.source_id)
+        draft = core_create_discovery_draft(
+            proposal_set,
+            descriptor_id=descriptor_id,
+            draft_id=draft_id,
+            bundle_id=bundle_id,
+            source_id=snapshot.source.source_id,
+            model_version=model_version,
+            author_reference=auth_context.audit_reference or self._deps.audit_reference,
+            expected_snapshot_fingerprint=snapshot_fingerprint,
+        )
+        return self.create_draft(draft, auth_context=auth_context)
+
+    @_normalize_errors
+    def publish_draft(
+        self,
+        draft_id: str,
+        command: DraftRevisionCommand,
+        *,
+        auth_context: AuthContext,
+    ) -> PublishAssemblyResult:
+        self._check_permission(auth_context, Permission.BUNDLE_PUBLISH)
+        draft = self._get_draft(draft_id, auth_context)
+        authorization = self._lifecycle_context(auth_context, draft.source_id)
+        reviewers = tuple(
+            sorted(
+                {
+                    assertion.review_binding.reviewer_reference
+                    for assertion in draft.assertions
+                    if assertion.review_binding is not None
+                }
+            )
+        )
+        mode = getattr(self._deps, "separation_mode", SeparationOfDutiesMode.STRICT)
+        if mode is None:
+            mode = SeparationOfDutiesMode.STRICT
+        separation = evaluate_separation_of_duties(
+            mode=mode,
+            author_reference=draft.author_reference,
+            reviewer_references=reviewers,
+            approver_reference=draft.approved_by or "missing-approver",
+            publisher_reference=authorization.operator_reference,
+            waiver_reference=(
+                authorization.operator_reference
+                if mode is SeparationOfDutiesMode.SOLO_WITH_WAIVER
+                else None
+            ),
+            waiver_reason=(
+                "Host-configured solo publication mode"
+                if mode is SeparationOfDutiesMode.SOLO_WITH_WAIVER
+                else None
+            ),
+        )
+        outcome = publish_assembly(
+            draft,
+            expected_revision=command.expected_revision,
+            authorization=authorization,
+            authorizer=self._require_lifecycle_authorizer(),
+            separation=separation,
+            emitter=self._require_bundle_emitter(),
+            verifier=self._require_manifest_verifier(),
+            catalog=self._require_lifecycle_catalog(),
+        )
+        return PublishAssemblyResult(
+            success=outcome.success,
+            kind=outcome.kind,
+            bundle_id=draft.bundle_id,
+            model_version=(
+                outcome.bundle.model_version
+                if outcome.bundle is not None
+                else draft.model_version
+            ),
+            fingerprint=(outcome.bundle.fingerprint if outcome.bundle is not None else None),
+            audit_reference=outcome.audit_reference,
+            superseded_fingerprint=outcome.superseded_fingerprint,
+            idempotency_status=(
+                outcome.idempotency_status.value
+                if outcome.idempotency_status is not None
+                else None
+            ),
+            issues=tuple(
+                ErrorDetail(code=issue.code, message=issue.message)
+                for issue in outcome.issues
+            ),
+        )
+
+    @_normalize_errors
+    def get_publish_audit(
+        self,
+        bundle_id: str,
+        fingerprint: str,
+        *,
+        auth_context: AuthContext,
+    ) -> PublishAuditSummary:
+        self._check_permission(auth_context, Permission.ASSEMBLY_AUDIT)
+        catalog = self._require_lifecycle_catalog()
+        bundle = catalog.get_by_fingerprint(
+            bundle_id,
+            fingerprint,
+            tenant_scope_fingerprint=auth_context.tenant_scope_fingerprint,
+        )
+        if bundle is None:
+            raise NotFoundError("bundle")
+        self._check_source(auth_context, bundle.descriptor.source_id)
+        audit = catalog.publish_audit(
+            bundle_id,
+            fingerprint,
+            tenant_scope_fingerprint=auth_context.tenant_scope_fingerprint,
+        )
+        if audit is None:
+            raise NotFoundError("publish audit")
+        provenance = audit.assertion_provenance
+        return PublishAuditSummary(
+            audit_reference=audit.audit_id,
+            bundle_id=bundle_id,
+            fingerprint=fingerprint,
+            approval_count=len(audit.approval_chain),
+            accepted_assertion_count=(
+                provenance.manual
+                + provenance.discovered
+                + provenance.inferred
+                + provenance.llm_suggested
+            ),
+            verification_valid=(
+                audit.verification.structural_valid
+                and audit.verification.manifest_equivalent
+            ),
+            idempotency_status=audit.idempotency_status.value,
+            deployment_binding_count=audit.deployment_bindings.binding_count,
+            deployment_reference_schemes=audit.deployment_bindings.reference_schemes,
+            waiver_applied=audit.waiver_reference is not None,
+        )
+
+    @_normalize_errors
+    def list_published_versions(
+        self,
+        bundle_id: str,
+        *,
+        auth_context: AuthContext,
+    ) -> VersionListResult:
+        self._check_permission(auth_context, Permission.BUNDLE_READ)
+        catalog = self._require_lifecycle_catalog()
+        records = catalog.publication_records(
+            bundle_id,
+            tenant_scope_fingerprint=auth_context.tenant_scope_fingerprint,
+        )
+        if records:
+            self._check_source(auth_context, records[0].bundle.descriptor.source_id)
+        return VersionListResult(
+            bundle_id=bundle_id,
+            versions=tuple(
+                PublishedVersionItem(
+                    bundle_id=bundle_id,
+                    model_version=record.bundle.model_version,
+                    fingerprint=record.bundle.fingerprint,
+                    state=record.state.value,
+                    predecessor_fingerprint=record.supersession.predecessor_fingerprint,
+                    successor_fingerprint=record.supersession.successor_fingerprint,
+                    audit_reference=(record.audit.audit_id if record.audit is not None else None),
+                )
+                for record in records
+            ),
+        )
+
+    @_normalize_errors
+    def activate_published_fingerprint(
+        self,
+        bundle_id: str,
+        fingerprint: str,
+        *,
+        auth_context: AuthContext,
+    ) -> BundleLifecycleResult:
+        self._check_permission(auth_context, Permission.BUNDLE_ACTIVATE)
+        catalog = self._require_lifecycle_catalog()
+        bundle = catalog.get_by_fingerprint(
+            bundle_id,
+            fingerprint,
+            tenant_scope_fingerprint=auth_context.tenant_scope_fingerprint,
+        )
+        if bundle is None:
+            raise NotFoundError("bundle")
+        self._check_source(auth_context, bundle.descriptor.source_id)
+        authorization = self._lifecycle_context(auth_context, bundle.descriptor.source_id)
+        require_lifecycle_authorization(
+            context=authorization,
+            authorizer=self._require_lifecycle_authorizer(),
+            required_role=LifecycleRole.PUBLISHER,
+            action=LifecycleAction.ACTIVATE,
+            resource_id=bundle_id,
+        )
+        outcome = catalog.activate_fingerprint(
+            bundle_id,
+            fingerprint,
+            tenant_scope_fingerprint=auth_context.tenant_scope_fingerprint,
+        )
+        return _lifecycle_result(
+            LifecycleCommand.ACTIVATE,
+            bundle_id,
+            bundle.model_version,
+            outcome,
+            auth_context,
+            self._deps.audit_reference,
+        )
+
+    @_normalize_errors
+    def rollback_published_fingerprint(
+        self,
+        bundle_id: str,
+        fingerprint: str,
+        *,
+        auth_context: AuthContext,
+    ) -> BundleLifecycleResult:
+        self._check_permission(auth_context, Permission.BUNDLE_ROLLBACK)
+        catalog = self._require_lifecycle_catalog()
+        bundle = catalog.get_by_fingerprint(
+            bundle_id,
+            fingerprint,
+            tenant_scope_fingerprint=auth_context.tenant_scope_fingerprint,
+        )
+        if bundle is None:
+            raise NotFoundError("bundle")
+        self._check_source(auth_context, bundle.descriptor.source_id)
+        authorization = self._lifecycle_context(auth_context, bundle.descriptor.source_id)
+        require_lifecycle_authorization(
+            context=authorization,
+            authorizer=self._require_lifecycle_authorizer(),
+            required_role=LifecycleRole.PUBLISHER,
+            action=LifecycleAction.ROLLBACK,
+            resource_id=bundle_id,
+        )
+        outcome = catalog.rollback_to_fingerprint(
+            bundle_id,
+            fingerprint,
+            tenant_scope_fingerprint=auth_context.tenant_scope_fingerprint,
+        )
+        return _lifecycle_result(
+            LifecycleCommand.ROLLBACK,
+            bundle_id,
+            bundle.model_version,
+            outcome,
+            auth_context,
+            self._deps.audit_reference,
+        )
+
+    # ------------------------------------------------------------------
     # bundles
     # ------------------------------------------------------------------
     @_normalize_errors
@@ -424,18 +1025,8 @@ class AdminService:
             raise ValidationError("idempotency_key is required")
         self._check_permission(auth_context, Permission.BUNDLE_PUBLISH)
         self._check_source(auth_context, bundle.descriptor.source_id)
-        catalog = self._require_catalog()
-        outcome = catalog.publish(
-            bundle,
-            tenant_scope_fingerprint=auth_context.tenant_scope_fingerprint,
-        )
-        return _lifecycle_result(
-            LifecycleCommand.PUBLISH,
-            bundle.bundle_id,
-            bundle.model_version,
-            outcome,
-            auth_context,
-            self._deps.audit_reference,
+        raise ValidationError(
+            "direct Bundle publication is unsupported; publish an approved assembly draft"
         )
 
     @_normalize_errors
@@ -445,48 +1036,26 @@ class AdminService:
         *,
         auth_context: AuthContext,
     ) -> BundleLifecycleResult:
-        catalog = self._require_catalog()
         if command.command.value == "publish":
-            raise ValidationError("use publish_bundle: publish requires a bundle payload")
+            raise ValidationError("use publish_draft for approved assembly publication")
         if command.command.value == "activate":
-            self._check_permission(auth_context, Permission.BUNDLE_ACTIVATE)
-            if command.version is None:
-                raise ValidationError("activate requires a version")
-            bundle = catalog.get(
+            if command.expected_fingerprint is None:
+                raise ValidationError("activate requires expected_fingerprint")
+            return self.activate_published_fingerprint(
                 command.bundle_id,
-                command.version,
-                tenant_scope_fingerprint=auth_context.tenant_scope_fingerprint,
-            )
-            if bundle is None:
-                raise NotFoundError("bundle")
-            self._check_source(auth_context, bundle.descriptor.source_id)
-            outcome = catalog.activate(
-                command.bundle_id,
-                command.version,
-                tenant_scope_fingerprint=auth_context.tenant_scope_fingerprint,
+                command.expected_fingerprint,
+                auth_context=auth_context,
             )
         elif command.command.value == "rollback":
-            self._check_permission(auth_context, Permission.BUNDLE_ROLLBACK)
-            active = catalog.active(
+            if command.expected_fingerprint is None:
+                raise ValidationError("rollback requires expected_fingerprint")
+            return self.rollback_published_fingerprint(
                 command.bundle_id,
-                tenant_scope_fingerprint=auth_context.tenant_scope_fingerprint,
-            )
-            if active is not None:
-                self._check_source(auth_context, active.descriptor.source_id)
-            outcome = catalog.rollback(
-                command.bundle_id,
-                tenant_scope_fingerprint=auth_context.tenant_scope_fingerprint,
+                command.expected_fingerprint,
+                auth_context=auth_context,
             )
         else:
             raise ValidationError("unsupported lifecycle command")
-        return _lifecycle_result(
-            command.command,
-            command.bundle_id,
-            command.version,
-            outcome,
-            auth_context,
-            self._deps.audit_reference,
-        )
 
     # ------------------------------------------------------------------
     # drift
@@ -533,6 +1102,47 @@ def _proposal_set_to_detail(proposal_set: SemanticProposalSet) -> ProposalSetDet
                 snapshot_fingerprint=p.snapshot_fingerprint,
             )
             for p in proposal_set.proposals
+        ),
+    )
+
+
+def _draft_to_summary(draft: AssemblyDraft) -> AssemblyDraftSummary:
+    states = [assertion.review_state for assertion in draft.assertions]
+    return AssemblyDraftSummary(
+        draft_id=draft.draft_id,
+        bundle_id=draft.bundle_id,
+        model_version=draft.model_version,
+        state=draft.state.value,
+        draft_revision=draft.draft_revision,
+        assertion_count=len(draft.assertions),
+        pending_count=states.count(ReviewState.PENDING),
+        approved_count=states.count(ReviewState.APPROVED),
+        rejected_count=states.count(ReviewState.REJECTED),
+    )
+
+
+def _draft_to_detail(draft: AssemblyDraft) -> AssemblyDraftDetail:
+    summary = _draft_to_summary(draft)
+    return AssemblyDraftDetail(
+        **summary.model_dump(),
+        assertions=tuple(
+            AssemblyAssertionSummary(
+                assertion_id=assertion.id,
+                assertion_type=assertion.type.value,
+                review_state=assertion.review_state.value,
+                payload_hash=assertion.payload_hash(),
+                provenance_kind=assertion.provenance.kind.value,
+            )
+            for assertion in draft.assertions
+        ),
+        deployment_bindings=tuple(
+            DeploymentBindingSummary(
+                binding_id=binding.binding_id,
+                environment=binding.environment,
+                source_id=binding.source_id,
+                reference_scheme=binding.reference_scheme,
+            )
+            for binding in draft.deployment_bindings
         ),
     )
 

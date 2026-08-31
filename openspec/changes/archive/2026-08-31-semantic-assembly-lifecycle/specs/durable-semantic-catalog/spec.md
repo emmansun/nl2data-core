@@ -3,7 +3,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: PostgreSQL semantic catalog persists safe lifecycle artifacts
-The PostgreSQL semantic catalog SHALL persist versioned safe representations of authorized MetadataSnapshots, SemanticProposalSets, AssemblyDrafts, assertion review state, immutable Semantic Model Bundle publications, publish audit records, supersession chains, deployment binding references, active pointers, and rollback history. It SHALL keep semantic catalog data separate from workflow state tables and SHALL never persist resolved credentials or raw source data.
+The PostgreSQL semantic catalog SHALL persist versioned safe representations of authorized MetadataSnapshots, SemanticProposalSets, AssemblyDrafts, assertion review state, immutable Semantic Model Bundle publications, immutable accepted-assertion manifests linked by semantic fingerprint, publish audit records, supersession chains, deployment binding references, active pointers, and rollback history. It SHALL keep semantic catalog data separate from workflow state tables and SHALL never persist resolved credentials or raw source data.
 
 #### Scenario: Snapshot survives process restart
 - **WHEN** a valid snapshot is registered and the catalog process stops and reconnects
@@ -15,10 +15,10 @@ The PostgreSQL semantic catalog SHALL persist versioned safe representations of 
 
 #### Scenario: Bundle publication survives process restart
 - **WHEN** a validated approved assembly is published and a new catalog instance starts
-- **THEN** the published Bundle, semantic fingerprint, publish audit record, and supersession metadata can be retrieved without reconstructing them from raw source data
+- **THEN** the published Bundle, semantic fingerprint, linked accepted-assertion manifest, publish audit record, and supersession metadata can be retrieved without reconstructing them from raw source data
 
 ### Requirement: Publish and activate are atomic and idempotent
-The catalog SHALL publish only verified approved semantic content, compute or verify the semantic fingerprint at the publish boundary, atomically persist the immutable artifact, publish audit record, and supersession-chain update, and atomically activate one complete compatible version per catalog scope. Repeated publish of identical semantic content SHALL be idempotent by fingerprint. Concurrent activation SHALL serialize without exposing partial content.
+The catalog SHALL publish only verified approved semantic content, compute or verify the semantic fingerprint at the publish boundary, atomically persist the immutable artifact, linked accepted-assertion manifest, publish audit record, and supersession-chain update, and atomically activate one complete compatible version per catalog scope. Repeated publish of identical semantic content SHALL be idempotent by fingerprint. Concurrent activation SHALL serialize without exposing partial content.
 
 #### Scenario: Concurrent activation leaves one complete active version
 - **WHEN** multiple workers activate compatible candidate versions concurrently
@@ -30,7 +30,11 @@ The catalog SHALL publish only verified approved semantic content, compute or ve
 
 #### Scenario: Failed publish leaves no partial lifecycle records
 - **WHEN** validation, verification, fingerprinting, audit persistence, supersession update, or database commit fails during publish
-- **THEN** no published bundle, audit record, or supersession edge becomes externally visible
+- **THEN** no published bundle, accepted-assertion manifest, audit record, or supersession edge becomes externally visible
+
+#### Scenario: Published manifest is retrieved by fingerprint
+- **WHEN** incremental rediscovery selects a published Bundle fingerprint as its baseline
+- **THEN** the catalog returns exactly one immutable accepted-assertion manifest linked to that fingerprint or fails closed when the manifest is missing or mismatched
 
 #### Scenario: Identical publish is idempotent
 - **WHEN** a caller retries publish for semantic content whose fingerprint already exists in the scoped catalog

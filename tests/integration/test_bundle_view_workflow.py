@@ -23,6 +23,27 @@ from nl2data_core.ai.context import SemanticReference
 from nl2data_core.ai.fake import FakeModelProvider
 from nl2data_core.ai.models import StructuredIntent
 from nl2data_core.ai.plan_builder import build_ir_from_intent
+from nl2data_core.assembly import (
+    AssemblyDraft,
+    AssertionProvenance,
+    AssertionType,
+    LifecycleAuthorizationContext,
+    LifecycleAuthorizationDecision,
+    LifecycleAuthorizationRequest,
+    LifecycleRole,
+    ReviewState,
+    SemanticAssertion,
+    SeparationOfDutiesMode,
+    approve_draft,
+    create_manual_draft,
+    decide_assertion,
+    evaluate_separation_of_duties,
+    submit_for_review,
+)
+from nl2data_core.assembly.publishing import (
+    ManifestBundleVerification,
+    publish_assembly,
+)
 from nl2data_core.bundles import (
     BundleProvenance,
     BundleQualityStatus,
@@ -265,10 +286,138 @@ def make_bundle(
     return SemanticModelBundle(**values)
 
 
-def make_catalog_with_active(bundle: SemanticModelBundle) -> InMemorySemanticBundleCatalog:
+def make_changed_bundle(
+    *, descriptor: SemanticDescriptor, version: str = "2.0.0"
+) -> SemanticModelBundle:
+    return make_bundle(
+        descriptor=descriptor,
+        version=version,
+        sources=(
+            SemanticSourceReference(
+                reference_id="src-sales",
+                source_id="sales",
+                catalog_fingerprint=fp("ab"),
+                description="Sales source with reviewed v2 semantics",
+            ),
+        ),
+    )
+
+
+class _FixtureLifecycleAuthorizer:
+    def authorize(
+        self,
+        request: LifecycleAuthorizationRequest,
+    ) -> LifecycleAuthorizationDecision:
+        return LifecycleAuthorizationDecision(allowed=True)
+
+
+class _FixtureBundleEmitter:
+    def __init__(self, bundle: SemanticModelBundle) -> None:
+        self._bundle = bundle
+
+    def emit(self, draft: AssemblyDraft) -> SemanticModelBundle:
+        return self._bundle
+
+
+class _FixtureManifestVerifier:
+    def verify(
+        self,
+        draft: object,
+        manifest: object,
+        bundle: object,
+    ) -> ManifestBundleVerification:
+        return ManifestBundleVerification(valid=True)
+
+
+def _fixture_lifecycle_context(
+    operator_reference: str,
+    role: LifecycleRole,
+    tenant_scope_fingerprint: str = fp("a0"),
+) -> LifecycleAuthorizationContext:
+    return LifecycleAuthorizationContext(
+        operator_reference=operator_reference,
+        tenant_scope_fingerprint=tenant_scope_fingerprint,
+        source_id="sales",
+        roles=frozenset({role}),
+    )
+
+
+def make_catalog_with_active(
+    bundle: SemanticModelBundle,
+    *,
+    tenant_scope_fingerprint: str,
+) -> InMemorySemanticBundleCatalog:
+    entity = bundle.descriptor.entities[0]
+    assertion = SemanticAssertion.create(
+        type=AssertionType.ENTITY,
+        payload={
+            "descriptor_id": bundle.descriptor.descriptor_id,
+            "entity_id": entity.entity_id,
+            "label": entity.label,
+        },
+        provenance=AssertionProvenance(kind="manual"),
+    )
+    draft = create_manual_draft(
+        draft_id=f"{bundle.bundle_id}-fixture-draft",
+        bundle_id=bundle.bundle_id,
+        source_id=bundle.descriptor.source_id,
+        model_version=bundle.model_version,
+        author_reference="fixture-author",
+        assertions=(assertion,),
+    )
+    authorizer = _FixtureLifecycleAuthorizer()
+    draft = submit_for_review(
+        draft,
+        expected_revision=draft.draft_revision,
+        authorization=_fixture_lifecycle_context("fixture-author", LifecycleRole.AUTHOR),
+        authorizer=authorizer,
+    ).draft
+    draft = decide_assertion(
+        draft,
+        assertion_id=assertion.id,
+        decision=ReviewState.APPROVED,
+        expected_revision=draft.draft_revision,
+        authorization=_fixture_lifecycle_context(
+            "fixture-reviewer", LifecycleRole.REVIEWER
+        ),
+        authorizer=authorizer,
+    ).draft
+    draft = approve_draft(
+        draft,
+        expected_revision=draft.draft_revision,
+        authorization=_fixture_lifecycle_context(
+            "fixture-approver", LifecycleRole.APPROVER
+        ),
+        authorizer=authorizer,
+    ).draft
     catalog = InMemorySemanticBundleCatalog()
-    assert catalog.publish(bundle).success
-    assert catalog.activate(bundle.bundle_id, bundle.model_version).success
+    published = publish_assembly(
+        draft,
+        expected_revision=draft.draft_revision,
+        authorization=_fixture_lifecycle_context(
+            "fixture-publisher",
+            LifecycleRole.PUBLISHER,
+            tenant_scope_fingerprint,
+        ),
+        authorizer=authorizer,
+        separation=evaluate_separation_of_duties(
+            mode=SeparationOfDutiesMode.STRICT,
+            author_reference="fixture-author",
+            reviewer_references=("fixture-reviewer",),
+            approver_reference="fixture-approver",
+            publisher_reference="fixture-publisher",
+        ),
+        emitter=_FixtureBundleEmitter(bundle),
+        verifier=_FixtureManifestVerifier(),
+        catalog=catalog,
+    )
+    assert published.success
+    assert published.bundle is not None
+    assert catalog.activate_fingerprint(
+        bundle.bundle_id,
+        published.bundle.fingerprint,
+        tenant_scope_fingerprint=tenant_scope_fingerprint,
+    ).success
     return catalog
 
 
@@ -279,7 +428,10 @@ def registry_from_active(
     scope: TenantScopeContext,
     policy_scope: PolicyScope,
 ) -> ViewRegistry:
-    bundle = catalog.active("sales_model")
+    bundle = catalog.active(
+        "sales_model",
+        tenant_scope_fingerprint=scope.scope_fingerprint,
+    )
     assert bundle is not None
     definition = make_view_definition(
         descriptor=descriptor,
@@ -297,7 +449,10 @@ def resolve_active(
     policy_scope: PolicyScope,
     purpose: str,
 ) -> ResolvedViewProjection:
-    bundle = catalog.active("sales_model")
+    bundle = catalog.active(
+        "sales_model",
+        tenant_scope_fingerprint=scope.scope_fingerprint,
+    )
     assert bundle is not None
     context = make_resolution_context(
         scope=scope,
@@ -494,7 +649,10 @@ class TestCalculatedFieldAuthorization:
         adapter = make_adapter(tmp_path)
         execution = make_execution(tmp_path, adapter=adapter, tenant_scope=scope)
         bundle = make_bundle(descriptor=descriptor)
-        catalog = make_catalog_with_active(bundle)
+        catalog = make_catalog_with_active(
+            bundle,
+            tenant_scope_fingerprint=scope.scope_fingerprint,
+        )
         registry = registry_from_active(
             catalog,
             descriptor=descriptor,
@@ -711,8 +869,15 @@ class TestBundleToIrBinding:
             view_reference=reference,
         )
 
-    def _catalog(self, descriptor: SemanticDescriptor) -> InMemorySemanticBundleCatalog:
-        catalog = make_catalog_with_active(make_bundle(descriptor=descriptor, version="1.0.0"))
+    def _catalog(
+        self,
+        descriptor: SemanticDescriptor,
+        scope: TenantScopeContext,
+    ) -> InMemorySemanticBundleCatalog:
+        catalog = make_catalog_with_active(
+            make_bundle(descriptor=descriptor, version="1.0.0"),
+            tenant_scope_fingerprint=scope.scope_fingerprint,
+        )
         return catalog
 
     def test_bundle_projection_binds_ir_evidence(self) -> None:
@@ -722,7 +887,7 @@ class TestBundleToIrBinding:
             tenant_scope_fingerprint=scope.scope_fingerprint,
             isolation_profile=scope.tenant.isolation_profile.value,
         )
-        catalog = self._catalog(descriptor)
+        catalog = self._catalog(descriptor, scope)
         registry = registry_from_active(
             catalog, descriptor=descriptor, scope=scope, policy_scope=policy_scope
         )
@@ -740,7 +905,10 @@ class TestBundleToIrBinding:
             tenant_scope_fingerprint=scope.scope_fingerprint,
             isolation_profile=scope.tenant.isolation_profile.value,
         )
-        catalog = make_catalog_with_active(make_bundle(descriptor=descriptor, version="1.0.0"))
+        catalog = make_catalog_with_active(
+            make_bundle(descriptor=descriptor, version="1.0.0"),
+            tenant_scope_fingerprint=scope.scope_fingerprint,
+        )
         registry_v1 = registry_from_active(
             catalog, descriptor=descriptor, scope=scope, policy_scope=policy_scope
         )
@@ -756,9 +924,15 @@ class TestBundleToIrBinding:
         assert validate_ir(ir_v1, view=view_v1).valid
 
         #: Activation switches the snapshot; old IR evidence is stale.
-        v2 = make_bundle(descriptor=descriptor, version="2.0.0")
-        assert catalog.publish(v2).success
-        assert catalog.activate("sales_model", "2.0.0").success
+        v2 = make_changed_bundle(descriptor=descriptor)
+        assert catalog.publish(
+            v2, tenant_scope_fingerprint=scope.scope_fingerprint
+        ).success
+        assert catalog.activate(
+            "sales_model",
+            "2.0.0",
+            tenant_scope_fingerprint=scope.scope_fingerprint,
+        ).success
         registry_v2 = registry_from_active(
             catalog, descriptor=descriptor, scope=scope, policy_scope=policy_scope
         )
@@ -791,10 +965,18 @@ class TestBundleEvidenceInvalidation:
             descriptor = make_descriptor()
             catalog = InMemorySemanticBundleCatalog()
             v1 = make_bundle(descriptor=descriptor, version="1.0.0")
-            v2 = make_bundle(descriptor=descriptor, version="2.0.0")
-            assert catalog.publish(v1).success
-            assert catalog.publish(v2).success
-            assert catalog.activate("sales_model", "1.0.0").success
+            v2 = make_changed_bundle(descriptor=descriptor)
+            assert catalog.publish(
+                v1, tenant_scope_fingerprint=scope.scope_fingerprint
+            ).success
+            assert catalog.publish(
+                v2, tenant_scope_fingerprint=scope.scope_fingerprint
+            ).success
+            assert catalog.activate(
+                "sales_model",
+                "1.0.0",
+                tenant_scope_fingerprint=scope.scope_fingerprint,
+            ).success
 
             #: Run 1 - the failing adapter records v1 view evidence.
             failing = make_adapter(tmp_path, RetryableFailingAdapter)
@@ -825,7 +1007,11 @@ class TestBundleEvidenceInvalidation:
             assert newest.metadata.get("view_fingerprint") == projection_v1.fingerprint
 
             #: Run 2 - activation switches the snapshot; v1 evidence is stale.
-            assert catalog.activate("sales_model", "2.0.0").success
+            assert catalog.activate(
+                "sales_model",
+                "2.0.0",
+                tenant_scope_fingerprint=scope.scope_fingerprint,
+            ).success
             adapter_v2 = make_adapter(tmp_path)
             runtime_v2, projection_v2 = make_bundle_runtime(
                 tmp_path,
@@ -858,10 +1044,18 @@ class TestBundleEvidenceInvalidation:
             descriptor = make_descriptor()
             catalog = InMemorySemanticBundleCatalog()
             v1 = make_bundle(descriptor=descriptor, version="1.0.0")
-            v2 = make_bundle(descriptor=descriptor, version="2.0.0")
-            assert catalog.publish(v1).success
-            assert catalog.publish(v2).success
-            assert catalog.activate("sales_model", "1.0.0").success
+            v2 = make_changed_bundle(descriptor=descriptor)
+            assert catalog.publish(
+                v1, tenant_scope_fingerprint=scope.scope_fingerprint
+            ).success
+            assert catalog.publish(
+                v2, tenant_scope_fingerprint=scope.scope_fingerprint
+            ).success
+            assert catalog.activate(
+                "sales_model",
+                "1.0.0",
+                tenant_scope_fingerprint=scope.scope_fingerprint,
+            ).success
 
             projection_v1 = _resolve_active_projection(
                 descriptor=descriptor, scope=scope, catalog=catalog
@@ -886,7 +1080,11 @@ class TestBundleEvidenceInvalidation:
             )
 
             #: Activation under v2 rejects the v1 evidence before any adapter.
-            assert catalog.activate("sales_model", "2.0.0").success
+            assert catalog.activate(
+                "sales_model",
+                "2.0.0",
+                tenant_scope_fingerprint=scope.scope_fingerprint,
+            ).success
             adapter_v2 = make_adapter(tmp_path)
             runtime_v2, projection_v2 = make_bundle_runtime(
                 tmp_path,
@@ -905,7 +1103,10 @@ class TestBundleEvidenceInvalidation:
             assert adapter_v2.executions == 0
 
             #: Rollback restores v1; the checkpoint resumes to success.
-            assert catalog.rollback("sales_model").success
+            assert catalog.rollback(
+                "sales_model",
+                tenant_scope_fingerprint=scope.scope_fingerprint,
+            ).success
             adapter_v3 = make_adapter(tmp_path)
             runtime_v3, projection_v3 = make_bundle_runtime(
                 tmp_path,
@@ -934,7 +1135,10 @@ class TestBundleMemoryRevalidation:
         provider = FakeModelProvider(default_response=VALID_INTENT)
         memory = InMemoryMemoryProvider()
 
-        catalog = make_catalog_with_active(make_bundle(descriptor=descriptor, version="1.0.0"))
+        catalog = make_catalog_with_active(
+            make_bundle(descriptor=descriptor, version="1.0.0"),
+            tenant_scope_fingerprint=scope.scope_fingerprint,
+        )
         runtime_a, projection_a = make_bundle_runtime(
             tmp_path,
             adapter=make_adapter(tmp_path),
@@ -951,9 +1155,15 @@ class TestBundleMemoryRevalidation:
         assert first.status == OutcomeStatus.SUCCEEDED
         assert provider.call_count == 1
 
-        v2 = make_bundle(descriptor=descriptor, version="2.0.0")
-        assert catalog.publish(v2).success
-        assert catalog.activate("sales_model", "2.0.0").success
+        v2 = make_changed_bundle(descriptor=descriptor)
+        assert catalog.publish(
+            v2, tenant_scope_fingerprint=scope.scope_fingerprint
+        ).success
+        assert catalog.activate(
+            "sales_model",
+            "2.0.0",
+            tenant_scope_fingerprint=scope.scope_fingerprint,
+        ).success
         runtime_b, projection_b = make_bundle_runtime(
             tmp_path,
             adapter=make_adapter(tmp_path),

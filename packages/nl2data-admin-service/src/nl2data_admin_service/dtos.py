@@ -217,6 +217,148 @@ class BundleValidationResult(BaseModel):
     issues: tuple[ErrorDetail, ...] = Field(default_factory=tuple, max_length=64)
 
 
+class AssertionDecisionAction(StrEnum):
+    """Assertion-level lifecycle commands exposed by the admin service."""
+
+    APPROVE = "approve"
+    REJECT = "reject"
+    EDIT = "edit"
+
+
+class AssemblyAssertionSummary(BaseModel):
+    """Safe assertion summary without semantic payload or reviewer identity."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    assertion_id: str = Field(pattern=_FINGERPRINT_PATTERN)
+    assertion_type: str = Field(min_length=1, max_length=64)
+    review_state: str = Field(min_length=1, max_length=32)
+    payload_hash: str = Field(pattern=_FINGERPRINT_PATTERN)
+    provenance_kind: str = Field(min_length=1, max_length=32)
+
+
+class DeploymentBindingSummary(BaseModel):
+    """Redacted deployment binding metadata."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    binding_id: str = Field(pattern=_IDENTIFIER_PATTERN)
+    environment: str = Field(pattern=_IDENTIFIER_PATTERN)
+    source_id: str = Field(pattern=_IDENTIFIER_PATTERN)
+    reference_scheme: str = Field(pattern=r"^(env|vault|file)$")
+
+
+class AssemblyDraftSummary(BaseModel):
+    """Bounded assembly draft list item."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    draft_id: str = Field(pattern=_IDENTIFIER_PATTERN)
+    bundle_id: str = Field(pattern=_IDENTIFIER_PATTERN)
+    model_version: str = Field(pattern=_IDENTIFIER_PATTERN)
+    state: str = Field(min_length=1, max_length=32)
+    draft_revision: int = Field(ge=0)
+    assertion_count: int = Field(ge=0, le=_MAX_ITEMS)
+    pending_count: int = Field(ge=0, le=_MAX_ITEMS)
+    approved_count: int = Field(ge=0, le=_MAX_ITEMS)
+    rejected_count: int = Field(ge=0, le=_MAX_ITEMS)
+
+
+class AssemblyDraftDetail(AssemblyDraftSummary):
+    """Safe draft detail with assertion hashes and redacted bindings."""
+
+    assertions: tuple[AssemblyAssertionSummary, ...] = Field(
+        default_factory=tuple,
+        max_length=_MAX_ITEMS,
+    )
+    deployment_bindings: tuple[DeploymentBindingSummary, ...] = Field(
+        default_factory=tuple,
+        max_length=64,
+    )
+
+
+class DraftRevisionCommand(BaseModel):
+    """Revision-guarded draft mutation command."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    expected_revision: int = Field(ge=0)
+
+
+class AssertionDecisionCommand(DraftRevisionCommand):
+    """Approve, reject, or edit one assertion."""
+
+    assertion_id: str = Field(pattern=_FINGERPRINT_PATTERN)
+    action: AssertionDecisionAction
+    semantic_payload: dict[str, Any] | None = Field(default=None, max_length=256)
+    reason: str = Field(default="", max_length=_MAX_REASON_CHARS)
+
+
+class DraftMutationResult(BaseModel):
+    """Bounded result of a draft mutation."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    draft: AssemblyDraftSummary
+    audit_reference: str = Field(default="", max_length=512)
+
+
+class PublishAssemblyResult(BaseModel):
+    """Safe publication outcome without canonical bytes or assertion payloads."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    success: bool
+    kind: str = Field(min_length=1, max_length=64)
+    bundle_id: str = Field(pattern=_IDENTIFIER_PATTERN)
+    model_version: str = Field(pattern=_IDENTIFIER_PATTERN)
+    fingerprint: str | None = Field(default=None, pattern=_FINGERPRINT_PATTERN)
+    audit_reference: str | None = Field(default=None, max_length=512)
+    superseded_fingerprint: str | None = Field(default=None, pattern=_FINGERPRINT_PATTERN)
+    idempotency_status: str | None = Field(default=None, max_length=32)
+    issues: tuple[ErrorDetail, ...] = Field(default_factory=tuple, max_length=64)
+
+
+class PublishAuditSummary(BaseModel):
+    """Bounded publish evidence without raw identities or bindings."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    audit_reference: str = Field(pattern=_IDENTIFIER_PATTERN)
+    bundle_id: str = Field(pattern=_IDENTIFIER_PATTERN)
+    fingerprint: str = Field(pattern=_FINGERPRINT_PATTERN)
+    approval_count: int = Field(ge=0, le=64)
+    accepted_assertion_count: int = Field(ge=0, le=_MAX_ITEMS)
+    verification_valid: bool
+    idempotency_status: str = Field(min_length=1, max_length=32)
+    deployment_binding_count: int = Field(ge=0, le=64)
+    deployment_reference_schemes: tuple[str, ...] = Field(default_factory=tuple, max_length=3)
+    waiver_applied: bool
+
+
+class PublishedVersionItem(BaseModel):
+    """Bounded immutable version and supersession metadata."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    bundle_id: str = Field(pattern=_IDENTIFIER_PATTERN)
+    model_version: str = Field(pattern=_IDENTIFIER_PATTERN)
+    fingerprint: str = Field(pattern=_FINGERPRINT_PATTERN)
+    state: str = Field(min_length=1, max_length=32)
+    predecessor_fingerprint: str | None = Field(default=None, pattern=_FINGERPRINT_PATTERN)
+    successor_fingerprint: str | None = Field(default=None, pattern=_FINGERPRINT_PATTERN)
+    audit_reference: str | None = Field(default=None, pattern=_IDENTIFIER_PATTERN)
+
+
+class VersionListResult(BaseModel):
+    """Bounded version history in supersession order."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    bundle_id: str = Field(pattern=_IDENTIFIER_PATTERN)
+    versions: tuple[PublishedVersionItem, ...] = Field(default_factory=tuple, max_length=_MAX_ITEMS)
+
+
 class DriftStatus(BaseModel):
     """Bounded drift decision/status response."""
 

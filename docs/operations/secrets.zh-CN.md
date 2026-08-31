@@ -18,6 +18,12 @@
 
 ## 环境注入（临时、宿主拥有）
 
+Assembly deployment binding 只允许 `env:`、`vault:` 或 `file:` 引用。含凭据的
+DSN，以及内联 password、token、secret 或 API key 会在 publish 前被拒绝。Host 可以在
+publish verification callback 中临时解析引用，但解析值绝不写入 draft semantic payload、
+Bundle fingerprint domain、accepted-assertion manifest、publish audit、catalog envelope、
+admin DTO、日志或证据。Audit record 只保留 binding 数量与引用 scheme。
+
 | 服务 | 变量 | 真实服务配置读取时机 |
 | --- | --- | --- |
 | PostgreSQL | `NL2DATA_POSTGRES_DSN` | 首次构建连接池 |
@@ -86,7 +92,8 @@ python -m pytest -rs packages/nl2data-workflow-postgres/tests/test_workflow_post
 | 对象 | 方式 |
 | --- | --- |
 | OpenAI 提供方 | 在组合时换回核心的确定性 `FakeModelProvider`——移除 SDK 依赖与网络访问，同时保留相同的解析器、治理与评估门 |
-| Bundle/快照激活 | 在同一策略下激活先前注册的快照，或重新注册并重新激活先前的发现快照 |
+| Bundle 激活 | 对先前已发布且有效的 fingerprint 调用 `rollback_to_fingerprint`；只改变 active pointer，Bundle、manifest、audit 与 supersession history 保持不可变 |
+| 快照激活 | 在同一策略下激活先前注册的快照，或重新注册并重新激活先前的发现快照 |
 | Schema/数据库 | 降级是部署决策，绝非自动回滚；旧运行时对新部署 fail-closed（`UNSUPPORTED_SCHEMA_VERSION`） |
 | 仅文档变更 | 恢复先前的 README 并移除仅文档的 CI 检查；不涉及运行时迁移 |
 

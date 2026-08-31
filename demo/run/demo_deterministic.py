@@ -20,6 +20,33 @@ from nl2data.composition import CompositionProfile
 from nl2data_core.adapters.sql.adapter import SqlQueryAdapter
 from nl2data_core.adapters.sql.compile import compile_sql
 from nl2data_core.ai.fake import FakeModelProvider
+from nl2data_core.assembly import (
+    AssertionProvenance,
+    AssertionProvenanceKind,
+    AssertionType,
+    LifecycleAuthorizationContext,
+    LifecycleAuthorizationDecision,
+    LifecycleRole,
+    ReviewState,
+    SemanticAssertion,
+    SeparationOfDutiesMode,
+    approve_draft,
+    create_manual_draft,
+    decide_assertion,
+    evaluate_separation_of_duties,
+    submit_for_review,
+)
+from nl2data_core.assembly.publishing import (
+    ManifestBundleVerification,
+    publish_assembly,
+)
+from nl2data_core.bundles import (
+    BundleProvenance,
+    BundleQualityStatus,
+    InMemorySemanticBundleCatalog,
+    SemanticModelBundle,
+    SemanticSourceReference,
+)
 from nl2data_core.compilation.contract import CompilationContext
 from nl2data_core.fixtures import SQLiteFixtureProfile
 from nl2data_core.governance.models import PolicyScope
@@ -34,6 +61,11 @@ from nl2data_core.planning.ir.models import (
 )
 from nl2data_core.planning.models import ColumnBinding, EntityBinding, PhysicalBinding
 from nl2data_core.planning.validation import AuthorizedView
+from nl2data_core.views import (
+    SemanticDescriptor,
+    SemanticEntityDescriptor,
+    SemanticFieldDescriptor,
+)
 from nl2data_core.workflow.models import WorkflowState, WorkflowStatus
 from nl2data_core.workflow.runner import StaticPlanResolver
 from nl2data_core.workflow.sqlite_store import SQLiteStateStore
@@ -250,6 +282,138 @@ COMPOUND_PLAN = LogicalJoinPlan(
 )
 
 
+class _DemoLifecycleAuthorizer:
+    def authorize(self, request: object) -> LifecycleAuthorizationDecision:
+        return LifecycleAuthorizationDecision(allowed=True)
+
+
+class _DemoBundleEmitter:
+    def emit(self, draft: object) -> SemanticModelBundle:
+        descriptor = SemanticDescriptor(
+            descriptor_id="sales_descriptor",
+            version=1,
+            source_id="sales",
+            entities=(
+                SemanticEntityDescriptor(
+                    entity_id="order",
+                    label="Order",
+                    fields=(
+                        SemanticFieldDescriptor(
+                            field_id="amount",
+                            label="Amount",
+                            data_type="number",
+                        ),
+                    ),
+                ),
+            ),
+        )
+        return SemanticModelBundle(
+            bundle_id="sales_model",
+            model_version="1.0.0",
+            descriptor=descriptor,
+            sources=(
+                SemanticSourceReference(
+                    reference_id="sales-source",
+                    source_id="sales",
+                ),
+            ),
+            provenance=BundleProvenance(
+                owner_reference="demo-owner",
+                quality=BundleQualityStatus.APPROVED,
+            ),
+        )
+
+
+class _DemoManifestVerifier:
+    def verify(self, draft: object, manifest: object, bundle: object) -> ManifestBundleVerification:
+        return ManifestBundleVerification(valid=True)
+
+
+def _lifecycle_context(reference: str, role: LifecycleRole) -> LifecycleAuthorizationContext:
+    return LifecycleAuthorizationContext(
+        operator_reference=reference,
+        tenant_scope_fingerprint="sha256:" + "d0" * 32,
+        source_id="sales",
+        roles=frozenset({role}),
+    )
+
+
+def run_semantic_assembly_demo() -> str:
+    """Publish and activate one reviewed manual assembly; return its fingerprint."""
+    assertion = SemanticAssertion.create(
+        type=AssertionType.ENTITY,
+        payload={
+            "descriptor_id": "sales_descriptor",
+            "entity_id": "order",
+            "label": "Order",
+        },
+        provenance=AssertionProvenance(kind=AssertionProvenanceKind.MANUAL),
+    )
+    draft = create_manual_draft(
+        draft_id="sales-demo-draft",
+        bundle_id="sales_model",
+        source_id="sales",
+        model_version="1.0.0",
+        author_reference="demo-author",
+        assertions=(assertion,),
+    )
+    authorizer = _DemoLifecycleAuthorizer()
+    draft = submit_for_review(
+        draft,
+        expected_revision=draft.draft_revision,
+        authorization=_lifecycle_context("demo-author", LifecycleRole.AUTHOR),
+        authorizer=authorizer,
+    ).draft
+    draft = decide_assertion(
+        draft,
+        assertion_id=assertion.id,
+        decision=ReviewState.APPROVED,
+        expected_revision=draft.draft_revision,
+        authorization=_lifecycle_context("demo-reviewer", LifecycleRole.REVIEWER),
+        authorizer=authorizer,
+    ).draft
+    draft = approve_draft(
+        draft,
+        expected_revision=draft.draft_revision,
+        authorization=_lifecycle_context("demo-approver", LifecycleRole.APPROVER),
+        authorizer=authorizer,
+    ).draft
+    separation = evaluate_separation_of_duties(
+        mode=SeparationOfDutiesMode.STRICT,
+        author_reference="demo-author",
+        reviewer_references=("demo-reviewer",),
+        approver_reference="demo-approver",
+        publisher_reference="demo-publisher",
+    )
+    catalog = InMemorySemanticBundleCatalog()
+    outcome = publish_assembly(
+        draft,
+        expected_revision=draft.draft_revision,
+        authorization=_lifecycle_context("demo-publisher", LifecycleRole.PUBLISHER),
+        authorizer=authorizer,
+        separation=separation,
+        emitter=_DemoBundleEmitter(),
+        verifier=_DemoManifestVerifier(),
+        catalog=catalog,
+    )
+    assert outcome.success, outcome.issues
+    assert outcome.bundle is not None
+    assert outcome.manifest is not None
+    published_fingerprint = outcome.bundle.fingerprint
+    tenant_scope = "sha256:" + "d0" * 32
+    activated = catalog.activate_fingerprint(
+        "sales_model",
+        published_fingerprint,
+        tenant_scope_fingerprint=tenant_scope,
+    )
+    assert activated.success, activated.issues
+    assert catalog.active(
+        "sales_model", tenant_scope_fingerprint=tenant_scope
+    ) is outcome.bundle
+    print("published semantic Bundle fingerprint:", published_fingerprint)
+    return published_fingerprint
+
+
 def _make_join_ir_compiler(
     binding: PhysicalBinding,
     view: AuthorizedView,
@@ -382,6 +546,7 @@ async def run_join_demo(*, db_dir: Path) -> bool:
 
 async def run_demo(*, db_dir: Path) -> bool:
     """Run the deterministic demo and return whether all checkpoints passed."""
+    run_semantic_assembly_demo()
     fixture = SQLiteFixtureProfile(db_path=db_dir / "source.db")
     fixture.provision()
 

@@ -62,8 +62,8 @@ The system SHALL require draft edit, assertion review, approval, and publish req
 - **WHEN** a draft edit or review decision is accepted
 - **THEN** the returned draft has a strictly greater `draft_revision`
 
-### Requirement: Publish assigns fingerprint atomically
-The system SHALL assign the semantic bundle fingerprint only during publish. Publish SHALL freeze the approved draft, run the required verification suite, compute canonical semantic bytes, perform duplicate-content detection, persist the immutable published bundle, persist the publish audit record, and update supersession metadata atomically.
+### Requirement: Publish makes fingerprint authoritative atomically
+The system SHALL make a semantic bundle fingerprint externally authoritative only during publish. A candidate Bundle MAY precompute the same deterministic fingerprint for validation, but it SHALL NOT be treated as published authority before the atomic catalog operation succeeds. Publish SHALL freeze the approved draft, run the required verification suite, compute canonical semantic bytes, derive an immutable accepted-assertion manifest, verify that the manifest and emitted Bundle represent the same accepted semantic content, perform duplicate-content detection, persist the immutable published bundle and linked manifest, persist the publish audit record, and update supersession metadata atomically.
 
 #### Scenario: Publish creates immutable semantic artifact
 - **WHEN** an approved draft passes verification and is published
@@ -76,6 +76,14 @@ The system SHALL assign the semantic bundle fingerprint only during publish. Pub
 #### Scenario: Same content publish is idempotent
 - **WHEN** the same approved semantic payload is published more than once
 - **THEN** the system returns the existing published bundle fingerprint and audit reference without creating duplicate immutable artifacts
+
+#### Scenario: Published baseline retains assertion alignment
+- **WHEN** an approved draft is published successfully
+- **THEN** its accepted assertion IDs, types, canonical payloads, and payload hashes are persisted in an immutable manifest linked to the published fingerprint without entering the Bundle fingerprint domain
+
+#### Scenario: Manifest mismatch blocks publication
+- **WHEN** the accepted-assertion manifest and emitted Bundle do not represent the same frozen approved semantic content
+- **THEN** publish fails closed and persists no Bundle, manifest, audit record, or supersession edge
 
 ### Requirement: Canonical semantic fingerprint excludes lifecycle metadata
 Published bundle fingerprints SHALL be derived from deterministic canonical bytes of semantic payload only. The semantic fingerprint domain SHALL exclude provenance, review state, review bindings, reviewer identity, approval chains, rejected assertions, deployment bindings, file-format metadata, audit records, activation state, and supersession metadata.

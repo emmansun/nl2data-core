@@ -18,7 +18,8 @@
 | 构件 | 归属 | 携带内容 | 作用 |
 | --- | --- | --- | --- |
 | `SemanticDescriptor` | 元数据生命周期（发现 + 推断 + 评审）或手工编写 | 实体、字段、关系、`catalog_fingerprint` | 一个数据源的有界语义词汇表；字段 id 跨实体全局唯一 |
-| `SemanticModelBundle` | 生命周期发布 | 校验通过的描述符 + 已批准的语义、活动快照身份 | 不可变发布单元；激活前必须通过依赖与 fingerprint 校验 |
+| `AssemblyDraft` | 控制面生命周期 | 确定性 assertions、provenance、review bindings、deployment references、`draft_revision` | 处于 `draft`、`review` 或 `approved` 的可编辑发布前工作区；绝不携带 Bundle fingerprint |
+| `SemanticModelBundle` | 生命周期发布 | 校验通过的描述符 + 已批准语义载荷、活动快照身份 | 不可变 publish 输出；在 publish 时取得语义 fingerprint，并按 fingerprint 激活 |
 | `SemanticViewDefinition` | 生命周期或手工编写 | 允许的目的、成员限制、绑定的 policy/tenant/principal fingerprint、能力、特性开关 | *契约*：在何种可信上下文下，调用方可看到描述符的哪一部分 |
 | `ViewRegistry` + `ResolutionContext` | Host 组合层 | Registry 持有描述符、视图定义与活动 Bundle；context 携带可信 fingerprint | 解析：在返回任何投影之前，逐一校验每个安全维度 |
 | `ResolvedViewProjection` | `ViewRegistry.resolve(...)` | `root_entity_ids`、`field_ids`、解析出的实体、允许的操作/关系、view + Bundle fingerprint | 查询期交接物：授权面的唯一事实来源 |
@@ -28,6 +29,12 @@
 
 语义构件只携带语义引用与安全描述——绝不携带凭据、物理绑定或隐藏的 policy 规则。
 物理名称只存在于 Host 拥有的绑定/配置中。
+
+Assertion review 属于控制面元数据。Approved/rejected 决策绑定 canonical assertion
+payload hash，因此语义内容变化会让 assertion 回到 `pending`；rejected assertion 只作为
+负面证据，绝不进入运行时权威。Publish 派生用于 rediscovery 对齐的不可变
+accepted-assertion manifest，以及记录 approval、verification、provenance、idempotency
+与已打码 deployment binding 的 audit record。两者都不进入 Bundle fingerprint domain。
 
 ## 为什么需要这一层
 
@@ -39,6 +46,9 @@
   checkpoint 与 Memory 引用全部失效。
 - **不透明证据**：view 与 Bundle 身份在 checkpoint、授权记录和结果血缘中均为
   `sha256` fingerprint——绝不暴露原始标识或载荷。
+- **语义身份**：Bundle fingerprint 只覆盖 canonical semantic payload；provenance、
+  reviewer identity、review state、deployment binding、audit、activation、supersession
+  与文件表现形式都被排除。
 - **物理隔离**：语义层绝不泄漏表名；编译器只通过 Host 持有的 binding 获得物理名。
 - **AI 安全**：模型提供方只看到有界的语义上下文（字段、标签、允许的聚合），
   其 intent 若引用了授权投影之外的 source、实体或字段，将被拒绝。

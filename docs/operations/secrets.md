@@ -19,6 +19,14 @@
 
 ## Environment injection (ephemeral, host-owned)
 
+Assembly deployment bindings use only `env:`, `vault:`, or `file:` references.
+Credential-like DSNs and inline password, token, secret, or API-key values are
+rejected before publish. A host may resolve a reference temporarily for a
+publish verification callback, but resolved material is never stored in the
+draft's semantic payload, Bundle fingerprint domain, accepted-assertion
+manifest, publish audit, catalog envelope, admin DTO, logs, or evidence. Audit
+records retain only a count and the reference schemes used.
+
 | Service | Variables | Read by real-service profiles when |
 | --- | --- | --- |
 | PostgreSQL | `NL2DATA_POSTGRES_DSN` | Pool first built |
@@ -93,7 +101,8 @@ python -m pytest -rs packages/nl2data-workflow-postgres/tests/test_workflow_post
 | What | How |
 | --- | --- |
 | OpenAI provider | Swap back to the core's deterministic `FakeModelProvider` at composition time — removes the SDK dependency and network access while keeping the same resolver, governance, and evaluation gates |
-| Bundle/snapshot activation | Activate a previous registered snapshot under the same policy, or re-register and re-activate the prior discovery snapshot |
+| Bundle activation | Call `rollback_to_fingerprint` for a previously published valid fingerprint; only the active pointer changes, while Bundle, manifest, audit, and supersession history remain immutable |
+| Snapshot activation | Activate a previous registered snapshot under the same policy, or re-register and re-activate the prior discovery snapshot |
 | Schema/database | Downgrading is a deployment decision, never an automatic rollback; old runtimes fail closed against new deployments (`UNSUPPORTED_SCHEMA_VERSION`) |
 | Documentation-only change | Restore the previous README and remove docs-only CI checks; no runtime migration involved |
 

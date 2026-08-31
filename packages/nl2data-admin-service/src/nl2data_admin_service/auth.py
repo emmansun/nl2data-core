@@ -6,6 +6,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Protocol
 
+from nl2data_core.assembly import LifecycleRole
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -22,6 +23,11 @@ class Permission(StrEnum):
     BUNDLE_PUBLISH = "bundle:publish"
     BUNDLE_ACTIVATE = "bundle:activate"
     BUNDLE_ROLLBACK = "bundle:rollback"
+    ASSEMBLY_READ = "assembly:read"
+    ASSEMBLY_WRITE = "assembly:write"
+    ASSEMBLY_REVIEW = "assembly:review"
+    ASSEMBLY_APPROVE = "assembly:approve"
+    ASSEMBLY_AUDIT = "assembly:audit"
     DRIFT_READ = "drift:read"
     JOB_READ = "job:read"
     JOB_CANCEL = "job:cancel"
@@ -42,6 +48,7 @@ class AuthContext(BaseModel):
     tenant_scope_fingerprint: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
     source_ids: frozenset[str] = Field(default_factory=frozenset, max_length=1_024)
     permissions: frozenset[Permission] = Field(default_factory=frozenset)
+    lifecycle_roles: frozenset[LifecycleRole] = Field(default_factory=frozenset, max_length=4)
     audit_reference: str = Field(default="", max_length=512)
     authenticated_at: datetime | None = None
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from nl2data_core.assembly import LifecycleRole
 
 from helpers import (
     _FakeDependencies,
@@ -21,7 +22,10 @@ from nl2data_admin_service.dtos import (
     ReviewAction,
     ReviewCommand,
 )
-from nl2data_admin_service.errors import AuthorizationDeniedError
+from nl2data_admin_service.errors import (
+    AuthorizationDeniedError,
+)
+from nl2data_admin_service.errors import ValidationError as AdminValidationError
 from nl2data_admin_service.service import AdminService
 
 
@@ -93,21 +97,16 @@ def test_proposal_review_approves_with_permission() -> None:
     assert result.audit_reference == "audit-1"
 
 
-def test_publish_bundle_publishes_with_permission() -> None:
+def test_publish_bundle_cannot_bypass_assembly_authority() -> None:
     deps = _FakeDependencies()
     service = AdminService(deps, AdminServiceConfig())
     bundle = _make_bundle()
-    result = service.publish_bundle(
-        bundle,
-        auth_context=_make_auth([Permission.BUNDLE_PUBLISH]),
-        idempotency_key="k-1",
-    )
-    assert result.command == LifecycleCommand.PUBLISH
-    assert result.bundle_id == "bundle-1"
-    assert result.version == "v1"
-    assert result.success is True
-    assert result.fingerprint == bundle.fingerprint
-    assert result.audit_reference == "audit-1"
+    with pytest.raises(AdminValidationError, match="approved assembly draft"):
+        service.publish_bundle(
+            bundle,
+            auth_context=_make_auth([Permission.BUNDLE_PUBLISH]),
+            idempotency_key="k-1",
+        )
 
 
 def test_publish_bundle_denied_without_permission() -> None:
@@ -136,15 +135,21 @@ def test_activate_bundle_with_permission() -> None:
     deps = _FakeDependencies()
     service = AdminService(deps, AdminServiceConfig())
     bundle = _make_bundle()
-    deps.catalog.publish(bundle, tenant_scope_fingerprint="sha256:" + "0" * 64)
+    deps.lifecycle_catalog.publish(
+        bundle,
+        tenant_scope_fingerprint="sha256:" + "0" * 64,
+    )
     result = service.lifecycle_command(
         BundleLifecycleCommand(
             command=LifecycleCommand.ACTIVATE,
             bundle_id="bundle-1",
-            version="v1",
+            expected_fingerprint=bundle.fingerprint,
             idempotency_key="k-1",
         ),
-        auth_context=_make_auth([Permission.BUNDLE_ACTIVATE]),
+        auth_context=_make_auth(
+            [Permission.BUNDLE_ACTIVATE],
+            lifecycle_roles=frozenset({LifecycleRole.PUBLISHER}),
+        ),
     )
     assert result.success is True
     assert result.fingerprint == bundle.fingerprint

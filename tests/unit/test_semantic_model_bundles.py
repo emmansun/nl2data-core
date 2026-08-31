@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 
 import pytest
+import yaml
 from pydantic import ValidationError
 
 from nl2data_core.bundles import (
@@ -204,11 +205,32 @@ class TestFingerprints:
         again = SemanticModelBundle.model_validate(reversed_payload)
         assert again.fingerprint == bundle.fingerprint
 
-    def test_version_change_changes_the_fingerprint(self) -> None:
+    def test_business_version_change_does_not_change_the_fingerprint(self) -> None:
         v1 = make_bundle(model_version="1.0.0")
         v2 = make_bundle(model_version="2.0.0")
-        assert v1.fingerprint != v2.fingerprint
+        assert v1.fingerprint == v2.fingerprint
         assert v1.bundle_id == v2.bundle_id
+
+    def test_provenance_and_trust_markers_do_not_change_the_fingerprint(self) -> None:
+        baseline = make_bundle()
+        changed = make_bundle(
+            trust_markers=(
+                SemanticTrustMarker(
+                    marker_id="m-amount",
+                    fact_id="amount",
+                    kind=SemanticTrustKind.INFERRED,
+                    approved=True,
+                    note="Approved discovery evidence",
+                ),
+            ),
+            provenance=BundleProvenance(
+                owner_reference="team-semantic",
+                created_by_fingerprint=fp("22"),
+                quality=BundleQualityStatus.APPROVED,
+            ),
+        )
+        assert changed.fingerprint == baseline.fingerprint
+        assert changed.file_payload() != baseline.file_payload()
 
     def test_content_change_changes_the_fingerprint(self) -> None:
         with_measure = make_bundle()
@@ -219,6 +241,8 @@ class TestFingerprints:
         payload = json.loads(make_bundle().serialize_canonical())
         assert "fingerprint" not in payload
         assert payload["schema_version"] == 1
+        assert "provenance" not in make_bundle().canonical_payload()
+        assert "trust_markers" not in make_bundle().canonical_payload()
 
     def test_canonical_round_trip_via_loader(self) -> None:
         bundle = make_bundle()
@@ -228,6 +252,20 @@ class TestFingerprints:
         assert result.bundle.fingerprint == bundle.fingerprint
         assert result.bundle.bundle_id == bundle.bundle_id
         assert result.bundle.canonical_payload() == bundle.canonical_payload()
+
+    def test_yaml_key_order_comments_and_formatting_do_not_change_fingerprint(
+        self,
+    ) -> None:
+        envelope = make_bundle().file_payload()
+        compact = yaml.safe_dump(envelope, sort_keys=True)
+        presented = "# release candidate\n" + yaml.safe_dump(
+            dict(reversed(list(envelope.items()))),
+            sort_keys=False,
+            indent=4,
+        )
+        first = SemanticModelBundle.model_validate(yaml.safe_load(compact))
+        second = SemanticModelBundle.model_validate(yaml.safe_load(presented))
+        assert first.fingerprint == second.fingerprint
 
 
 class TestSafeContent:

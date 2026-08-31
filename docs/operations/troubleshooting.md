@@ -22,7 +22,10 @@
 | `SCHEMA_MISMATCH` | Runtime is older than the catalog database schema | Upgrade the runtime or align the deployment; newer schema versions fail closed, never silently downgraded |
 | `ENVELOPE_REJECTED` / `FINGERPRINT_MISMATCH` / `BOUNDS_EXCEEDED` | Tampered, mislabeled, or oversized persisted artifact | Fail-closed by design; re-register the artifact from trusted metadata — never bypass validation |
 | `UNAUTHORIZED` | Cross-scope access attempt | A scope fingerprint never reads another scope's records; verify the tenant/source scope |
-| `CONFLICT` | Duplicate Bundle version or serialization collision | Publish under a new version; retry after a serialization conflict |
+| `CONFLICT` / admin `conflict` | Stale assembly `draft_revision` or serialization collision | Reload the current draft and retry against its revision; do not overwrite newer review decisions |
+| `version_exists` | Business version already names different semantic content | Choose a new business version; identical semantic content is reused by fingerprint and needs no duplicate publication |
+| `pending_assertions` / `draft_not_approved` | Publish attempted before assertion review and draft approval completed | Review every pending/invalidated assertion, approve the current revision, then publish that revision |
+| `manifest_mismatch` / `audit_mismatch` | Publish artifacts do not bind to the emitted Bundle fingerprint | Treat as an atomic publish rejection; inspect emitter/verifier integration and retry only after correction |
 
 ## Stale snapshots and drift
 

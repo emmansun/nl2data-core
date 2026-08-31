@@ -8,11 +8,28 @@ without ever mutating a published artifact.
 
 from __future__ import annotations
 
+from nl2data_core.assembly import (
+    ASSEMBLY_API_VERSION,
+    AcceptedAssertionManifest,
+    AssemblyDraft,
+    AssemblyState,
+    AssertionProvenance,
+    AssertionType,
+    InMemoryAssemblyDraftStore,
+    ReviewState,
+    SemanticAssertion,
+)
 from nl2data_core.bundles import (
+    AssertionProvenanceSummary,
     BundleDependency,
     BundleProvenance,
     BundleQualityStatus,
+    DeploymentBindingRedactionSummary,
     InMemorySemanticBundleCatalog,
+    PublishAuditRecord,
+    PublishedVersionState,
+    PublishIdempotencyStatus,
+    PublishVerificationSummary,
     SemanticModelBundle,
     SemanticSourceReference,
 )
@@ -94,6 +111,27 @@ def make_catalog() -> InMemorySemanticBundleCatalog:
     return InMemorySemanticBundleCatalog()
 
 
+def make_audit(bundle: SemanticModelBundle, **overrides) -> PublishAuditRecord:
+    values = {
+        "audit_id": f"publish-{bundle.fingerprint[-16:]}",
+        "bundle_id": bundle.bundle_id,
+        "bundle_fingerprint": bundle.fingerprint,
+        "approval_chain": ("author-1", "reviewer-1", "publisher-1"),
+        "assertion_provenance": AssertionProvenanceSummary(manual=1),
+        "verification": PublishVerificationSummary(
+            structural_valid=True,
+            manifest_equivalent=True,
+            host_callback_count=1,
+        ),
+        "idempotency_status": PublishIdempotencyStatus.CREATED,
+        "deployment_bindings": DeploymentBindingRedactionSummary(),
+        "separation_mode": "strict",
+        "separation_reason_code": "authorized",
+    }
+    values.update(overrides)
+    return PublishAuditRecord(**values)
+
+
 class TestPublish:
     def test_publish_validated_bundle(self) -> None:
         catalog = make_catalog()
@@ -129,21 +167,139 @@ class TestPublish:
         assert outcome.kind == "rejected"
         assert "incompatible_schema" in outcome.issue_codes()
 
-    def test_duplicate_version_is_a_conflict(self) -> None:
+    def test_duplicate_semantic_content_is_reused(self) -> None:
         catalog = make_catalog()
         bundle = make_bundle()
         assert catalog.publish(bundle).kind == "published"
         outcome = catalog.publish(bundle)
-        assert outcome.kind == "conflict"
-        assert "version_exists" in outcome.issue_codes()
+        assert outcome.kind == "reused"
+        assert outcome.bundle is bundle
         assert len(catalog.versions(bundle.bundle_id)) == 1
 
-    def test_same_bundle_new_version_is_publishable(self) -> None:
+    def test_same_semantic_content_with_new_business_version_is_reused(self) -> None:
         catalog = make_catalog()
         v1 = make_bundle(model_version="1.0.0")
         v2 = make_bundle(model_version="2.0.0")
         assert catalog.publish(v1).kind == "published"
-        assert catalog.publish(v2).kind == "published"
+        outcome = catalog.publish(v2)
+        assert outcome.kind == "reused"
+        assert outcome.bundle is v1
+        assert len(catalog.versions(v1.bundle_id)) == 1
+
+    def test_same_business_version_with_different_content_conflicts(self) -> None:
+        catalog = make_catalog()
+        original = make_bundle()
+        changed = make_bundle(descriptor=make_descriptor(version=2))
+        assert catalog.publish(original).kind == "published"
+        outcome = catalog.publish(changed)
+        assert outcome.kind == "conflict"
+        assert outcome.issue_codes() == ["version_exists"]
+
+    def test_publish_atomically_links_accepted_assertion_manifest(self) -> None:
+        catalog = make_catalog()
+        bundle = make_bundle()
+        assertion = SemanticAssertion.create(
+            type=AssertionType.ENTITY,
+            payload={
+                "descriptor_id": "sales",
+                "entity_id": "orders",
+                "label": "Orders",
+            },
+            provenance=AssertionProvenance(kind="manual"),
+        ).bind_review(
+            state=ReviewState.APPROVED,
+            reviewer_reference="reviewer-1",
+        )
+        draft = AssemblyDraft(
+            apiVersion=ASSEMBLY_API_VERSION,
+            draft_id="draft-1",
+            bundle_id=bundle.bundle_id,
+            source_id="sales",
+            model_version=bundle.model_version,
+            state=AssemblyState.APPROVED,
+            assertions=(assertion,),
+            author_reference="author-1",
+        )
+        manifest = AcceptedAssertionManifest.from_draft(
+            draft,
+            bundle_fingerprint=bundle.fingerprint,
+        )
+        outcome = catalog.publish(
+            bundle,
+            accepted_assertion_manifest=manifest,
+        )
+        assert outcome.success
+        assert catalog.accepted_assertion_manifest(
+            bundle.bundle_id,
+            bundle.fingerprint,
+        ) is manifest
+
+    def test_manifest_mismatch_leaves_no_publication(self) -> None:
+        catalog = make_catalog()
+        bundle = make_bundle()
+        manifest = AcceptedAssertionManifest(
+            bundle_id="other_model",
+            bundle_fingerprint=bundle.fingerprint,
+        )
+        outcome = catalog.publish(
+            bundle,
+            accepted_assertion_manifest=manifest,
+        )
+        assert outcome.kind == "rejected"
+        assert outcome.issue_codes() == ["manifest_mismatch"]
+        assert not catalog.versions(bundle.bundle_id)
+
+    def test_audit_mismatch_leaves_no_publication(self) -> None:
+        catalog = make_catalog()
+        bundle = make_bundle()
+        audit = make_audit(bundle, bundle_id="other_model")
+        outcome = catalog.publish(bundle, audit=audit)
+        assert outcome.issue_codes() == ["audit_mismatch"]
+        assert not catalog.versions(bundle.bundle_id)
+
+    def test_publish_persists_and_reuses_the_same_audit(self) -> None:
+        catalog = make_catalog()
+        bundle = make_bundle()
+        audit = make_audit(bundle)
+        created = catalog.publish(bundle, audit=audit)
+        reused = catalog.publish(bundle, audit=make_audit(bundle, audit_id="retry-audit"))
+        assert created.audit_reference == audit.audit_id
+        assert created.idempotency_status is PublishIdempotencyStatus.CREATED
+        assert reused.kind == "reused"
+        assert reused.audit_reference == audit.audit_id
+        assert reused.idempotency_status is PublishIdempotencyStatus.REUSED
+        assert catalog.publish_audit(bundle.bundle_id, bundle.fingerprint) is audit
+
+    def test_publish_rechecks_authoritative_draft_revision(self) -> None:
+        store = InMemoryAssemblyDraftStore()
+        bundle = make_bundle()
+        draft = AssemblyDraft(
+            apiVersion=ASSEMBLY_API_VERSION,
+            draft_id="draft-cas",
+            bundle_id=bundle.bundle_id,
+            source_id="sales",
+            model_version=bundle.model_version,
+            state=AssemblyState.APPROVED,
+            draft_revision=0,
+            author_reference="author-1",
+        )
+        tenant = fp("aa")
+        store.create(draft, tenant_scope_fingerprint=tenant)
+        store.replace(
+            draft.model_copy(update={"draft_revision": 1}),
+            expected_revision=0,
+            tenant_scope_fingerprint=tenant,
+        )
+        catalog = InMemorySemanticBundleCatalog(draft_store=store)
+        outcome = catalog.publish(
+            bundle,
+            draft=draft,
+            expected_revision=0,
+            tenant_scope_fingerprint=tenant,
+        )
+        assert outcome.kind == "conflict"
+        assert outcome.issue_codes() == ["draft_revision_conflict"]
+        assert not catalog.versions(bundle.bundle_id, tenant_scope_fingerprint=tenant)
 
 
 class TestLookupAndVersions:
@@ -153,7 +309,7 @@ class TestLookupAndVersions:
     def test_versions_returns_every_published_version(self) -> None:
         catalog = make_catalog()
         v1 = make_bundle(model_version="1.0.0")
-        v2 = make_bundle(model_version="2.0.0")
+        v2 = make_bundle(model_version="2.0.0", descriptor=make_descriptor(version=2))
         catalog.publish(v1)
         catalog.publish(v2)
         versions = catalog.versions("sales_model")
@@ -164,6 +320,34 @@ class TestLookupAndVersions:
         catalog = make_catalog()
         catalog.publish(make_bundle())
         assert catalog.active("sales_model") is None
+
+    def test_publications_and_active_pointers_are_tenant_scoped(self) -> None:
+        catalog = make_catalog()
+        bundle = make_bundle()
+        tenant_a = fp("aa")
+        tenant_b = fp("bb")
+        assert catalog.publish(bundle, tenant_scope_fingerprint=tenant_a).success
+        assert catalog.get(
+            bundle.bundle_id,
+            bundle.model_version,
+            tenant_scope_fingerprint=tenant_b,
+        ) is None
+        assert catalog.versions(
+            bundle.bundle_id, tenant_scope_fingerprint=tenant_b
+        ) == ()
+        assert not catalog.activate_fingerprint(
+            bundle.bundle_id,
+            bundle.fingerprint,
+            tenant_scope_fingerprint=tenant_b,
+        ).success
+        assert catalog.activate_fingerprint(
+            bundle.bundle_id,
+            bundle.fingerprint,
+            tenant_scope_fingerprint=tenant_a,
+        ).success
+        assert catalog.active(
+            bundle.bundle_id, tenant_scope_fingerprint=tenant_b
+        ) is None
 
 
 class TestActivation:
@@ -182,6 +366,17 @@ class TestActivation:
         outcome = catalog.activate("sales_model", "9.9.9")
         assert outcome.kind == "not_found"
         assert "bundle_not_found" in outcome.issue_codes()
+
+    def test_activate_by_fingerprint_updates_version_state(self) -> None:
+        catalog = make_catalog()
+        bundle = make_bundle()
+        catalog.publish(bundle)
+        outcome = catalog.activate_fingerprint(bundle.bundle_id, bundle.fingerprint)
+        assert outcome.success
+        assert catalog.active(bundle.bundle_id) is bundle
+        assert catalog.publication_records(bundle.bundle_id)[0].state is (
+            PublishedVersionState.ACTIVE
+        )
 
     def test_activation_requires_published_dependencies(self) -> None:
         catalog = make_catalog()
@@ -268,7 +463,7 @@ class TestRollback:
     def test_rollback_restores_the_previous_active_version(self) -> None:
         catalog = make_catalog()
         v1 = make_bundle(model_version="1.0.0")
-        v2 = make_bundle(model_version="2.0.0")
+        v2 = make_bundle(model_version="2.0.0", descriptor=make_descriptor(version=2))
         catalog.publish(v1)
         catalog.publish(v2)
         assert catalog.activate("sales_model", "1.0.0").success
@@ -279,6 +474,12 @@ class TestRollback:
         assert outcome.kind == "rolled_back"
         assert outcome.bundle is v1
         assert catalog.active("sales_model") is v1
+        states = {
+            record.bundle.fingerprint: record.state
+            for record in catalog.publication_records("sales_model")
+        }
+        assert states[v1.fingerprint] is PublishedVersionState.ACTIVE
+        assert states[v2.fingerprint] is PublishedVersionState.SUPERSEDED
 
     def test_rollback_without_active_version_is_not_found(self) -> None:
         catalog = make_catalog()
@@ -300,7 +501,7 @@ class TestRollback:
     def test_rollback_never_mutates_published_artifacts(self) -> None:
         catalog = make_catalog()
         v1 = make_bundle(model_version="1.0.0")
-        v2 = make_bundle(model_version="2.0.0")
+        v2 = make_bundle(model_version="2.0.0", descriptor=make_descriptor(version=2))
         catalog.publish(v1)
         catalog.publish(v2)
         catalog.activate("sales_model", "1.0.0")
@@ -312,7 +513,50 @@ class TestRollback:
         assert versions == (v1, v2)
         assert versions[0].fingerprint == v1.fingerprint
         assert versions[1].fingerprint == v2.fingerprint
-        assert catalog.get("sales_model", "2.0.0") is v2
+
+    def test_targeted_rollback_uses_fingerprint_and_preserves_artifacts(self) -> None:
+        catalog = make_catalog()
+        v1 = make_bundle(model_version="1.0.0")
+        v2 = make_bundle(model_version="2.0.0", descriptor=make_descriptor(version=2))
+        catalog.publish(v1)
+        catalog.publish(v2)
+        catalog.activate_fingerprint(v1.bundle_id, v1.fingerprint)
+        catalog.activate_fingerprint(v2.bundle_id, v2.fingerprint)
+        outcome = catalog.rollback_to_fingerprint(v1.bundle_id, v1.fingerprint)
+        assert outcome.kind == "rolled_back"
+        assert catalog.active(v1.bundle_id) is v1
+        assert catalog.versions(v1.bundle_id) == (v1, v2)
+
+
+class TestVersionLifecycle:
+    def test_publish_appends_queryable_supersession_chain(self) -> None:
+        catalog = make_catalog()
+        v1 = make_bundle(model_version="1.0.0")
+        v2 = make_bundle(model_version="2.0.0", descriptor=make_descriptor(version=2))
+        catalog.publish(v1)
+        second = catalog.publish(v2)
+        chain = catalog.supersession_chain(v1.bundle_id)
+        assert second.superseded_fingerprint == v1.fingerprint
+        assert chain[0].supersession.successor_fingerprint == v2.fingerprint
+        assert chain[0].state is PublishedVersionState.SUPERSEDED
+        assert chain[1].supersession.predecessor_fingerprint == v1.fingerprint
+
+    def test_deprecated_version_can_activate_but_retired_version_cannot(self) -> None:
+        catalog = make_catalog()
+        bundle = make_bundle()
+        catalog.publish(bundle)
+        deprecated = catalog.set_version_state(
+            bundle.bundle_id,
+            bundle.fingerprint,
+            PublishedVersionState.DEPRECATED,
+        )
+        assert deprecated.kind == "deprecated"
+        assert catalog.activate_fingerprint(bundle.bundle_id, bundle.fingerprint).success
+        assert not catalog.set_version_state(
+            bundle.bundle_id,
+            bundle.fingerprint,
+            PublishedVersionState.RETIRED,
+        ).success
 
 
 class TestOutcomes:

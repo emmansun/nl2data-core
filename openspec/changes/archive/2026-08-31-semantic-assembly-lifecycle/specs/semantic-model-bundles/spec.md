@@ -3,7 +3,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Semantic Model Bundles are immutable and versioned
-The system SHALL represent a published Semantic Model Bundle as an immutable, versioned runtime artifact emitted by the semantic assembly publish operation. A published bundle SHALL contain bounded semantic entities, fields, relationships, calculated-field definitions, measures/aggregation metadata, source/catalog references, compatibility metadata, and safe runtime metadata, but its semantic fingerprint SHALL be assigned only at publish and SHALL cover only canonical semantic payload. Bundle semantic facts MAY originate from approved assembly assertions, but a bundle SHALL contain no pending or rejected assertion authority, credentials, connection strings, raw executable SQL/MQL/code, native objects, or authorization claims. The admin API SHALL expose only safe metadata and opaque references for Bundle content.
+The system SHALL represent a published Semantic Model Bundle as an immutable, versioned runtime artifact emitted by the semantic assembly publish operation. A published bundle SHALL contain bounded semantic entities, fields, relationships, calculated-field definitions, measures/aggregation metadata, source/catalog references, compatibility metadata, and safe runtime metadata. Its semantic fingerprint SHALL cover only canonical semantic payload and SHALL become authoritative only at successful publish; an in-memory candidate MAY precompute the same value for validation. Bundle semantic facts MAY originate from approved assembly assertions, but a bundle SHALL contain no pending or rejected assertion authority, credentials, connection strings, raw executable SQL/MQL/code, native objects, or authorization claims. The admin API SHALL expose only safe metadata and opaque references for Bundle content.
 
 #### Scenario: Bundle has stable semantic identity
 - **WHEN** equivalent published semantic model contents are constructed from assembly drafts with different mapping insertion orders, provenance, reviewer identities, deployment bindings, or YAML presentation
@@ -65,7 +65,7 @@ Bundle loaders SHALL reject canonical semantic payloads that include assembly-on
 - **THEN** loading fails with an explicit unsafe-payload or incompatible-schema result and does not activate the bundle
 
 ### Requirement: Bundle publication requires approved assembly source or explicit manual authority
-Publishing a semantic bundle SHALL require either an approved assembly draft with all assertion review bindings valid or an explicit host-provided manual authority path that records equivalent approval evidence. Unreviewed discovery output SHALL NOT publish directly.
+Publishing a semantic bundle SHALL require either an approved assembly draft with all assertion review bindings valid or an explicit trusted host manual-authority path. The provider-neutral low-level `catalog.publish(bundle)` call is that embedded-host path: validated/approved Bundle quality and bounded Bundle provenance are its approval evidence, it is not exposed by the Admin API, and it SHALL NOT accept unreviewed discovery proposals. Unreviewed discovery output SHALL NOT publish directly.
 
 #### Scenario: Discovery output cannot publish directly
 - **WHEN** discovery produces assertions or proposals that have not been reviewed and approved
@@ -74,3 +74,10 @@ Publishing a semantic bundle SHALL require either an approved assembly draft wit
 #### Scenario: Manual authority is audited
 - **WHEN** a host publishes hand-authored semantic content through an explicit manual authority path
 - **THEN** publish records bounded audit evidence for the authorizing identity and lifecycle policy without including that evidence in the semantic fingerprint
+
+### Requirement: Business versions identify one semantic publication
+Within one tenant scope and bundle name, a business version SHALL identify at most one semantic fingerprint. Identical content proposed under another business version SHALL reuse the existing publication and report its persisted version; different content proposed under an existing version SHALL fail with `version_exists`.
+
+#### Scenario: Reused content reports the persisted version
+- **WHEN** a host proposes identical semantic content with a different business version label
+- **THEN** publish reuses the existing artifact and returns the business version actually persisted for that artifact

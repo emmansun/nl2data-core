@@ -18,7 +18,7 @@ DDS-020 v1.1 fills the gap before publication: manual assembly, discovery output
 
 - Introduce an explicit assembly workspace for pre-publication artifacts: draft content, assertions, provenance, review state, deployment bindings, and optimistic revision.
 - Make `SemanticAssertion` the common unit for review, audit, diff, approval, and incremental rediscovery.
-- Assign semantic bundle fingerprints only during publish and only from canonical semantic payload.
+- Make a bundle fingerprint externally authoritative only during publish and derive it only from canonical semantic payload; an in-memory Bundle candidate may precompute the same deterministic value for validation.
 - Exclude provenance, review state, deployment bindings, audit records, file-format metadata, and activation metadata from the semantic fingerprint domain.
 - Make publish atomic and idempotent by semantic fingerprint, including immutable artifact persistence, audit persistence, and supersession metadata.
 - Keep the admin service as a thin transport-neutral projection over core lifecycle rules.
@@ -59,9 +59,9 @@ Alternative considered: reuse `SemanticProposal` for all review. Rejected becaus
 
 ### D3 — Fingerprint is publish-time semantic identity
 
-Published bundle fingerprint is computed during publish as `sha256:` over canonical bytes of semantic payload only. The canonical domain excludes provenance, review state, reviewer identity, approval chain, rejected assertions, audit records, deployment bindings, activation state, supersession metadata, file `apiVersion`, comments, and YAML presentation.
+Published bundle fingerprint is verified during publish as `sha256:` over canonical bytes of semantic payload only. An in-memory `SemanticModelBundle` candidate precomputes that deterministic value, but it is not an externally visible publication identity until the atomic catalog operation succeeds. The canonical domain excludes provenance, review state, reviewer identity, approval chain, rejected assertions, audit records, deployment bindings, activation state, supersession metadata, file `apiVersion`, comments, and YAML presentation.
 
-This is intentionally breaking relative to the current bundle model, whose canonical payload includes `BundleProvenance` and whose fingerprint is computed at construction time. Existing golden fingerprints will be updated.
+This is intentionally breaking relative to the prior bundle model because `BundleProvenance` leaves the canonical domain. Existing golden fingerprints are updated; eager candidate computation remains an internal validation convenience, not publication.
 
 Alternative considered: keep current bundle fingerprints and add a second DDS-020 fingerprint. Rejected because two bundle identities would produce confusing evidence, cache, compatibility, and audit behavior.
 
@@ -105,6 +105,32 @@ A calculated-field assertion carries the complete canonical definition: name, la
 
 Publish-time verification preserves the inherited invariants: descriptor-global calculated-field names, base-field-only dependencies, pii isolation, adapter capability gating, and the expression bounds/type rules. A draft or publication cannot replace a reviewed definition with another definition under the same name and retain approval.
 
+### D11 — Keep `SemanticModelBundle` as the published runtime artifact name
+
+The published runtime artifact remains `SemanticModelBundle`; this change revises its construction and fingerprint semantics instead of introducing `PublishedSemanticBundle`. `AssemblyDraft` provides the unambiguous pre-publication type boundary, while retaining the established runtime name avoids a repository-wide compatibility alias that would imply two distinct published contracts. A `SemanticModelBundle` exists only as immutable publish output and receives its semantic fingerprint at that boundary.
+
+### D12 — Core verification is mandatory and hosts may extend it with governed callbacks
+
+Publish always runs core-owned structural, reference, compatibility, safety, and calculated-field validation. Hosts may additionally supply bounded smoke-test and semantic-contract verification callbacks for adapter-backed behavior that core cannot execute without deployment-specific capabilities. Configured callbacks are part of the atomic publish gate: timeout, exception, unsafe result, or failed result rejects publication without persisting an artifact, audit record, or supersession edge. Callback inputs and persisted summaries are bounded and secret-safe; resolved deployment credentials remain ephemeral and are never returned to core persistence.
+
+### D13 — Assertion identity uses type-specific semantic scope
+
+Assertion IDs hash the assertion type and a closed identity payload. Entity identity is descriptor/entity; field and mapping identity are descriptor/entity/field; policy identity is descriptor/policy ID; measure and grain identity are descriptor plus their established measure/grain ID; calculated-field identity is descriptor/entity/name. Relationship identity is descriptor, relationship ID, source and target entity IDs, and the sorted source/target join-field sets, so changing join keys is delete/add while changing a label is a payload modification. Missing, malformed, or ambiguous identity members fail closed rather than falling back to full-payload or random identity.
+
+### D14 — Published fingerprints link to immutable accepted-assertion manifests
+
+Each publication atomically persists an immutable accepted-assertion manifest keyed by bundle name and semantic fingerprint. The manifest contains only approved assertion ID, type, canonical semantic payload, and payload hash; it excludes provenance, review bindings, reviewer identity, rejected assertions, deployment bindings, and resolved credentials. It is a control-plane index outside the Bundle fingerprint domain, not a second runtime semantic artifact.
+
+Publish verifies that the manifest is derived from the frozen approved draft and that the emitted `SemanticModelBundle` represents the same accepted semantic content before committing the Bundle, manifest, audit record, and supersession edge together. Incremental rediscovery against a published baseline resolves the linked manifest by fingerprint and aligns candidates by assertion ID and payload hash. Missing, mismatched, or ambiguous manifests fail closed instead of reconstructing assertions from the runtime Bundle.
+
+### D15 — Business versions are unique labels; fingerprints are content identity
+
+Within one tenant scope and bundle name, a business `model_version` may identify only one semantic fingerprint. Publishing identical semantic content under a different proposed business version reuses the existing publication and reports its persisted version. Publishing different content under an already used business version fails with `version_exists`; callers must choose a new label.
+
+### D16 — Low-level catalog publication is the trusted manual-authority boundary
+
+`publish_assembly` is the required Admin and discovery path and atomically supplies the approved draft, accepted-assertion manifest, and publish audit. The provider-neutral catalog protocol retains direct `publish(bundle)` for trusted embedded hosts and compatibility: that explicit low-level call is the manual-authority path, and the validated/approved Bundle quality plus bounded `BundleProvenance` are its approval evidence. It is not exposed as an Admin operation and must never accept unreviewed discovery proposals. Hosts requiring assertion-level audit use `publish_assembly`.
+
 ## Risks / Trade-offs
 
 - **Fingerprint churn across tests and demos** -> Accept as intentional because no real users rely on current fingerprints; update golden expectations in one pass.
@@ -113,6 +139,7 @@ Publish-time verification preserves the inherited invariants: descriptor-global 
 - **Durable catalog work may grow large** -> Implement in-memory core semantics first, then durable catalog persistence after contracts and tests pin behavior.
 - **Calculated-field publication may lose inherited validation** -> Treat complete calculated-field definitions as reviewed semantic assertions and rerun bundle validation at publish.
 - **JCS/NFC canonicalization may require helper changes** -> Treat canonical helper tightening as part of the fingerprint-breaking implementation and cover with golden tests.
+- **Manifest and Bundle could diverge** -> Derive both from one frozen approved draft, verify equivalence at publish, and persist them in the same atomic transaction.
 
 ## Migration Plan
 
@@ -126,9 +153,3 @@ Publish-time verification preserves the inherited invariants: descriptor-global 
 8. Update demos and documentation to describe discovery/manual assembly -> review -> approval -> publish -> activate.
 
 Rollback for implementation branches is source-control rollback only; this repository has no external published artifacts requiring data migration.
-
-## Open Questions
-
-- Should the runtime artifact keep the `SemanticModelBundle` name with changed semantics, or should published output be renamed to `PublishedSemanticBundle` with compatibility aliases inside the package?
-- Should `model_version` remain user-supplied business metadata only, or should the publish API assign a monotonically increasing semantic version alongside the fingerprint?
-- How much of `Verification Suite` Layer 2/3 belongs in core versus host-provided callbacks for adapter-backed execution?

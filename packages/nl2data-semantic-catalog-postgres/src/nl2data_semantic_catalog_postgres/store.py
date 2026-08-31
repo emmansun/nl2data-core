@@ -29,10 +29,13 @@ import contextlib
 import re
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, overload
 
+from nl2data_core.assembly.manifest import AcceptedAssertionManifest
+from nl2data_core.assembly.models import AssemblyDraft, DraftRevisionConflict
 from nl2data_core.bundles.catalog import (
     BundleCatalogOutcome,
+    BundlePublication,
     _expected_snapshot_fingerprint,
     _failure,
     _failure_from_activation_check,
@@ -40,6 +43,12 @@ from nl2data_core.bundles.catalog import (
     _success,
 )
 from nl2data_core.bundles.models import BUNDLE_SCHEMA_VERSION, SemanticModelBundle
+from nl2data_core.bundles.publication import (
+    PublishAuditRecord,
+    PublishedVersionState,
+    PublishIdempotencyStatus,
+    SupersessionMetadata,
+)
 from nl2data_core.bundles.validation import validate_bundle
 from nl2data_core.canonical import canonical_json, sha256_fingerprint
 from nl2data_core.metadata.catalog import (
@@ -169,6 +178,30 @@ SQL_TEMPLATES: dict[str, str] = {
         "SELECT envelope, schema_version FROM {schema}.proposal_sets "
         "WHERE scope_namespace = %s AND snapshot_fingerprint = %s"
     ),
+    # -- assembly drafts -------------------------------------------------
+    "insert_assembly_draft": (
+        "INSERT INTO {schema}.assembly_drafts ("
+        "scope_namespace, draft_id, bundle_id, source_id, draft_revision, "
+        "state, schema_version, envelope, updated_at"
+        ") VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) "
+        "ON CONFLICT (scope_namespace, draft_id) DO NOTHING"
+    ),
+    "read_assembly_draft": (
+        "SELECT envelope, schema_version, draft_revision "
+        "FROM {schema}.assembly_drafts "
+        "WHERE scope_namespace = %s AND draft_id = %s"
+    ),
+    "lock_assembly_draft": (
+        "SELECT envelope, schema_version, draft_revision "
+        "FROM {schema}.assembly_drafts "
+        "WHERE scope_namespace = %s AND draft_id = %s FOR UPDATE"
+    ),
+    "replace_assembly_draft": (
+        "UPDATE {schema}.assembly_drafts SET bundle_id = %s, source_id = %s, "
+        "draft_revision = %s, state = %s, schema_version = %s, envelope = %s, "
+        "updated_at = %s WHERE scope_namespace = %s AND draft_id = %s "
+        "AND draft_revision = %s"
+    ),
     # -- bundles ----------------------------------------------------------
     "insert_publication": (
         "INSERT INTO {schema}.bundle_publications ("
@@ -186,10 +219,83 @@ SQL_TEMPLATES: dict[str, str] = {
         "SELECT bundle_fingerprint FROM {schema}.bundle_publications "
         "WHERE scope_namespace = %s AND bundle_id = %s AND model_version = %s"
     ),
+    "read_publication_by_fingerprint": (
+        "SELECT envelope, schema_version, published_at, model_version "
+        "FROM {schema}.bundle_publications WHERE scope_namespace = %s "
+        "AND bundle_id = %s AND bundle_fingerprint = %s"
+    ),
+    "lock_publication_series": (
+        "SELECT pg_advisory_xact_lock(hashtextextended(%s || ':' || %s, 0))"
+    ),
     "list_publications": (
         "SELECT envelope, model_version, schema_version FROM {schema}.bundle_publications "
         "WHERE scope_namespace = %s AND bundle_id = %s "
         "ORDER BY published_at, model_version"
+    ),
+    # -- publication lifecycle ------------------------------------------
+    "insert_accepted_manifest": (
+        "INSERT INTO {schema}.accepted_assertion_manifests ("
+        "scope_namespace, bundle_id, bundle_fingerprint, schema_version, "
+        "envelope, created_at) VALUES (%s, %s, %s, %s, %s, %s)"
+    ),
+    "read_accepted_manifest": (
+        "SELECT envelope, schema_version FROM "
+        "{schema}.accepted_assertion_manifests WHERE scope_namespace = %s "
+        "AND bundle_id = %s AND bundle_fingerprint = %s"
+    ),
+    "insert_publish_audit": (
+        "INSERT INTO {schema}.publish_audits (scope_namespace, bundle_id, "
+        "bundle_fingerprint, audit_id, idempotency_key, schema_version, "
+        "envelope, created_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)"
+    ),
+    "read_publish_audit": (
+        "SELECT envelope, schema_version FROM {schema}.publish_audits "
+        "WHERE scope_namespace = %s AND bundle_id = %s "
+        "AND bundle_fingerprint = %s"
+    ),
+    "read_publish_by_idempotency_key": (
+        "SELECT bundle_id, bundle_fingerprint FROM {schema}.publish_audits "
+        "WHERE scope_namespace = %s AND idempotency_key = %s"
+    ),
+    "read_latest_version": (
+        "SELECT bundle_fingerprint, lifecycle_state FROM "
+        "{schema}.published_versions WHERE scope_namespace = %s "
+        "AND bundle_id = %s ORDER BY published_at DESC, model_version DESC "
+        "LIMIT 1 FOR UPDATE"
+    ),
+    "insert_published_version": (
+        "INSERT INTO {schema}.published_versions (scope_namespace, bundle_id, "
+        "bundle_fingerprint, model_version, lifecycle_state, "
+        "predecessor_fingerprint, successor_fingerprint, audit_id, published_at) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)"
+    ),
+    "update_version_successor": (
+        "UPDATE {schema}.published_versions SET successor_fingerprint = %s, "
+        "lifecycle_state = CASE WHEN lifecycle_state = 'active' THEN "
+        "lifecycle_state ELSE 'superseded' END WHERE scope_namespace = %s "
+        "AND bundle_id = %s AND bundle_fingerprint = %s"
+    ),
+    "insert_supersession_edge": (
+        "INSERT INTO {schema}.supersession_edges (scope_namespace, bundle_id, "
+        "predecessor_fingerprint, successor_fingerprint, created_at) "
+        "VALUES (%s, %s, %s, %s, %s)"
+    ),
+    "read_published_version": (
+        "SELECT model_version, lifecycle_state, predecessor_fingerprint, "
+        "successor_fingerprint, audit_id, published_at FROM "
+        "{schema}.published_versions WHERE scope_namespace = %s "
+        "AND bundle_id = %s AND bundle_fingerprint = %s"
+    ),
+    "list_published_versions": (
+        "SELECT bundle_fingerprint, model_version, lifecycle_state, "
+        "predecessor_fingerprint, successor_fingerprint, audit_id, published_at "
+        "FROM {schema}.published_versions WHERE scope_namespace = %s "
+        "AND bundle_id = %s ORDER BY published_at, model_version"
+    ),
+    "set_published_version_state": (
+        "UPDATE {schema}.published_versions SET lifecycle_state = %s "
+        "WHERE scope_namespace = %s AND bundle_id = %s "
+        "AND bundle_fingerprint = %s"
     ),
     "upsert_bundle_pointer": (
         "INSERT INTO {schema}.bundle_pointers ("
@@ -511,7 +617,7 @@ class PostgreSQLSemanticCatalog:
                     with contextlib.suppress(Exception):
                         conn.rollback()
                     raise
-        except SemanticCatalogError:
+        except (DraftRevisionConflict, SemanticCatalogError):
             raise
         except Exception as error:
             # Connection acquisition (pool timeouts, unreachable backends)
@@ -720,6 +826,41 @@ class PostgreSQLSemanticCatalog:
                 cause=error,
             ) from error
 
+    def _draft_from_envelope(self, envelope: CatalogEnvelope) -> AssemblyDraft:
+        try:
+            return AssemblyDraft.model_validate(envelope.payload)
+        except ValidationError as error:
+            raise SemanticCatalogError(
+                SemanticCatalogErrorCode.ENVELOPE_REJECTED,
+                "persisted assembly draft failed model reconstruction",
+                details={"cause_type": "ValidationError"},
+                cause=error,
+            ) from error
+
+    def _manifest_from_envelope(
+        self, envelope: CatalogEnvelope
+    ) -> AcceptedAssertionManifest:
+        try:
+            return AcceptedAssertionManifest.model_validate(envelope.payload)
+        except ValidationError as error:
+            raise SemanticCatalogError(
+                SemanticCatalogErrorCode.ENVELOPE_REJECTED,
+                "persisted accepted assertion manifest failed reconstruction",
+                details={"cause_type": "ValidationError"},
+                cause=error,
+            ) from error
+
+    def _audit_from_envelope(self, envelope: CatalogEnvelope) -> PublishAuditRecord:
+        try:
+            return PublishAuditRecord.model_validate(envelope.payload)
+        except ValidationError as error:
+            raise SemanticCatalogError(
+                SemanticCatalogErrorCode.ENVELOPE_REJECTED,
+                "persisted publish audit failed reconstruction",
+                details={"cause_type": "ValidationError"},
+                cause=error,
+            ) from error
+
     def _bundle_from_envelope(self, envelope: CatalogEnvelope) -> SemanticModelBundle:
         try:
             bundle = SemanticModelBundle(**envelope.payload)
@@ -730,12 +871,6 @@ class PostgreSQLSemanticCatalog:
                 details={"cause_type": "ValidationError"},
                 cause=error,
             ) from error
-        if bundle.fingerprint != envelope.fingerprint:
-            raise SemanticCatalogError(
-                SemanticCatalogErrorCode.FINGERPRINT_MISMATCH,
-                "persisted bundle fingerprint does not match its envelope",
-                details={"cause_type": "BundleFingerprintMismatch"},
-            )
         validation = validate_bundle(
             bundle, supported_schema_versions=(BUNDLE_SCHEMA_VERSION,)
         )
@@ -1097,21 +1232,132 @@ class PostgreSQLSemanticCatalog:
             )
         return self._proposal_set_from_envelope(envelope)
 
+    # -- assembly drafts -------------------------------------------------
+
+    def create(
+        self,
+        draft: AssemblyDraft,
+        *,
+        tenant_scope_fingerprint: str,
+    ) -> None:
+        """Persist a new tenant-scoped assembly draft."""
+        namespace = _namespace(tenant_scope_fingerprint)
+        payload = draft.file_payload()
+        envelope = self._encode(
+            ArtifactKind.ASSEMBLY_DRAFT,
+            payload,
+            sha256_fingerprint(payload),
+        )
+        with self._transaction() as conn:
+            cursor = self._execute(
+                conn,
+                "insert_assembly_draft",
+                (
+                    namespace,
+                    draft.draft_id,
+                    draft.bundle_id,
+                    draft.source_id,
+                    draft.draft_revision,
+                    draft.state.value,
+                    ENVELOPE_SCHEMA_VERSION,
+                    envelope,
+                    self._now_fn(),
+                ),
+            )
+            if cursor.rowcount == 0:
+                raise ValueError(f"assembly draft '{draft.draft_id}' already exists")
+
+    def get_draft(
+        self,
+        draft_id: str,
+        *,
+        tenant_scope_fingerprint: str,
+    ) -> AssemblyDraft | None:
+        """Load a tenant-scoped assembly draft by opaque identifier."""
+        namespace = _namespace(tenant_scope_fingerprint)
+        with self._transaction() as conn:
+            row = self._execute(
+                conn,
+                "read_assembly_draft",
+                (namespace, draft_id),
+            ).fetchone()
+            if row is None:
+                return None
+            envelope = self._decode(
+                row["envelope"],
+                ArtifactKind.ASSEMBLY_DRAFT,
+                row_schema_version=row["schema_version"],
+            )
+        draft = self._draft_from_envelope(envelope)
+        if draft.draft_id != draft_id or draft.draft_revision != int(row["draft_revision"]):
+            raise SemanticCatalogError(
+                SemanticCatalogErrorCode.ENVELOPE_REJECTED,
+                "persisted assembly draft metadata does not match its envelope",
+                details={"cause_type": "DraftMetadataMismatch"},
+            )
+        return draft
+
+    def replace(
+        self,
+        draft: AssemblyDraft,
+        *,
+        expected_revision: int,
+        tenant_scope_fingerprint: str,
+    ) -> None:
+        """Replace a draft only when its persisted revision matches."""
+        if draft.draft_revision != expected_revision + 1:
+            raise DraftRevisionConflict(
+                expected=expected_revision + 1,
+                actual=draft.draft_revision,
+            )
+        namespace = _namespace(tenant_scope_fingerprint)
+        payload = draft.file_payload()
+        envelope = self._encode(
+            ArtifactKind.ASSEMBLY_DRAFT,
+            payload,
+            sha256_fingerprint(payload),
+        )
+        with self._transaction() as conn:
+            cursor = self._execute(
+                conn,
+                "replace_assembly_draft",
+                (
+                    draft.bundle_id,
+                    draft.source_id,
+                    draft.draft_revision,
+                    draft.state.value,
+                    ENVELOPE_SCHEMA_VERSION,
+                    envelope,
+                    self._now_fn(),
+                    namespace,
+                    draft.draft_id,
+                    expected_revision,
+                ),
+            )
+            if cursor.rowcount == 0:
+                current = self._execute(
+                    conn,
+                    "read_assembly_draft",
+                    (namespace, draft.draft_id),
+                ).fetchone()
+                actual = -1 if current is None else int(current["draft_revision"])
+                raise DraftRevisionConflict(expected=expected_revision, actual=actual)
+
     # -- bundles ----------------------------------------------------------
 
     def publish(
         self,
         bundle: SemanticModelBundle,
         *,
+        accepted_assertion_manifest: AcceptedAssertionManifest | None = None,
+        audit: PublishAuditRecord | None = None,
         production: ProductionActivationContext | None = None,
         tenant_scope_fingerprint: str | None = None,
+        draft: AssemblyDraft | None = None,
+        expected_revision: int | None = None,
+        idempotency_key: str | None = None,
     ) -> BundleCatalogOutcome:
-        """Validate and publish one immutable Bundle version.
-
-        Publication is idempotent: re-publishing the same version with the
-        same fingerprint succeeds, while a different fingerprint for an
-        existing version conflicts.
-        """
+        """Atomically publish a Bundle and all supplied lifecycle records."""
         result = validate_bundle(
             bundle,
             supported_schema_versions=(BUNDLE_SCHEMA_VERSION,),
@@ -1123,13 +1369,159 @@ class PostgreSQLSemanticCatalog:
             check = production.check()
             if not check.allowed:
                 return _failure_from_activation_check(check)
+        if accepted_assertion_manifest is not None and (
+            accepted_assertion_manifest.bundle_id != bundle.bundle_id
+            or accepted_assertion_manifest.bundle_fingerprint != bundle.fingerprint
+        ):
+            return _failure(
+                "rejected",
+                "manifest_mismatch",
+                "accepted assertion manifest does not match the published bundle",
+            )
+        if audit is not None and (
+            audit.bundle_id != bundle.bundle_id
+            or audit.bundle_fingerprint != bundle.fingerprint
+        ):
+            return _failure(
+                "rejected",
+                "audit_mismatch",
+                "publish audit does not match the published bundle",
+            )
+        if (draft is None) != (expected_revision is None):
+            raise ValueError("draft and expected_revision must be supplied together")
+        if idempotency_key is not None and (
+            not idempotency_key or len(idempotency_key) > 256
+        ):
+            raise ValueError("idempotency_key must be a bounded non-empty string")
         namespace = _namespace(tenant_scope_fingerprint)
         now = self._now_fn()
+        bundle_payload = bundle.file_payload()
         envelope = self._encode(
-            ArtifactKind.BUNDLE, bundle.canonical_payload(), bundle.fingerprint
+            ArtifactKind.BUNDLE,
+            bundle_payload,
+            sha256_fingerprint(bundle_payload),
         )
+        manifest_envelope = None
+        if accepted_assertion_manifest is not None:
+            manifest_payload = accepted_assertion_manifest.canonical_payload()
+            manifest_envelope = self._encode(
+                ArtifactKind.ACCEPTED_ASSERTION_MANIFEST,
+                manifest_payload,
+                sha256_fingerprint(manifest_payload),
+            )
+        audit_envelope = None
+        if audit is not None:
+            audit_payload = audit.safe_payload()
+            audit_envelope = self._encode(
+                ArtifactKind.PUBLISH_AUDIT,
+                audit_payload,
+                sha256_fingerprint(audit_payload),
+            )
         with self._transaction() as conn:
-            cursor = self._execute(
+            if draft is not None:
+                persisted = self._execute(
+                    conn,
+                    "lock_assembly_draft",
+                    (namespace, draft.draft_id),
+                ).fetchone()
+                if persisted is None:
+                    return _failure(
+                        "conflict",
+                        "draft_not_found",
+                        "assembly draft is not persisted in this tenant scope",
+                    )
+                if int(persisted["draft_revision"]) != expected_revision:
+                    return _failure(
+                        "conflict",
+                        "draft_revision_conflict",
+                        "assembly draft revision changed before publication",
+                    )
+                persisted_envelope = self._decode(
+                    persisted["envelope"],
+                    ArtifactKind.ASSEMBLY_DRAFT,
+                    row_schema_version=persisted["schema_version"],
+                )
+                persisted_draft = self._draft_from_envelope(persisted_envelope)
+                if persisted_draft != draft:
+                    return _failure(
+                        "conflict",
+                        "draft_changed",
+                        "assembly draft content changed before publication",
+                    )
+            self._execute(
+                conn,
+                "lock_publication_series",
+                (namespace, bundle.bundle_id),
+            )
+            if idempotency_key is not None:
+                idempotent = self._execute(
+                    conn,
+                    "read_publish_by_idempotency_key",
+                    (namespace, idempotency_key),
+                ).fetchone()
+                if idempotent is not None and (
+                    idempotent["bundle_id"] != bundle.bundle_id
+                    or idempotent["bundle_fingerprint"] != bundle.fingerprint
+                ):
+                    return _failure(
+                        "conflict",
+                        "idempotency_key_reused",
+                        "idempotency key is already bound to other semantic content",
+                    )
+            existing = self._execute(
+                conn,
+                "read_publication_by_fingerprint",
+                (namespace, bundle.bundle_id, bundle.fingerprint),
+            ).fetchone()
+            if existing is not None:
+                existing_envelope = self._decode(
+                    existing["envelope"],
+                    ArtifactKind.BUNDLE,
+                    row_schema_version=existing["schema_version"],
+                )
+                existing_bundle = self._bundle_from_envelope(existing_envelope)
+                existing_audit = self._read_publish_audit(
+                    conn, namespace, bundle.bundle_id, bundle.fingerprint
+                )
+                version_record = self._execute(
+                    conn,
+                    "read_published_version",
+                    (namespace, bundle.bundle_id, bundle.fingerprint),
+                ).fetchone()
+                return _success(
+                    "reused",
+                    existing_bundle,
+                    audit_reference=(
+                        existing_audit.audit_id if existing_audit is not None else None
+                    ),
+                    superseded_fingerprint=(
+                        version_record["predecessor_fingerprint"]
+                        if version_record is not None
+                        else None
+                    ),
+                    idempotency_status=PublishIdempotencyStatus.REUSED,
+                )
+            version_match = self._execute(
+                conn,
+                "read_publication_fingerprint",
+                (namespace, bundle.bundle_id, bundle.model_version),
+            ).fetchone()
+            if version_match is not None:
+                return _failure(
+                    "conflict",
+                    "version_exists",
+                    f"bundle '{bundle.bundle_id}' version "
+                    f"'{bundle.model_version}' is already published",
+                )
+            predecessor = self._execute(
+                conn,
+                "read_latest_version",
+                (namespace, bundle.bundle_id),
+            ).fetchone()
+            predecessor_fingerprint = (
+                predecessor["bundle_fingerprint"] if predecessor is not None else None
+            )
+            self._execute(
                 conn,
                 "insert_publication",
                 (
@@ -1142,19 +1534,71 @@ class PostgreSQLSemanticCatalog:
                     now,
                 ),
             )
-            if cursor.rowcount == 0:
-                existing = self._execute(
+            if manifest_envelope is not None:
+                self._execute(
                     conn,
-                    "read_publication_fingerprint",
-                    (namespace, bundle.bundle_id, bundle.model_version),
-                ).fetchone()
-                if existing is None or existing["bundle_fingerprint"] != bundle.fingerprint:
-                    return _failure(
-                        "conflict",
-                        "version_exists",
-                        f"bundle '{bundle.bundle_id}' version "
-                        f"'{bundle.model_version}' is already published",
-                    )
+                    "insert_accepted_manifest",
+                    (
+                        namespace,
+                        bundle.bundle_id,
+                        bundle.fingerprint,
+                        ENVELOPE_SCHEMA_VERSION,
+                        manifest_envelope,
+                        now,
+                    ),
+                )
+            if audit_envelope is not None and audit is not None:
+                self._execute(
+                    conn,
+                    "insert_publish_audit",
+                    (
+                        namespace,
+                        bundle.bundle_id,
+                        bundle.fingerprint,
+                        audit.audit_id,
+                        idempotency_key,
+                        ENVELOPE_SCHEMA_VERSION,
+                        audit_envelope,
+                        now,
+                    ),
+                )
+            self._execute(
+                conn,
+                "insert_published_version",
+                (
+                    namespace,
+                    bundle.bundle_id,
+                    bundle.fingerprint,
+                    bundle.model_version,
+                    PublishedVersionState.AVAILABLE.value,
+                    predecessor_fingerprint,
+                    None,
+                    audit.audit_id if audit is not None else None,
+                    now,
+                ),
+            )
+            if predecessor_fingerprint is not None:
+                self._execute(
+                    conn,
+                    "update_version_successor",
+                    (
+                        bundle.fingerprint,
+                        namespace,
+                        bundle.bundle_id,
+                        predecessor_fingerprint,
+                    ),
+                )
+                self._execute(
+                    conn,
+                    "insert_supersession_edge",
+                    (
+                        namespace,
+                        bundle.bundle_id,
+                        predecessor_fingerprint,
+                        bundle.fingerprint,
+                        now,
+                    ),
+                )
             self._insert_event(
                 conn,
                 "bundle_published",
@@ -1162,22 +1606,55 @@ class PostgreSQLSemanticCatalog:
                 namespace=namespace,
                 occurred_at=now,
             )
-        return _success("published", bundle)
+        return _success(
+            "published",
+            bundle,
+            audit_reference=audit.audit_id if audit is not None else None,
+            superseded_fingerprint=predecessor_fingerprint,
+            idempotency_status=PublishIdempotencyStatus.CREATED,
+        )
 
+    @overload
+    def get(
+        self,
+        draft_id: str,
+        /,
+        *,
+        tenant_scope_fingerprint: str,
+    ) -> AssemblyDraft | None: ...
+
+    @overload
     def get(
         self,
         bundle_id: str,
         version: str,
+        /,
         *,
         tenant_scope_fingerprint: str | None = None,
-    ) -> SemanticModelBundle | None:
-        """The published Bundle with the given id and version, or ``None``."""
+    ) -> SemanticModelBundle | None: ...
+
+    def get(
+        self,
+        bundle_or_draft_id: str,
+        version: str | None = None,
+        /,
+        *,
+        tenant_scope_fingerprint: str | None = None,
+    ) -> AssemblyDraft | SemanticModelBundle | None:
+        """Load a draft by id or a published Bundle by id and version."""
+        if version is None:
+            if tenant_scope_fingerprint is None:
+                raise ValueError("draft reads require tenant_scope_fingerprint")
+            return self.get_draft(
+                bundle_or_draft_id,
+                tenant_scope_fingerprint=tenant_scope_fingerprint,
+            )
         namespace = _namespace(tenant_scope_fingerprint)
         with self._transaction() as conn:
             row = self._execute(
                 conn,
                 "read_publication",
-                (namespace, bundle_id, version),
+                (namespace, bundle_or_draft_id, version),
             ).fetchone()
             if row is None:
                 return None
@@ -1185,6 +1662,178 @@ class PostgreSQLSemanticCatalog:
                 row["envelope"], ArtifactKind.BUNDLE, row_schema_version=row["schema_version"]
             )
         return self._bundle_from_envelope(envelope)
+
+    def get_by_fingerprint(
+        self,
+        bundle_id: str,
+        fingerprint: str,
+        *,
+        tenant_scope_fingerprint: str | None = None,
+    ) -> SemanticModelBundle | None:
+        """Load an immutable Bundle by semantic fingerprint."""
+        namespace = _namespace(tenant_scope_fingerprint)
+        with self._transaction() as conn:
+            row = self._execute(
+                conn,
+                "read_publication_by_fingerprint",
+                (namespace, bundle_id, fingerprint),
+            ).fetchone()
+            if row is None:
+                return None
+            envelope = self._decode(
+                row["envelope"],
+                ArtifactKind.BUNDLE,
+                row_schema_version=row["schema_version"],
+            )
+        return self._bundle_from_envelope(envelope)
+
+    def accepted_assertion_manifest(
+        self,
+        bundle_id: str,
+        fingerprint: str,
+        *,
+        tenant_scope_fingerprint: str | None = None,
+    ) -> AcceptedAssertionManifest | None:
+        """Load the immutable accepted-assertion manifest for a publication."""
+        namespace = _namespace(tenant_scope_fingerprint)
+        with self._transaction() as conn:
+            row = self._execute(
+                conn,
+                "read_accepted_manifest",
+                (namespace, bundle_id, fingerprint),
+            ).fetchone()
+            if row is None:
+                return None
+            envelope = self._decode(
+                row["envelope"],
+                ArtifactKind.ACCEPTED_ASSERTION_MANIFEST,
+                row_schema_version=row["schema_version"],
+            )
+        manifest = self._manifest_from_envelope(envelope)
+        if manifest.bundle_id != bundle_id or manifest.bundle_fingerprint != fingerprint:
+            raise SemanticCatalogError(
+                SemanticCatalogErrorCode.ENVELOPE_REJECTED,
+                "persisted manifest metadata does not match its publication",
+                details={"cause_type": "ManifestMetadataMismatch"},
+            )
+        return manifest
+
+    def _read_publish_audit(
+        self,
+        conn: Any,
+        namespace: str,
+        bundle_id: str,
+        fingerprint: str,
+    ) -> PublishAuditRecord | None:
+        row = self._execute(
+            conn,
+            "read_publish_audit",
+            (namespace, bundle_id, fingerprint),
+        ).fetchone()
+        if row is None:
+            return None
+        envelope = self._decode(
+            row["envelope"],
+            ArtifactKind.PUBLISH_AUDIT,
+            row_schema_version=row["schema_version"],
+        )
+        audit = self._audit_from_envelope(envelope)
+        if audit.bundle_id != bundle_id or audit.bundle_fingerprint != fingerprint:
+            raise SemanticCatalogError(
+                SemanticCatalogErrorCode.ENVELOPE_REJECTED,
+                "persisted audit metadata does not match its publication",
+                details={"cause_type": "AuditMetadataMismatch"},
+            )
+        return audit
+
+    def publish_audit(
+        self,
+        bundle_id: str,
+        fingerprint: str,
+        *,
+        tenant_scope_fingerprint: str | None = None,
+    ) -> PublishAuditRecord | None:
+        """Load the immutable safe audit record for a publication."""
+        namespace = _namespace(tenant_scope_fingerprint)
+        with self._transaction() as conn:
+            return self._read_publish_audit(
+                conn, namespace, bundle_id, fingerprint
+            )
+
+    def publication_records(
+        self,
+        bundle_id: str,
+        *,
+        tenant_scope_fingerprint: str | None = None,
+    ) -> tuple[BundlePublication, ...]:
+        """Return bounded publication metadata in supersession order."""
+        namespace = _namespace(tenant_scope_fingerprint)
+        records: list[BundlePublication] = []
+        with self._transaction() as conn:
+            rows = self._execute(
+                conn,
+                "list_published_versions",
+                (namespace, bundle_id),
+            ).fetchall()
+            for row in rows:
+                fingerprint = row["bundle_fingerprint"]
+                publication = self._execute(
+                    conn,
+                    "read_publication_by_fingerprint",
+                    (namespace, bundle_id, fingerprint),
+                ).fetchone()
+                if publication is None:
+                    raise SemanticCatalogError(
+                        SemanticCatalogErrorCode.ENVELOPE_REJECTED,
+                        "published version references a missing Bundle artifact",
+                        details={"cause_type": "MissingArtifact"},
+                    )
+                bundle_envelope = self._decode(
+                    publication["envelope"],
+                    ArtifactKind.BUNDLE,
+                    row_schema_version=publication["schema_version"],
+                )
+                manifest_row = self._execute(
+                    conn,
+                    "read_accepted_manifest",
+                    (namespace, bundle_id, fingerprint),
+                ).fetchone()
+                manifest = None
+                if manifest_row is not None:
+                    manifest_envelope = self._decode(
+                        manifest_row["envelope"],
+                        ArtifactKind.ACCEPTED_ASSERTION_MANIFEST,
+                        row_schema_version=manifest_row["schema_version"],
+                    )
+                    manifest = self._manifest_from_envelope(manifest_envelope)
+                records.append(
+                    BundlePublication(
+                        bundle=self._bundle_from_envelope(bundle_envelope),
+                        accepted_assertion_manifest=manifest,
+                        audit=self._read_publish_audit(
+                            conn, namespace, bundle_id, fingerprint
+                        ),
+                        state=PublishedVersionState(row["lifecycle_state"]),
+                        supersession=SupersessionMetadata(
+                            predecessor_fingerprint=row["predecessor_fingerprint"],
+                            successor_fingerprint=row["successor_fingerprint"],
+                        ),
+                        published_at=_parse_dt(row["published_at"]),
+                    )
+                )
+        return tuple(records)
+
+    def supersession_chain(
+        self,
+        bundle_id: str,
+        *,
+        tenant_scope_fingerprint: str | None = None,
+    ) -> tuple[BundlePublication, ...]:
+        """Return the predecessor-to-successor publication chain."""
+        return self.publication_records(
+            bundle_id,
+            tenant_scope_fingerprint=tenant_scope_fingerprint,
+        )
 
     def versions(
         self,
@@ -1297,6 +1946,16 @@ class PostgreSQLSemanticCatalog:
                 conn, "lock_bundle_pointer", (namespace, bundle_id)
             ).fetchone()
             if pointer is not None and pointer["model_version"] == version:
+                self._execute(
+                    conn,
+                    "set_published_version_state",
+                    (
+                        PublishedVersionState.ACTIVE.value,
+                        namespace,
+                        bundle_id,
+                        bundle.fingerprint,
+                    ),
+                )
                 return _success("activated", bundle)
             position = int(
                 self._execute(
@@ -1318,6 +1977,16 @@ class PostgreSQLSemanticCatalog:
                         now,
                     ),
                 )
+                self._execute(
+                    conn,
+                    "set_published_version_state",
+                    (
+                        PublishedVersionState.SUPERSEDED.value,
+                        namespace,
+                        bundle_id,
+                        pointer["bundle_fingerprint"],
+                    ),
+                )
             self._execute(
                 conn,
                 "upsert_bundle_pointer",
@@ -1329,6 +1998,16 @@ class PostgreSQLSemanticCatalog:
                     ENVELOPE_SCHEMA_VERSION,
                     now,
                     position,
+                ),
+            )
+            self._execute(
+                conn,
+                "set_published_version_state",
+                (
+                    PublishedVersionState.ACTIVE.value,
+                    namespace,
+                    bundle_id,
+                    bundle.fingerprint,
                 ),
             )
             trim_below = position - self._config.max_bundle_history + 1
@@ -1346,6 +2025,33 @@ class PostgreSQLSemanticCatalog:
                 occurred_at=now,
             )
         return _success("activated", bundle)
+
+    def activate_fingerprint(
+        self,
+        bundle_id: str,
+        fingerprint: str,
+        *,
+        production: ProductionActivationContext | None = None,
+        tenant_scope_fingerprint: str | None = None,
+    ) -> BundleCatalogOutcome:
+        """Atomically activate a complete publication by semantic fingerprint."""
+        bundle = self.get_by_fingerprint(
+            bundle_id,
+            fingerprint,
+            tenant_scope_fingerprint=tenant_scope_fingerprint,
+        )
+        if bundle is None:
+            return _failure(
+                "not_found",
+                "bundle_not_found",
+                f"no published bundle '{bundle_id}' fingerprint '{fingerprint}' exists",
+            )
+        return self.activate(
+            bundle_id,
+            bundle.model_version,
+            production=production,
+            tenant_scope_fingerprint=tenant_scope_fingerprint,
+        )
 
     def rollback(
         self,
@@ -1424,6 +2130,26 @@ class PostgreSQLSemanticCatalog:
             )
             self._execute(
                 conn,
+                "set_published_version_state",
+                (
+                    PublishedVersionState.SUPERSEDED.value,
+                    namespace,
+                    bundle_id,
+                    pointer["bundle_fingerprint"],
+                ),
+            )
+            self._execute(
+                conn,
+                "set_published_version_state",
+                (
+                    PublishedVersionState.ACTIVE.value,
+                    namespace,
+                    bundle_id,
+                    target.fingerprint,
+                ),
+            )
+            self._execute(
+                conn,
                 "delete_history_top",
                 (namespace, bundle_id, top["position"]),
             )
@@ -1435,6 +2161,96 @@ class PostgreSQLSemanticCatalog:
                 occurred_at=now,
             )
         return _success("rolled_back", target)
+
+    def rollback_to_fingerprint(
+        self,
+        bundle_id: str,
+        fingerprint: str,
+        *,
+        production: ProductionActivationContext | None = None,
+        tenant_scope_fingerprint: str | None = None,
+    ) -> BundleCatalogOutcome:
+        """Change only the active pointer to a published semantic fingerprint."""
+        active = self.active(
+            bundle_id,
+            tenant_scope_fingerprint=tenant_scope_fingerprint,
+        )
+        if active is None:
+            return _failure(
+                "not_found",
+                "bundle_not_active",
+                f"bundle '{bundle_id}' has no active version",
+            )
+        target = self.get_by_fingerprint(
+            bundle_id,
+            fingerprint,
+            tenant_scope_fingerprint=tenant_scope_fingerprint,
+        )
+        if target is None:
+            return _failure(
+                "not_found",
+                "bundle_not_found",
+                f"no published bundle '{bundle_id}' fingerprint '{fingerprint}' exists",
+            )
+        if active.fingerprint == fingerprint:
+            return _success("rolled_back", target)
+        outcome = self.activate_fingerprint(
+            bundle_id,
+            fingerprint,
+            production=production,
+            tenant_scope_fingerprint=tenant_scope_fingerprint,
+        )
+        if not outcome.success:
+            return outcome
+        return _success("rolled_back", target)
+
+    def set_version_state(
+        self,
+        bundle_id: str,
+        fingerprint: str,
+        state: PublishedVersionState,
+        *,
+        tenant_scope_fingerprint: str | None = None,
+    ) -> BundleCatalogOutcome:
+        """Persist operator-managed deprecation or retirement metadata."""
+        if state not in {
+            PublishedVersionState.DEPRECATED,
+            PublishedVersionState.RETIRED,
+        }:
+            raise ValueError("state must be deprecated or retired")
+        bundle = self.get_by_fingerprint(
+            bundle_id,
+            fingerprint,
+            tenant_scope_fingerprint=tenant_scope_fingerprint,
+        )
+        if bundle is None:
+            return _failure(
+                "not_found", "bundle_not_found", "published bundle was not found"
+            )
+        active = self.active(
+            bundle_id,
+            tenant_scope_fingerprint=tenant_scope_fingerprint,
+        )
+        if (
+            state is PublishedVersionState.RETIRED
+            and active is not None
+            and active.fingerprint == fingerprint
+        ):
+            return _failure(
+                "rejected",
+                "active_bundle_retirement",
+                "the active bundle cannot be retired",
+            )
+        namespace = _namespace(tenant_scope_fingerprint)
+        with self._transaction() as conn:
+            self._execute(
+                conn,
+                "set_published_version_state",
+                (state.value, namespace, bundle_id, fingerprint),
+            )
+        if state is PublishedVersionState.DEPRECATED:
+            return _success("deprecated", bundle)
+        return _success("retired", bundle)
 
     # -- maintenance ------------------------------------------------------
 
