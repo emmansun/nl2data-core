@@ -67,6 +67,7 @@ from nl2data_core.planning.validation import AuthorizedView
 from nl2data_core.verification import (
     PRODUCTION_POLICY,
     AggregateTotalContract,
+    ExpectedScalarKind,
     OutcomeAssertion,
     RowCountAssertion,
     ScalarEqualsAssertion,
@@ -370,7 +371,10 @@ def _demo_verification_plan(*, expected_total: str = "690") -> VerificationPlan:
                     ScalarEqualsAssertion(
                         assertion_id="top-order",
                         selection_id="order",
-                        expected=TaggedExpectedScalar(kind="int", value=24),
+                        expected=TaggedExpectedScalar(
+                            kind=ExpectedScalarKind.INT,
+                            value=24,
+                        ),
                     ),
                 ),
             ),
@@ -385,7 +389,8 @@ def _demo_verification_plan(*, expected_total: str = "690") -> VerificationPlan:
                         assertion_id="top-three-total",
                         selection_id="amount",
                         expected=TaggedExpectedScalar(
-                            kind="decimal", value=expected_total
+                            kind=ExpectedScalarKind.DECIMAL,
+                            value=expected_total,
                         ),
                     ),
                 ),
