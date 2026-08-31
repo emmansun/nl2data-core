@@ -39,6 +39,13 @@ The architecture answers three questions for every request:
 | Optional workflow state backend | `nl2data_workflow_postgres` (sibling distribution) | Separate package |
 | Optional Memory backend | `nl2data_memory_redis` (sibling distribution) | Separate package |
 | Optional model provider | `nl2data_openai` (sibling distribution) | Separate package |
+| Optional admin control plane | `nl2data_admin_service` (sibling distribution) | Separate package |
+
+Semantic Assembly YAML enters through a distinct bounded authoring loader. It
+normalizes semantic content into governed models and derives pending assertions;
+the trusted Admin boundary supplies author and draft identity separately. The
+authoring format never serves as a review, approval, publication, or activation
+authority. See [Semantic Assembly YAML authoring](../guides/semantic-assembly-authoring.md).
 
 ## Boundary map
 

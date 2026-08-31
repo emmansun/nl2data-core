@@ -24,7 +24,6 @@ from nl2data_core.bundles.models import (
     SemanticModelBundle,
     SemanticSourceReference,
 )
-from nl2data_core.views import SemanticEntityDescriptor
 from nl2data_core.metadata.catalog import SemanticSnapshotCatalog
 from nl2data_core.metadata.models import (
     MetadataConfidence,
@@ -35,6 +34,7 @@ from nl2data_core.metadata.models import (
     MetadataSourceReference,
 )
 from nl2data_core.metadata.proposals import SemanticProposal, SemanticProposalSet
+from nl2data_core.views import SemanticEntityDescriptor
 
 from nl2data_admin_service.auth import AuthContext, Permission
 from nl2data_admin_service.config import AdminServiceConfig

@@ -217,6 +217,59 @@ class BundleValidationResult(BaseModel):
     issues: tuple[ErrorDetail, ...] = Field(default_factory=tuple, max_length=64)
 
 
+class AuthoringDocumentCommand(BaseModel):
+    """Bounded semantic authoring document submitted for validation."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    document: str = Field(min_length=1, max_length=1_048_576)
+
+
+class ImportAuthoringCommand(AuthoringDocumentCommand):
+    """Bounded authoring import with a host-selected draft identity."""
+
+    draft_id: str = Field(pattern=_IDENTIFIER_PATTERN)
+
+
+class AuthoringDiagnosticDetail(BaseModel):
+    """Safe source-located authoring diagnostic without rejected values."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    code: str = Field(pattern=r"^[a-z][a-z0-9_]{0,63}$")
+    path: str = Field(min_length=1, max_length=1_024)
+    line: int | None = Field(default=None, ge=1)
+    column: int | None = Field(default=None, ge=1)
+    message: str = Field(min_length=1, max_length=_MAX_REASON_CHARS)
+
+
+class AuthoringSemanticSummary(BaseModel):
+    """Bounded semantic counts returned by authoring validation."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    bundle_id: str = Field(pattern=_IDENTIFIER_PATTERN)
+    model_version: str = Field(pattern=_IDENTIFIER_PATTERN)
+    source_id: str = Field(pattern=_IDENTIFIER_PATTERN)
+    entity_count: int = Field(ge=0, le=1_024)
+    field_count: int = Field(ge=0, le=4_096)
+    assertion_count: int = Field(ge=0, le=16_384)
+
+
+class AuthoringValidationResult(BaseModel):
+    """Bounded side-effect-free authoring validation result."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    valid: bool
+    summary: AuthoringSemanticSummary | None = None
+    diagnostics: tuple[AuthoringDiagnosticDetail, ...] = Field(
+        default_factory=tuple, max_length=100
+    )
+    issue_count: int = Field(default=0, ge=0)
+    truncated: bool = False
+
+
 class AssertionDecisionAction(StrEnum):
     """Assertion-level lifecycle commands exposed by the admin service."""
 
@@ -262,6 +315,20 @@ class AssemblyDraftSummary(BaseModel):
     pending_count: int = Field(ge=0, le=_MAX_ITEMS)
     approved_count: int = Field(ge=0, le=_MAX_ITEMS)
     rejected_count: int = Field(ge=0, le=_MAX_ITEMS)
+
+
+class AuthoringImportResult(BaseModel):
+    """Safe result of importing an authoring document as one draft."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    imported: bool
+    draft: AssemblyDraftSummary | None = None
+    diagnostics: tuple[AuthoringDiagnosticDetail, ...] = Field(
+        default_factory=tuple, max_length=100
+    )
+    issue_count: int = Field(default=0, ge=0)
+    truncated: bool = False
 
 
 class AssemblyDraftDetail(AssemblyDraftSummary):
@@ -404,6 +471,9 @@ class Capability(BaseModel):
 
     name: str
     permission: Permission
+    lifecycle_role: str | None = Field(default=None, max_length=32)
+    supported_api_versions: tuple[str, ...] = Field(default_factory=tuple, max_length=8)
+    maximum_input_size: int | None = Field(default=None, ge=1)
 
 
 class CapabilitiesResult(BaseModel):

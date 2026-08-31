@@ -30,6 +30,15 @@ from nl2data_core.assembly import create_discovery_draft as core_create_discover
 from nl2data_core.assembly import decide_assertion as core_decide_assertion
 from nl2data_core.assembly import edit_assertion as core_edit_assertion
 from nl2data_core.assembly import submit_for_review as core_submit_for_review
+from nl2data_core.assembly.authoring import (
+    AUTHORING_API_VERSION,
+    MAX_AUTHORING_BYTES,
+    SemanticAssemblyAuthoringLoader,
+    lower_authoring,
+)
+from nl2data_core.assembly.authoring import (
+    validate_authoring as core_validate_authoring,
+)
 from nl2data_core.assembly.publishing import publish_assembly
 from nl2data_core.bundles.models import SemanticModelBundle
 from nl2data_core.bundles.validation import validate_bundle as core_validate_bundle
@@ -44,6 +53,11 @@ from .dtos import (
     AssemblyDraftSummary,
     AssertionDecisionAction,
     AssertionDecisionCommand,
+    AuthoringDiagnosticDetail,
+    AuthoringDocumentCommand,
+    AuthoringImportResult,
+    AuthoringSemanticSummary,
+    AuthoringValidationResult,
     BundleDetail,
     BundleLifecycleCommand,
     BundleLifecycleResult,
@@ -57,6 +71,7 @@ from .dtos import (
     DriftStatus,
     ErrorCategory,
     ErrorDetail,
+    ImportAuthoringCommand,
     JobInfo,
     JobStatus,
     LifecycleCommand,
@@ -84,6 +99,43 @@ from .errors import (
 from .protocols import AdminServiceDependencies
 
 _F = TypeVar("_F", bound=Callable[..., Any])
+
+
+def _authoring_diagnostics(
+    diagnostics: tuple[Any, ...],
+) -> tuple[AuthoringDiagnosticDetail, ...]:
+    return tuple(
+        AuthoringDiagnosticDetail(
+            code=diagnostic.code,
+            path=diagnostic.path.render(),
+            line=diagnostic.mark.line if diagnostic.mark is not None else None,
+            column=diagnostic.mark.column if diagnostic.mark is not None else None,
+            message=diagnostic.message,
+        )
+        for diagnostic in diagnostics
+    )
+
+
+def _authoring_input_failure(
+    document: str,
+    *,
+    maximum_bytes: int,
+) -> AuthoringDiagnosticDetail | None:
+    try:
+        byte_length = len(document.encode("utf-8"))
+    except UnicodeError:
+        return AuthoringDiagnosticDetail(
+            code="invalid_encoding",
+            path="$",
+            message="The authoring document is not valid UTF-8 text.",
+        )
+    if byte_length > maximum_bytes:
+        return AuthoringDiagnosticDetail(
+            code="input_too_large",
+            path="$",
+            message="The authoring document exceeds the input limit.",
+        )
+    return None
 
 
 def _normalize_errors(method: _F) -> _F:
@@ -252,6 +304,25 @@ class AdminService:
                     Capability(name="proposal review", permission=Permission.PROPOSAL_REVIEW),
                     Capability(name="assembly read", permission=Permission.ASSEMBLY_READ),
                     Capability(name="assembly write", permission=Permission.ASSEMBLY_WRITE),
+                    Capability(
+                        name="authoring validate",
+                        permission=Permission.BUNDLE_VALIDATE,
+                        supported_api_versions=(AUTHORING_API_VERSION,),
+                        maximum_input_size=min(
+                            self._config.max_body_size_bytes,
+                            MAX_AUTHORING_BYTES,
+                        ),
+                    ),
+                    Capability(
+                        name="authoring import",
+                        permission=Permission.ASSEMBLY_WRITE,
+                        lifecycle_role=LifecycleRole.AUTHOR.value,
+                        supported_api_versions=(AUTHORING_API_VERSION,),
+                        maximum_input_size=min(
+                            self._config.max_body_size_bytes,
+                            MAX_AUTHORING_BYTES,
+                        ),
+                    ),
                     Capability(name="assembly review", permission=Permission.ASSEMBLY_REVIEW),
                     Capability(name="assembly approve", permission=Permission.ASSEMBLY_APPROVE),
                     Capability(name="assembly audit", permission=Permission.ASSEMBLY_AUDIT),
@@ -447,6 +518,86 @@ class AdminService:
     # assembly drafts
     # ------------------------------------------------------------------
     @_normalize_errors
+    def validate_authoring(
+        self,
+        command: AuthoringDocumentCommand,
+        *,
+        auth_context: AuthContext,
+    ) -> AuthoringValidationResult:
+        """Validate authoring content without touching persistence."""
+        self._check_permission(auth_context, Permission.BUNDLE_VALIDATE)
+        input_failure = _authoring_input_failure(
+            command.document,
+            maximum_bytes=min(self._config.max_body_size_bytes, MAX_AUTHORING_BYTES),
+        )
+        if input_failure is not None:
+            return AuthoringValidationResult(
+                valid=False,
+                diagnostics=(input_failure,),
+                issue_count=1,
+            )
+        parsed = SemanticAssemblyAuthoringLoader().load(command.document)
+        if parsed.model is None:
+            return AuthoringValidationResult(
+                valid=False,
+                diagnostics=_authoring_diagnostics(parsed.diagnostics),
+                issue_count=parsed.issue_count,
+                truncated=parsed.truncated,
+            )
+        self._check_source(auth_context, parsed.model.spec.source.source_id)
+        validated = core_validate_authoring(parsed.model)
+        assert validated.summary is not None
+        return AuthoringValidationResult(
+            valid=True,
+            summary=AuthoringSemanticSummary(**validated.summary.model_dump()),
+        )
+
+    @_normalize_errors
+    def import_authoring(
+        self,
+        command: ImportAuthoringCommand,
+        *,
+        auth_context: AuthContext,
+    ) -> AuthoringImportResult:
+        """Lower valid authoring content and persist through create_draft."""
+        self._check_permission(auth_context, Permission.ASSEMBLY_WRITE)
+        input_failure = _authoring_input_failure(
+            command.document,
+            maximum_bytes=min(self._config.max_body_size_bytes, MAX_AUTHORING_BYTES),
+        )
+        if input_failure is not None:
+            return AuthoringImportResult(
+                imported=False,
+                diagnostics=(input_failure,),
+                issue_count=1,
+            )
+        parsed = SemanticAssemblyAuthoringLoader().load(command.document)
+        if parsed.model is None:
+            return AuthoringImportResult(
+                imported=False,
+                diagnostics=_authoring_diagnostics(parsed.diagnostics),
+                issue_count=parsed.issue_count,
+                truncated=parsed.truncated,
+            )
+        source_id = parsed.model.spec.source.source_id
+        self._check_source(auth_context, source_id)
+        authorization = self._lifecycle_context(auth_context, source_id)
+        lowered = lower_authoring(
+            parsed.model,
+            draft_id=command.draft_id,
+            author_reference=authorization.operator_reference,
+        )
+        if lowered.draft is None:
+            return AuthoringImportResult(
+                imported=False,
+                diagnostics=_authoring_diagnostics(lowered.diagnostics),
+                issue_count=lowered.issue_count,
+                truncated=lowered.truncated,
+            )
+        created = self.create_draft(lowered.draft, auth_context=auth_context)
+        return AuthoringImportResult(imported=True, draft=created.draft)
+
+    @_normalize_errors
     def create_draft(
         self,
         draft: AssemblyDraft,
@@ -479,10 +630,13 @@ class AdminService:
                 "author_reference": authorization.operator_reference,
             }
         )
-        self._require_draft_store().create(
-            draft,
-            tenant_scope_fingerprint=auth_context.tenant_scope_fingerprint,
-        )
+        try:
+            self._require_draft_store().create(
+                draft,
+                tenant_scope_fingerprint=auth_context.tenant_scope_fingerprint,
+            )
+        except ValueError as error:
+            raise ConflictError("Assembly draft already exists") from error
         return DraftMutationResult(
             draft=_draft_to_summary(draft),
             audit_reference=authorization.operator_reference,

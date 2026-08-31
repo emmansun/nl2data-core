@@ -11,6 +11,7 @@ from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from nl2data_core.bundles.models import BundleCompatibility, SemanticSourceReference
 from nl2data_core.canonical import canonical_json, sha256_fingerprint
 from nl2data_core.views.models import validate_safe_description
 
@@ -442,8 +443,22 @@ class AssemblyDraft(BaseModel):
     source_snapshot_fingerprint: str | None = Field(
         default=None, pattern=_FINGERPRINT_PATTERN
     )
+    authoring_description: str | None = Field(
+        default=None,
+        max_length=1_024,
+    )
+    authoring_source_references: tuple[SemanticSourceReference, ...] | None = Field(
+        default=None,
+        max_length=64,
+    )
+    authoring_compatibility: BundleCompatibility | None = None
 
-    @field_validator("author_reference", "review_submitted_by", "approved_by")
+    @field_validator(
+        "author_reference",
+        "review_submitted_by",
+        "approved_by",
+        "authoring_description",
+    )
     @classmethod
     def _safe_author_reference(cls, value: str | None) -> str | None:
         return validate_safe_description(value) if value is not None else None

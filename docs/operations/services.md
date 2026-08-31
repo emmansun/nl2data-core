@@ -18,6 +18,21 @@
   public errors; configuration/authorization failures are non-retryable;
   ambiguous post-execution states are surfaced for reconciliation.
 
+## Admin semantic authoring
+
+The optional `nl2data-admin-service` package exposes transport-neutral
+`validate_authoring` and `import_authoring` operations. Hosts provide a trusted
+`AuthContext`; validation requires `bundle:validate`, while import requires
+`assembly:write` plus the Author lifecycle role. Both enforce source and tenant
+scope. The effective document size limit is the lower of 1 MiB and
+`AdminServiceConfig.max_body_size_bytes`.
+
+Validation performs no persistence. Import derives the author reference from
+the trusted context, lowers to a revision-zero draft with pending assertions,
+and uses the tenant-scoped draft store. Deployment values remain unresolved
+`env:`, `vault:`, or `file:` references. See the
+[authoring guide](../guides/semantic-assembly-authoring.md).
+
 ## PostgreSQL (shared workflow state)
 
 **Distribution**: `nl2data-workflow-postgres` (`psycopg[binary,pool]>=3.1,<4`).

@@ -27,6 +27,17 @@
 | `pending_assertions` / `draft_not_approved` | Publish attempted before assertion review and draft approval completed | Review every pending/invalidated assertion, approve the current revision, then publish that revision |
 | `manifest_mismatch` / `audit_mismatch` | Publish artifacts do not bind to the emitted Bundle fingerprint | Treat as an atomic publish rejection; inspect emitter/verifier integration and retry only after correction |
 
+## Semantic authoring errors
+
+| Symptom | Likely cause | Action |
+| --- | --- | --- |
+| `incompatible_schema` | Missing or unsupported authoring `apiVersion`/`kind` | Use `nl2data.io/semantic-assembly-authoring/v1alpha1` and `SemanticAssembly`; do not submit an internal draft envelope |
+| `unsupported_yaml` | Duplicate/non-string key, merge key, custom tag, cyclic alias, or non-finite number | Remove the unsupported YAML feature; keep the document inside the documented safe subset |
+| `structure_limit` / `input_too_large` | A parser, scalar, collection, alias, depth, or byte bound was exceeded | Split or simplify the semantic model; do not raise limits without reviewing the trust boundary |
+| `invalid_reference` | Relationship, measure, grain, source, or calculated-field reference does not resolve | Follow the diagnostic `$` path and one-based location; define one unique target before importing |
+| `unsafe_content` | Description or deployment binding resembles executable or credential material | Keep descriptions semantic-only and use an unresolved `env:`, `vault:`, or `file:` reference |
+| `unsupported_export` | Draft has review state, edits, unsupported assertions, or lacks authoring-origin metadata | Export the original authoring model or return the draft to a losslessly representable revision-zero state |
+
 ## Stale snapshots and drift
 
 | Symptom | Likely cause | Action |

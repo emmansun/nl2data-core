@@ -21,21 +21,23 @@ from nl2data_core.adapters.sql.adapter import SqlQueryAdapter
 from nl2data_core.adapters.sql.compile import compile_sql
 from nl2data_core.ai.fake import FakeModelProvider
 from nl2data_core.assembly import (
-    AssertionProvenance,
-    AssertionProvenanceKind,
-    AssertionType,
     LifecycleAuthorizationContext,
     LifecycleAuthorizationDecision,
     LifecycleRole,
     ReviewState,
-    SemanticAssertion,
     SeparationOfDutiesMode,
     approve_draft,
-    create_manual_draft,
     decide_assertion,
     evaluate_separation_of_duties,
     submit_for_review,
 )
+from nl2data_core.assembly.authoring import (
+    SemanticAssemblyAuthoring,
+    SemanticAssemblyAuthoringLoader,
+    lower_authoring,
+    validate_authoring,
+)
+from nl2data_core.assembly.authoring.validation import normalize_authoring
 from nl2data_core.assembly.publishing import (
     ManifestBundleVerification,
     publish_assembly,
@@ -45,7 +47,6 @@ from nl2data_core.bundles import (
     BundleQualityStatus,
     InMemorySemanticBundleCatalog,
     SemanticModelBundle,
-    SemanticSourceReference,
 )
 from nl2data_core.compilation.contract import CompilationContext
 from nl2data_core.fixtures import SQLiteFixtureProfile
@@ -61,11 +62,6 @@ from nl2data_core.planning.ir.models import (
 )
 from nl2data_core.planning.models import ColumnBinding, EntityBinding, PhysicalBinding
 from nl2data_core.planning.validation import AuthorizedView
-from nl2data_core.views import (
-    SemanticDescriptor,
-    SemanticEntityDescriptor,
-    SemanticFieldDescriptor,
-)
 from nl2data_core.workflow.models import WorkflowState, WorkflowStatus
 from nl2data_core.workflow.runner import StaticPlanResolver
 from nl2data_core.workflow.sqlite_store import SQLiteStateStore
@@ -288,35 +284,20 @@ class _DemoLifecycleAuthorizer:
 
 
 class _DemoBundleEmitter:
+    def __init__(self, authoring: SemanticAssemblyAuthoring) -> None:
+        self._authoring = authoring
+
     def emit(self, draft: object) -> SemanticModelBundle:
-        descriptor = SemanticDescriptor(
-            descriptor_id="sales_descriptor",
-            version=1,
-            source_id="sales",
-            entities=(
-                SemanticEntityDescriptor(
-                    entity_id="order",
-                    label="Order",
-                    fields=(
-                        SemanticFieldDescriptor(
-                            field_id="amount",
-                            label="Amount",
-                            data_type="number",
-                        ),
-                    ),
-                ),
-            ),
-        )
+        normalized, diagnostics = normalize_authoring(self._authoring)
+        assert normalized is not None, diagnostics
         return SemanticModelBundle(
-            bundle_id="sales_model",
-            model_version="1.0.0",
-            descriptor=descriptor,
-            sources=(
-                SemanticSourceReference(
-                    reference_id="sales-source",
-                    source_id="sales",
-                ),
-            ),
+            bundle_id=self._authoring.metadata.bundle_id,
+            model_version=self._authoring.metadata.model_version,
+            descriptor=normalized.descriptor,
+            measures=normalized.measures,
+            grains=normalized.grains,
+            sources=normalized.source_references,
+            compatibility=self._authoring.spec.compatibility,
             provenance=BundleProvenance(
                 owner_reference="demo-owner",
                 quality=BundleQualityStatus.APPROVED,
@@ -339,24 +320,22 @@ def _lifecycle_context(reference: str, role: LifecycleRole) -> LifecycleAuthoriz
 
 
 def run_semantic_assembly_demo() -> str:
-    """Publish and activate one reviewed manual assembly; return its fingerprint."""
-    assertion = SemanticAssertion.create(
-        type=AssertionType.ENTITY,
-        payload={
-            "descriptor_id": "sales_descriptor",
-            "entity_id": "order",
-            "label": "Order",
-        },
-        provenance=AssertionProvenance(kind=AssertionProvenanceKind.MANUAL),
+    """Validate, import, review, publish, and activate the authoring example."""
+    authoring_path = Path(__file__).parents[1] / "authoring" / "sales-semantic-assembly.yaml"
+    parsed = SemanticAssemblyAuthoringLoader().load(
+        authoring_path.read_text(encoding="utf-8")
     )
-    draft = create_manual_draft(
+    assert parsed.loaded and parsed.model is not None, parsed.diagnostics
+    validation = validate_authoring(parsed.model)
+    assert validation.valid, validation.diagnostics
+    imported = lower_authoring(
+        parsed.model,
         draft_id="sales-demo-draft",
-        bundle_id="sales_model",
-        source_id="sales",
-        model_version="1.0.0",
         author_reference="demo-author",
-        assertions=(assertion,),
     )
+    assert imported.draft is not None, imported.diagnostics
+    draft = imported.draft
+    print("validated authoring assertions:", len(draft.assertions))
     authorizer = _DemoLifecycleAuthorizer()
     draft = submit_for_review(
         draft,
@@ -364,14 +343,15 @@ def run_semantic_assembly_demo() -> str:
         authorization=_lifecycle_context("demo-author", LifecycleRole.AUTHOR),
         authorizer=authorizer,
     ).draft
-    draft = decide_assertion(
-        draft,
-        assertion_id=assertion.id,
-        decision=ReviewState.APPROVED,
-        expected_revision=draft.draft_revision,
-        authorization=_lifecycle_context("demo-reviewer", LifecycleRole.REVIEWER),
-        authorizer=authorizer,
-    ).draft
+    for assertion in draft.assertions:
+        draft = decide_assertion(
+            draft,
+            assertion_id=assertion.id,
+            decision=ReviewState.APPROVED,
+            expected_revision=draft.draft_revision,
+            authorization=_lifecycle_context("demo-reviewer", LifecycleRole.REVIEWER),
+            authorizer=authorizer,
+        ).draft
     draft = approve_draft(
         draft,
         expected_revision=draft.draft_revision,
@@ -392,7 +372,7 @@ def run_semantic_assembly_demo() -> str:
         authorization=_lifecycle_context("demo-publisher", LifecycleRole.PUBLISHER),
         authorizer=authorizer,
         separation=separation,
-        emitter=_DemoBundleEmitter(),
+        emitter=_DemoBundleEmitter(parsed.model),
         verifier=_DemoManifestVerifier(),
         catalog=catalog,
     )

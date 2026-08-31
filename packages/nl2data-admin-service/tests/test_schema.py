@@ -12,9 +12,13 @@ def test_schema_builds_for_contract_version() -> None:
     assert schema.contract_version == "v1"
     assert "ReviewCommand" in schema.commands
     assert "BundleLifecycleCommand" in schema.commands
+    assert "AuthoringDocumentCommand" in schema.commands
+    assert "ImportAuthoringCommand" in schema.commands
     assert "SnapshotDetail" in schema.results
     assert "BundleDetail" in schema.results
     assert "BundleValidationResult" in schema.results
+    assert "AuthoringValidationResult" in schema.results
+    assert "AuthoringImportResult" in schema.results
 
 
 def test_schema_validation_passes() -> None:

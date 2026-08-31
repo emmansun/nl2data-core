@@ -22,7 +22,7 @@ public facade: `import nl2data`.
 | Section | Intended reader | Prerequisites | Start here |
 | --- | --- | --- | --- |
 | [Getting started](getting-started/installation.md) | Application developers who want to install and run a first query | Python 3.11+ and `pip` | [Installation](getting-started/installation.md) → [Quickstart](getting-started/quickstart.md) |
-| [Guides](guides/composition-and-query-lifecycle.md) | Application integrators composing the library | Getting started | [Composition and query lifecycle](guides/composition-and-query-lifecycle.md) · [Metadata to Bundle](guides/metadata-to-bundle.md) · [Mainflow demo](guides/mainflow-demo.md) |
+| [Guides](guides/composition-and-query-lifecycle.md) | Application integrators composing the library | Getting started | [Composition and query lifecycle](guides/composition-and-query-lifecycle.md) · [Metadata to Bundle](guides/metadata-to-bundle.md) · [Semantic authoring](guides/semantic-assembly-authoring.md) · [Mainflow demo](guides/mainflow-demo.md) |
 | [Architecture](architecture/overview.md) | Architects, security reviewers, and maintainers | Basic knowledge of the public API | [Architecture overview](architecture/overview.md) |
 | [Development](development/local-development.md) | Contributors to this repository | Python tooling (pytest, mypy, ruff) | [Local development](development/local-development.md) |
 | [Operations](operations/services.md) | Operators and platform engineers | PostgreSQL, Redis, MongoDB, or OpenAI access as needed | [Service configuration](operations/services.md) |
@@ -42,6 +42,7 @@ and security warnings, and they always link to the canonical English page.
 | [Composition and query lifecycle](guides/composition-and-query-lifecycle.md) | English-first（暂无中文翻译，请阅读英文原文） |
 | [Mainflow demo](guides/mainflow-demo.md) | [主流程演示 (简体中文)](guides/mainflow-demo.zh-CN.md) — 完整翻译 |
 | [Metadata to active Bundle](guides/metadata-to-bundle.md) | [从元数据到激活 Bundle](guides/metadata-to-bundle.zh-CN.md) — 完整翻译 |
+| [Semantic Assembly YAML authoring](guides/semantic-assembly-authoring.md) | [语义程序集 YAML 编写](guides/semantic-assembly-authoring.zh-CN.md) — 完整翻译 |
 | [Architecture overview](architecture/overview.md) | [架构总览 (简体中文)](architecture/overview.zh-CN.md) — 完整翻译 |
 | [Execution flow](architecture/execution-flow.md) | [执行流程 (简体中文)](architecture/execution-flow.zh-CN.md) — 完整翻译 |
 | [Package boundaries](architecture/package-boundaries.md) | English-first（暂无中文翻译，请阅读英文原文） |

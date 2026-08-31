@@ -10,6 +10,12 @@ any transport technology.
 from __future__ import annotations
 
 from .config import AdminServiceConfig, AdminServiceProfile
+from .protocols import AuthoringAdminService
 from .service import AdminService
 
-__all__ = ["AdminService", "AdminServiceConfig", "AdminServiceProfile"]
+__all__ = [
+	"AdminService",
+	"AdminServiceConfig",
+	"AdminServiceProfile",
+	"AuthoringAdminService",
+]

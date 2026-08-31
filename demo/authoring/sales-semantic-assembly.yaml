@@ -1,0 +1,78 @@
+apiVersion: nl2data.io/semantic-assembly-authoring/v1alpha1
+kind: SemanticAssembly
+metadata:
+  bundleId: sales_model
+  modelVersion: 1.0.0
+  description: Governed sales semantics for the deterministic demo.
+spec:
+  source:
+    sourceId: sales
+    catalogFingerprint: sha256:1111111111111111111111111111111111111111111111111111111111111111
+  entities:
+    - entityId: orders
+      label: Orders
+      description: Customer orders.
+      fields:
+        - fieldId: order_id
+          label: Order ID
+          dataType: int
+        - fieldId: customer_id
+          label: Customer ID
+          dataType: int
+        - fieldId: amount
+          label: Amount
+          dataType: int
+          allowedAggregations: [sum, avg]
+        - fieldId: status
+          label: Status
+          dataType: string
+          valueSemantics:
+            value_mapping:
+              open: O
+              closed: C
+            display_order: [open, closed]
+            unknown_value_policy: reject
+      relationships:
+        - relationshipId: orders_customer
+          targetEntityId: customers
+          sourceFields: [customer_id]
+          targetFields: [customer_key]
+          label: Customer
+      calculatedFields:
+        - name: double_amount
+          label: Double amount
+          expression:
+            op: mul
+            left: {op: field, field_id: amount}
+            right: {op: const, const: 2}
+          outputType: int
+          requires: [amount]
+          zeroDivisionPolicy: "null"
+    - entityId: customers
+      label: Customers
+      fields:
+        - fieldId: customer_key
+          label: Customer key
+          dataType: int
+  measures:
+    - measureId: total_amount
+      fieldId: amount
+      aggregation: sum
+      label: Total amount
+  grains:
+    - grainId: order
+      entityId: orders
+      attributes: [order_id]
+  sourceReferences:
+    - referenceId: sales_catalog
+      sourceId: sales
+      catalogFingerprint: sha256:1111111111111111111111111111111111111111111111111111111111111111
+  compatibility:
+    compatible_catalog_fingerprints:
+      - sha256:1111111111111111111111111111111111111111111111111111111111111111
+    notes: Compatible with the deterministic sales catalog.
+  deploymentBindings:
+    - bindingId: local
+      environment: demo
+      sourceId: sales
+      connectionReference: env:NL2DATA_DEMO_DSN

@@ -20,6 +20,7 @@ execution, and durable persistence/recovery.
 - `schema/` — PostgreSQL reference DDL for the order-fulfillment domain.
 - `seed/` — Deterministic seed generator for the reference dataset.
 - `questions/` — Standard 10-question demo suite and SQL evidence queries.
+- `authoring/` — Complete versioned Semantic Assembly YAML input used by the deterministic lifecycle demo.
 - `run/` — Runnable demo entry scripts and profile launchers.
 
 ## Acceptance contract (v1)
@@ -32,6 +33,7 @@ execution, and durable persistence/recovery.
 | Replay/resume semantics | Required | Required | Duplicate request returns `DUPLICATE_REQUEST`; adapter not re-executed |
 | Cancellation fail-fast | Required | Required | Cancelled non-terminal workflow resumes as `WORKFLOW_CANCELLED` |
 | Redis Memory participation | N/A | Required when memory enabled | Capability snapshot reports `memory=true` |
+| Semantic authoring validation/import | Required | Optional | YAML lowers to pending revision-zero assertions before review/publish |
 
 ## Multi-Entity JOIN Scenarios
 

@@ -545,14 +545,35 @@ class SemanticRelationshipDescriptor(BaseModel):
     source_entity_id: str = Field(pattern=_IDENTIFIER_PATTERN)
     target_entity_id: str = Field(pattern=_IDENTIFIER_PATTERN)
     label: str = Field(min_length=1, max_length=_MAX_LABEL_CHARS)
+    source_fields: tuple[str, ...] = Field(default_factory=tuple, max_length=_MAX_FIELDS)
+    target_fields: tuple[str, ...] = Field(default_factory=tuple, max_length=_MAX_FIELDS)
+
+    @model_validator(mode="after")
+    def _valid_join_fields(self) -> SemanticRelationshipDescriptor:
+        if bool(self.source_fields) != bool(self.target_fields):
+            raise ValueError("relationship join fields must be provided on both sides")
+        if len(self.source_fields) != len(self.target_fields):
+            raise ValueError("relationship source and target fields must have matching lengths")
+        for field_id in (*self.source_fields, *self.target_fields):
+            if re.fullmatch(_IDENTIFIER_PATTERN, field_id) is None:
+                raise ValueError("relationship join fields must be bounded identifiers")
+        if len(self.source_fields) != len(set(self.source_fields)):
+            raise ValueError("relationship source fields must be unique")
+        if len(self.target_fields) != len(set(self.target_fields)):
+            raise ValueError("relationship target fields must be unique")
+        return self
 
     def canonical_payload(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "relationship_id": self.relationship_id,
             "source_entity_id": self.source_entity_id,
             "target_entity_id": self.target_entity_id,
             "label": self.label,
         }
+        if self.source_fields:
+            payload["source_fields"] = list(self.source_fields)
+            payload["target_fields"] = list(self.target_fields)
+        return payload
 
 
 class SemanticEntityDescriptor(BaseModel):

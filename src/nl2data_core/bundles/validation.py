@@ -61,6 +61,8 @@ class BundleValidationResult(BaseModel):
     issues: tuple[BundleValidationIssue, ...] = Field(
         default_factory=tuple, max_length=_MAX_ISSUES
     )
+    issue_count: int = Field(default=0, ge=0)
+    truncated: bool = False
 
     def issue_codes(self) -> list[str]:
         """The bounded issue codes of this validation result."""
@@ -293,4 +295,9 @@ def validate_bundle(
                     )
                 )
 
-    return BundleValidationResult(valid=not issues, issues=tuple(issues[: _MAX_ISSUES]))
+    return BundleValidationResult(
+        valid=not issues,
+        issues=tuple(issues[:_MAX_ISSUES]),
+        issue_count=len(issues),
+        truncated=len(issues) > _MAX_ISSUES,
+    )

@@ -64,6 +64,23 @@ conflicts return normalized `conflict`; missing roles return
 references only, never assertion payloads, resolved connections, or raw operator
 identities.
 
+## Semantic authoring
+
+`validate_authoring(...)` accepts `AuthoringDocumentCommand`, requires
+`bundle:validate` permission and authorized source scope, and returns only a
+bounded semantic summary or safe source-located diagnostics. It never reads or
+writes the draft store.
+
+`import_authoring(...)` accepts `ImportAuthoringCommand`, requires
+`assembly:write` permission plus the trusted `author` lifecycle role, derives
+the author reference from `AuthContext`, and persists through `create_draft`.
+Imported assertions always begin pending in a revision-zero `draft`; authoring
+cannot review, approve, publish, or activate content.
+
+Capabilities advertise the supported authoring API version and effective
+maximum input size. The built-in limit is 1 MiB and may be reduced by
+`AdminServiceConfig.max_body_size_bytes`.
+
 ## Service Contract Versioning
 
 The service exposes a versioned command/result schema via `nl2data_admin_service.schema.build_schema(contract_version)`. Host transports can introspect this schema to bind requests and responses without hard-coding DTO shapes.

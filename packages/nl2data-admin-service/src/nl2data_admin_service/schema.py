@@ -23,6 +23,8 @@ class ServiceSchema(BaseModel):
 
 
 _COMMAND_DTOS: tuple[type[BaseModel], ...] = (
+    dtos.AuthoringDocumentCommand,
+    dtos.ImportAuthoringCommand,
     dtos.AssertionDecisionCommand,
     dtos.DraftRevisionCommand,
     dtos.ReviewCommand,
@@ -41,6 +43,10 @@ _RESULT_DTOS: tuple[type[BaseModel], ...] = (
     dtos.BundleDetail,
     dtos.BundleLifecycleResult,
     dtos.BundleValidationResult,
+    dtos.AuthoringDiagnosticDetail,
+    dtos.AuthoringSemanticSummary,
+    dtos.AuthoringValidationResult,
+    dtos.AuthoringImportResult,
     dtos.DriftStatus,
     dtos.JobInfo,
     dtos.CapabilitiesResult,

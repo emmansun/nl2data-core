@@ -18,6 +18,30 @@ from nl2data_core.metadata.catalog import SemanticSnapshotCatalog
 from nl2data_core.metadata.models import MetadataSnapshot
 
 from .auth import AuthContext
+from .dtos import (
+    AuthoringDocumentCommand,
+    AuthoringImportResult,
+    AuthoringValidationResult,
+    ImportAuthoringCommand,
+)
+
+
+class AuthoringAdminService(Protocol):
+    """Transport-facing bounded semantic authoring operations."""
+
+    def validate_authoring(
+        self,
+        command: AuthoringDocumentCommand,
+        *,
+        auth_context: AuthContext,
+    ) -> AuthoringValidationResult: ...
+
+    def import_authoring(
+        self,
+        command: ImportAuthoringCommand,
+        *,
+        auth_context: AuthContext,
+    ) -> AuthoringImportResult: ...
 
 
 class MetadataDiscoverer(Protocol):

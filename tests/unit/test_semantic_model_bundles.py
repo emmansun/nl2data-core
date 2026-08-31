@@ -497,6 +497,16 @@ class TestStructuralValidation:
             assert payload["code"] == issue.code
             assert "credential" not in json.dumps(payload)
 
+    def test_issue_truncation_reports_the_total_count(self) -> None:
+        measures = tuple(
+            make_measure(measure_id=f"measure-{index}", field_id=f"ghost-{index}")
+            for index in range(65)
+        )
+        result = validate_bundle(make_bundle(measures=measures))
+        assert len(result.issues) == 64
+        assert result.issue_count == 65
+        assert result.truncated
+
 
 class TestLoader:
     def test_malformed_payload_is_invalid(self) -> None:
