@@ -21,9 +21,16 @@ from nl2data_core.compilation.contract import (
     CompilationEvidence,
     CompileResult,
 )
+from nl2data_core.compilation.expansion import (
+    EXPANSION_IDENTITY,
+    calculated_field_hashes,
+    expand_mongo,
+    resolve_calculated_fields,
+)
 from nl2data_core.planning.ir.models import IRSelection, SemanticQueryIR
 from nl2data_core.planning.ir.validation import validate_ir, verify_ir_fingerprint
 from nl2data_core.planning.models import PhysicalBinding
+from nl2data_core.views.models import CalculatedField
 
 from .models import MongoOperation, MongoQuerySpec, mongo_spec_json
 from .normalize import mql_spec_fingerprint
@@ -105,14 +112,37 @@ def _alias(selection: Any, binding: PhysicalBinding) -> str:
     return selection.alias or f"{selection.aggregation}_{field}"
 
 
+def _output_alias(
+    selection: Any, definition: CalculatedField | None, binding: PhysicalBinding
+) -> str:
+    """The output name for a selection; calculated fields use their name."""
+    if definition is not None:
+        return selection.alias or definition.name
+    return _alias(selection, binding)
+
+
+def _expanded_expression(
+    definition: CalculatedField,
+    binding: PhysicalBinding,
+) -> dict[str, Any]:
+    """Expand a calculated field with the compiler's own leaf resolution."""
+    return expand_mongo(
+        definition,
+        binding=binding,
+        resolve_leaf=lambda field_id: _physical(binding, field_id),
+    )
+
+
 def _compile_pipeline(
     ir: SemanticQueryIR,
     binding: PhysicalBinding,
     filter_mql: dict[str, Any],
     grouped: list[IRSelection],
     aggregated: list[IRSelection],
+    calculated: dict[str, CalculatedField] | None = None,
 ) -> tuple[dict[str, Any], ...]:
     pipeline: list[dict[str, Any]] = []
+    calculated = calculated or {}
     if filter_mql:
         pipeline.append({"$match": filter_mql})
 
@@ -126,11 +156,31 @@ def _compile_pipeline(
         f"${_physical(binding, grouped[0].field_id)}" if grouped else None
     )
     for selection in aggregated:
-        if selection.aggregation == "count":
-            group[_alias(selection, binding)] = {"$sum": 1}
+        definition = calculated.get(selection.field_id)
+        alias = _output_alias(selection, definition, binding)
+        if selection.aggregation == "count" and definition is not None:
+            group[alias] = {
+                "$sum": {
+                    "$cond": [
+                        {"$eq": [_expanded_expression(definition, binding), None]},
+                        0,
+                        1,
+                    ]
+                }
+            }
+        elif selection.aggregation == "count":
+            group[alias] = {"$sum": 1}
+        elif definition is not None:
+            # D1: the aggregation kind applies uniformly to the expanded
+            # expression of a calculated-field selection.
+            group[alias] = {
+                _AGGREGATIONS[selection.aggregation]: _expanded_expression(
+                    definition, binding
+                )
+            }
         else:
             expression = _AGGREGATIONS[selection.aggregation]
-            group[_alias(selection, binding)] = {
+            group[alias] = {
                 expression: f"${_physical(binding, selection.field_id)}"
             }
     pipeline.append({"$group": group})
@@ -142,28 +192,30 @@ def _compile_pipeline(
             if grouped and ordering.field_id == grouped[0].field_id:
                 sort["_id"] = direction
             else:
-                alias = next(
+                ordering_alias = next(
                     (
-                        _alias(selection, binding)
+                        _output_alias(
+                            selection, calculated.get(selection.field_id), binding
+                        )
                         for selection in aggregated
                         if selection.field_id == ordering.field_id
                     ),
                     None,
                 )
-                if alias is None:
+                if ordering_alias is None:
                     raise MongoCompileError(
                         f"ordering field '{ordering.field_id}' is not in the "
                         "aggregate output",
                         details={"ordering_id": ordering.ordering_id},
                     )
-                sort[alias] = direction
+                sort[ordering_alias] = direction
         pipeline.append({"$sort": sort})
 
     project: dict[str, Any] = {}
     if grouped:
         project[_physical(binding, grouped[0].field_id)] = "$_id"
     for selection in aggregated:
-        project[_alias(selection, binding)] = 1
+        project[_output_alias(selection, calculated.get(selection.field_id), binding)] = 1
     project["_id"] = 0
     pipeline.append({"$project": project})
     pipeline.append({"$limit": ir.limit})
@@ -225,14 +277,21 @@ def compile_mongo(
             "IR fingerprint does not match its canonical payload",
             details={"ir_id": ir.ir_id},
         )
-    validation = validate_ir(ir, view=context.view)
+    validation = validate_ir(
+        ir, view=context.view, calculated_field_ids=declared_calculated(context)
+    )
     if not validation.valid:
         raise MongoCompileError(
             "IR failed structural validation",
             details={"issue_codes": ",".join(validation.issue_codes())},
         )
+    calculated = resolve_calculated_fields(ir, context)
+    if calculated and context.expansion_identity != EXPANSION_IDENTITY:
+        raise MongoCompileError(
+            "calculated-field expansion identity does not match the MongoDB compiler"
+        )
     spec_id = f"mongo-{ir.fingerprint[-16:]}"
-    artifact = _compile_mongo(ir, binding, spec_id)
+    artifact = _compile_mongo(ir, binding, spec_id, calculated=calculated)
     spec = MongoQuerySpec.model_validate_json(artifact)
     limits = context.effective_limits
     evidence = CompilationEvidence(
@@ -259,14 +318,24 @@ def compile_mongo(
         compiler_identity=COMPILER_IDENTITY,
         compiler_version=COMPILER_VERSION,
         artifact_fingerprint=mql_spec_fingerprint(spec),
+        calculated_field_hashes=calculated_field_hashes(ir, context),
+        expansion_identity=EXPANSION_IDENTITY if calculated else None,
     )
     return CompileResult(artifact=artifact, evidence=evidence)
+
+
+def declared_calculated(context: CompilationContext) -> frozenset[str] | None:
+    """The calculated-field names the context declares, for IR re-validation."""
+    names = frozenset(definition.name for definition in context.calculated_fields or ())
+    return names or None
 
 
 def _compile_mongo(
     ir: SemanticQueryIR,
     binding: PhysicalBinding,
     spec_id: str,
+    *,
+    calculated: dict[str, CalculatedField] | None = None,
 ) -> str:
     """Deterministic compilation core; ``spec_id`` is caller-chosen."""
     if ir.limit is None:
@@ -274,6 +343,7 @@ def _compile_mongo(
             "IR has no bounded limit; refusing unbounded compilation"
         )
 
+    calculated = calculated or {}
     collection = binding.object_id
     filter_mql = _compile_filter(ir, binding)
     aggregated = [s for s in ir.selections if s.aggregation != "none"]
@@ -284,34 +354,79 @@ def _compile_mongo(
         grouped = [s for s in ir.selections if s.aggregation == "none"]
 
     if not aggregated:
-        projection: dict[str, Any] = {}
-        for selection in ir.selections:
-            physical = _physical(binding, selection.field_id)
-            #: Aliased selections rename the output column ("AS alias" in
-            #: SQL); the wire form carries a bounded "$field" rename marker.
-            projection[selection.alias or physical] = (
-                f"${physical}" if selection.alias is not None else 1
-            )
-        spec = MongoQuerySpec(
-            spec_id=spec_id,
-            operation=MongoOperation.FIND,
-            collection=collection,
-            filter=filter_mql,
-            projection=projection,
-            sort={
-                _physical(binding, ordering.field_id): (
-                    1 if ordering.direction == "asc" else -1
+        if calculated:
+            # A row-level calculated-field selection forces the aggregate
+            # pipeline: computed projection expressions carry the expanded
+            # tree, and the aggregation ``none`` case stays row-level (D1).
+            project: dict[str, Any] = {}
+            for selection in ir.selections:
+                definition = calculated.get(selection.field_id)
+                if definition is not None:
+                    project[_output_alias(selection, definition, binding)] = (
+                        _expanded_expression(definition, binding)
+                    )
+                    continue
+                physical = _physical(binding, selection.field_id)
+                project[selection.alias or physical] = (
+                    f"${physical}" if selection.alias is not None else 1
                 )
-                for ordering in ir.orderings
-            },
-            limit=ir.limit,
-        )
+            project["_id"] = 0
+            pipeline: list[dict[str, Any]] = []
+            if filter_mql:
+                pipeline.append({"$match": filter_mql})
+            if ir.orderings:
+                # Sorting runs before projection so ordering keys stay on
+                # their physical source paths, mirroring the SQL ``ORDER BY``.
+                pipeline.append(
+                    {
+                        "$sort": {
+                            _physical(binding, ordering.field_id): (
+                                1 if ordering.direction == "asc" else -1
+                            )
+                            for ordering in ir.orderings
+                        }
+                    }
+                )
+            pipeline.append({"$project": project})
+            pipeline.append({"$limit": ir.limit})
+            spec = MongoQuerySpec(
+                spec_id=spec_id,
+                operation=MongoOperation.AGGREGATE,
+                collection=collection,
+                limit=ir.limit,
+                pipeline=tuple(pipeline),
+            )
+        else:
+            projection: dict[str, Any] = {}
+            for selection in ir.selections:
+                physical = _physical(binding, selection.field_id)
+                #: Aliased selections rename the output column ("AS alias" in
+                #: SQL); the wire form carries a bounded "$field" rename marker.
+                projection[selection.alias or physical] = (
+                    f"${physical}" if selection.alias is not None else 1
+                )
+            spec = MongoQuerySpec(
+                spec_id=spec_id,
+                operation=MongoOperation.FIND,
+                collection=collection,
+                filter=filter_mql,
+                projection=projection,
+                sort={
+                    _physical(binding, ordering.field_id): (
+                        1 if ordering.direction == "asc" else -1
+                    )
+                    for ordering in ir.orderings
+                },
+                limit=ir.limit,
+            )
     else:
         spec = MongoQuerySpec(
             spec_id=spec_id,
             operation=MongoOperation.AGGREGATE,
             collection=collection,
             limit=ir.limit,
-            pipeline=_compile_pipeline(ir, binding, filter_mql, grouped, aggregated),
+            pipeline=_compile_pipeline(
+                ir, binding, filter_mql, grouped, aggregated, calculated=calculated
+            ),
         )
     return mongo_spec_json(spec)

@@ -9,11 +9,13 @@ failures - the native value never crosses the boundary.
 from __future__ import annotations
 
 import time
+from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
 
 from nl2data_core.adapters.models import ExecutionResult
 from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.compilation.expansion import ZeroDivisionPolicyError
 
 from .executor import MongoExecutor
 from .models import MongoExecutionError, MongoOperation, MongoQuerySpec
@@ -21,7 +23,52 @@ from .models import MongoExecutionError, MongoOperation, MongoQuerySpec
 #: The protected public scalar set; everything else needs explicit support.
 _SCALAR_TYPES: tuple[type, ...] = (str, int, float, bool, type(None))
 
+#: The server error code a MongoDB driver reports for ``can't $divide by``
+#: ``zero``; it is the only server failure translated into a structured
+#: calculated-field error (``CF_005``) rather than a generic execution one.
+_DIVIDE_BY_ZERO_CODE = "16608"
+
 _MISSING = object()
+
+
+def _execute_stage(executor: MongoExecutor, spec: MongoQuerySpec) -> tuple[dict[str, Any], ...]:
+    """Run the backend dispatch, translating the divide-by-zero server code."""
+    try:
+        if spec.operation == MongoOperation.FIND:
+            return executor.find_documents(
+                collection=spec.collection,
+                filter_=spec.filter,
+                projection=spec.projection,
+                sort=spec.sort,
+                skip=spec.skip,
+                limit=spec.limit,
+            )
+        if spec.operation == MongoOperation.AGGREGATE:
+            pipeline = spec.pipeline or ()
+            if spec.limit is not None:
+                pipeline = pipeline + ({"$limit": spec.limit},)
+            return executor.aggregate_documents(
+                collection=spec.collection,
+                pipeline=pipeline,
+            )
+        if spec.operation == MongoOperation.COUNT:
+            count = executor.count_documents(
+                collection=spec.collection,
+                filter_=spec.filter,
+            )
+            return ({"count": count},)
+    except MongoExecutionError as error:
+        if (error.details or {}).get("server_error_code") == _DIVIDE_BY_ZERO_CODE:
+            raise ZeroDivisionPolicyError(
+                "calculated field division hit a zero denominator under "
+                "zero_division_policy: error",
+                details={"server_error_code": _DIVIDE_BY_ZERO_CODE},
+            ) from error
+        raise
+    raise MongoExecutionError(
+        f"operation '{spec.operation.value}' is not executable",
+        details={"operation": spec.operation.value},
+    )
 
 
 def normalize_bson_cell(value: Any, *, row_index: int, column_index: int) -> Any:
@@ -60,13 +107,19 @@ def _result_columns(
     """Column names derived from the spec; falls back to first-doc keys."""
     if spec.operation == MongoOperation.COUNT:
         return ("count",)
+    def _is_output(marker: Any) -> bool:
+        return (
+            marker == 1
+            or (isinstance(marker, str) and marker.startswith("$"))
+            or isinstance(marker, (Mapping, list, tuple))
+        )
+
     if spec.operation == MongoOperation.FIND:
         if spec.projection:
             return tuple(
                 path
                 for path, marker in spec.projection.items()
-                if marker == 1
-                or (isinstance(marker, str) and marker.startswith("$"))
+                if _is_output(marker)
             )
     elif spec.pipeline is not None:
         last = spec.pipeline[-1]
@@ -75,8 +128,7 @@ def _result_columns(
             return tuple(
                 path
                 for path, marker in argument.items()
-                if marker == 1
-                or (isinstance(marker, str) and marker.startswith("$"))
+                if _is_output(marker)
             )
         if name == "$count":
             return (str(argument),)
@@ -102,34 +154,7 @@ def execute_mongo_spec(
     started = time.monotonic()
     deadline = started + timeout_seconds
 
-    if spec.operation == MongoOperation.FIND:
-        documents = executor.find_documents(
-            collection=spec.collection,
-            filter_=spec.filter,
-            projection=spec.projection,
-            sort=spec.sort,
-            skip=spec.skip,
-            limit=spec.limit,
-        )
-    elif spec.operation == MongoOperation.AGGREGATE:
-        pipeline = spec.pipeline or ()
-        if spec.limit is not None:
-            pipeline = pipeline + ({"$limit": spec.limit},)
-        documents = executor.aggregate_documents(
-            collection=spec.collection,
-            pipeline=pipeline,
-        )
-    elif spec.operation == MongoOperation.COUNT:
-        count = executor.count_documents(
-            collection=spec.collection,
-            filter_=spec.filter,
-        )
-        documents = ({"count": count},)
-    else:
-        raise MongoExecutionError(
-            f"operation '{spec.operation.value}' is not executable",
-            details={"operation": spec.operation.value},
-        )
+    documents = _execute_stage(executor, spec)
 
     if time.monotonic() >= deadline:
         raise MongoExecutionError(

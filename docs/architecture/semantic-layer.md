@@ -251,17 +251,107 @@ assess the operator distribution of existing queries against the field.
 
 ### Slice gate (roadmap)
 
-The next semantic-layer slice (v4.2, calculated fields) **must not
-start** until the v4.1 quality gate is met: **`VS_HIT` ≥ 90%** across
-the annotated demo/evaluation corpus, read from the attribution summary
-(`EvaluationReport.value_semantics_summary()`) of a full corpus run.
-The gate lives in this roadmap note, not in code — the attribution
-dimensions are the measured inputs.
+The v4.1 quality gate — **`VS_HIT` ≥ 90%** across the annotated
+demo/evaluation corpus, read from the attribution summary
+(`EvaluationReport.value_semantics_summary()`) of a full corpus run —
+is the precondition that the v4.2 slice (calculated fields) started
+under. The gate lives in this roadmap note, not in code — the
+attribution dimensions are the measured inputs. The v4.2 gate is
+recorded in the [calculated-fields slice gate](#calculated-fields-slice-gate-roadmap)
+below.
+
+## Calculated fields (v4.2)
+
+An entity descriptor may declare a bounded list of `CalculatedField`
+entries (count ≤ 32): a governed, fingerprinted expression over the
+entity's own numeric fields that the compiler expands deterministically
+at compile time. The expression language is a closed whitelist (`field`,
+`const`, `add`, `sub`, `mul`, `div`); every rejected construct and its
+alternative path is recorded in
+[ADR-045](adr-calculated-field-operator-whitelist.md).
+
+**What the compiler does.** The expression never enters the IR — a
+selection references the calculated field **by name** (`CF_003`
+rejects unknown names fail-closed), referencing IRs gain the
+`calculated-fields` capability, and the compiler re-validates the tree,
+resolves `field` leaves through the physical binding, and emits
+adapter-native output with an explicit CAST enforcing the declared
+output type (true division for `div`; the conformance suite pins
+`7 / 2 → 3.5` to catch SQLite integer-division truncation). Nothing is
+interpreted at runtime. `zero_division_policy` (`null` | `error`) is
+declared per field: `null` yields NULL/missing through guarded
+expansion, `error` raises the structured `CF_005` execution failure.
+
+**Governance chain.** A calculated field is an entity-level optional
+member, so invariant **N6 applies verbatim** (see the checklist below):
+declaring it is snapshot-breaking, and **any content edit to a
+calculated field — expression, policy, label, output type — is a
+snapshot-breaking event** that must follow the same upgrade checklist
+as value semantics (descriptor fingerprint → snapshot fingerprint →
+`catalog_incompatible` on old bundles → republish → re-audit evidence).
+References to `pii: true` fields are rejected with `CF_004` **in both
+directions**: at calculated-field definition time, and at bundle
+validation when pii is later applied over a field a calculated field
+references. Future field-masking policy models must join the same
+intersection check when they land. The rationale (masking is enforced by
+adapter post-processing on output columns; a derived column would
+bypass that enforcement point) lives in the
+[pii masking ADR](adr-pii-masking-enforcement-point.md) and ADR-045.
+
+**Prompt context.** Calculated-field identity (`name`, `label`,
+`description`, `output_type` — never the expression or the policies)
+flows into the model instruction bundle as bounded, safe-content
+validated context. The model still references by name only: expression
+material emitted by the model is structurally rejected (N4).
+
+### Calculated-field attribution
+
+Evaluation aggregates calculated-field outcomes into bounded
+`CF_HIT` / `CF_COMPILE_FAIL` / `CF_NOT_DECLARED` /
+`CF_NOT_REFERENCED` attribution — per selection on `CaseEvidence`, per
+case, and per run via `EvaluationReport.calculated_field_summary()`.
+Corpus annotations in `demo/questions/questions.yml` follow the same
+metadata-only pattern as the value-semantics annotations: deviations
+are recorded, never crashed.
+
+### Calculated-fields slice gate (roadmap)
+
+The v4.2 quality gate is read from `calculated_field_summary()` of a
+full annotated-corpus run: combined **`CF_NOT_DECLARED +
+CF_NOT_REFERENCED < 10%`** and DSL expression failure rate
+(**`CF_COMPILE_FAIL` < 5%**). As with the v4.1 gate, the gate lives in
+this roadmap note, not in code.
+
+### First adoption guidance
+
+Before declaring calculated fields, assess the adapter's
+`calculated-fields` capability support: referencing queries fail closed
+on adapters that do not declare the capability. The first bundle that
+declares a calculated field changes snapshot fingerprints and requires
+republication plus evidence re-audit (the v4.1 checklist verbatim), so
+prefer declaring alongside a planned republish window.
+
+### NamedQuery placeholder reservation (v4.4)
+
+The IR carries a reserved, zero-behavior extension schema
+(`named_query_placeholder`, capability `named-query-placeholders`): a
+typed scalar-parameter payload (`name`, `scalar_type` in
+`str|int|float|bool`, `required`) with no physical names. In v4.2 the
+reservation is **fail-closed**: the capability is declared by no
+adapter, so placeholder-bearing queries cannot execute, and an invalid
+placeholder payload fails IR construction. Placeholders are
+structurally inexpressible inside calculated-field expression trees;
+v4.4 must not open that path when it extends the whitelist. Runtime
+parameter values will need the v4.1 bool/int-subclass discipline
+(const values are fingerprint-domain scalars, not Python bools posing
+as ints). v4.4 may revise the reservation in its own change — removal
+is fingerprint-safe by N6 symmetry.
 
 ## Optional-member review checklist (N6)
 
-Every future *optional* descriptor member (for example `CalculatedField`
-in v4.2 or `Metric` in v4.3) inherits invariant **N6**: an unset member
+Every future *optional* descriptor member (`ValueSemantics` in v4.1,
+`CalculatedField` in v4.2, `Metric` in v4.3) inherits invariant **N6**:
+an unset member
 must be omitted from `canonical_payload()` entirely, never serialized as
 `null`, so that introducing the member leaves every descriptor,
 snapshot, and bundle fingerprint byte-identical. Before merging a new

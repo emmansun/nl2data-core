@@ -32,6 +32,7 @@ from nl2data_core.evaluation.models import (
     EvaluationReport,
     EvaluationRunContext,
     MandatoryAssertion,
+    calculated_field_attribution_records,
 )
 from nl2data_core.fixtures.base import FixtureProfile
 from nl2data_core.fixtures.models import FixtureUnavailableError
@@ -269,9 +270,17 @@ class EvaluationRunner:
             try:
                 evidence = await self._case_executor.execute(case.ir, fixture, context)
             except Exception as error:
+                record = as_error_record(error)
+                failure_evidence = self._calculated_field_evidence(case, record)
                 return self._result(
-                    case, CaseOutcome.FAIL, error=as_error_record(error), started=started
+                    case,
+                    CaseOutcome.FAIL,
+                    error=record,
+                    evidence=failure_evidence,
+                    started=started,
                 )
+
+            evidence = self._with_calculated_field_attribution(case, evidence)
 
             assertions = evaluate_assertions(case.mandatory_assertions, evidence)
             outcome = CaseOutcome.PASS if all(a.passed for a in assertions) else CaseOutcome.FAIL
@@ -293,6 +302,49 @@ class EvaluationRunner:
         except Exception:
             with suppress(Exception):
                 fixture.dispose()
+
+    @staticmethod
+    def _failed_calculated_fields(
+        case: EvaluationCase, error: ErrorRecord | None
+    ) -> tuple[str, ...]:
+        if error is None:
+            return ()
+        referenced = {
+            selection.field_id for selection in case.ir.selections
+        } & set(case.declared_calculated_fields)
+        named = error.details.get("calculated_field")
+        if isinstance(named, str) and named in referenced:
+            return (named,)
+        calculated_error_codes = {
+            ErrorCode.CALCULATED_FIELD_REJECTED,
+            ErrorCode.CALCULATED_FIELD_ZERO_DIVISION,
+        }
+        if error.code in calculated_error_codes:
+            return tuple(sorted(referenced))
+        return ()
+
+    @classmethod
+    def _with_calculated_field_attribution(
+        cls, case: EvaluationCase, evidence: CaseEvidence
+    ) -> CaseEvidence:
+        if not case.declared_calculated_fields and not case.expected_calculated_fields:
+            return evidence
+        records = calculated_field_attribution_records(
+            case.ir,
+            declared_calculated_fields=case.declared_calculated_fields,
+            compile_failed_fields=cls._failed_calculated_fields(case, evidence.error),
+            expected_calculated_fields=case.expected_calculated_fields,
+        )
+        return evidence.model_copy(update={"calculated_field_attribution": records})
+
+    @classmethod
+    def _calculated_field_evidence(
+        cls, case: EvaluationCase, error: ErrorRecord
+    ) -> CaseEvidence | None:
+        if not case.declared_calculated_fields and not case.expected_calculated_fields:
+            return None
+        evidence = CaseEvidence(ir_fingerprint=case.ir.fingerprint, error=error)
+        return cls._with_calculated_field_attribution(case, evidence)
 
     @staticmethod
     def _result(

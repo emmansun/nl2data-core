@@ -16,7 +16,7 @@ rules never appear in the serialized projection.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -56,6 +56,33 @@ class ResolvedViewField(BaseModel):
             "description": self.description,
             "data_type": self.data_type,
             "allowed_aggregations": sorted(self.allowed_aggregations),
+        }
+
+
+class ResolvedCalculatedField(BaseModel):
+    """Bounded calculated-field identity authorized for prompt context (D10).
+
+    Carries name, label, description, and output type only - never the
+    expression tree, the dependency list, or the zero-division policy.  The
+    model references a calculated field by name only (N4); expansion
+    material never crosses the provider boundary.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    name: str = Field(pattern=_IDENTIFIER_PATTERN)
+    label: str = Field(min_length=1, max_length=_MAX_LABEL_CHARS)
+    description: str = Field(default="", max_length=_MAX_DESCRIPTION_CHARS)
+    output_type: Literal["int", "float"]
+    content_hash: str = Field(pattern=_FINGERPRINT_PATTERN)
+
+    def canonical_payload(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "label": self.label,
+            "description": self.description,
+            "output_type": self.output_type,
+            "content_hash": self.content_hash,
         }
 
 
@@ -117,6 +144,14 @@ class ResolvedViewProjection(BaseModel):
         default_factory=frozenset, max_length=_MAX_ENTITIES
     )
     field_ids: frozenset[str] = Field(default_factory=frozenset, max_length=_MAX_FIELDS)
+    calculated_field_ids: frozenset[str] = Field(
+        default_factory=frozenset, max_length=_MAX_FIELDS
+    )
+    #: Bounded calculated-field identity for prompt context (D10); unset on
+    #: projections whose entities declare no calculated fields.
+    calculated_fields: tuple[ResolvedCalculatedField, ...] | None = Field(
+        default=None, max_length=_MAX_FIELDS
+    )
     entities: tuple[ResolvedViewEntity, ...] = Field(
         default_factory=tuple, max_length=_MAX_ENTITIES
     )
@@ -161,6 +196,20 @@ class ResolvedViewProjection(BaseModel):
             raise ValueError("projection field_ids must include every projected entity field")
         if not frozenset(entity_ids).issubset(self.root_entity_ids):
             raise ValueError("projection root_entity_ids must include every projected entity")
+        if self.calculated_field_ids & self.field_ids:
+            raise ValueError(
+                "projection calculated_field_ids must not collide with projected field ids"
+            )
+        if self.calculated_fields:
+            names = [item.name for item in self.calculated_fields]
+            if len(names) != len(set(names)):
+                raise ValueError("projection calculated field names must be unique")
+            if not names == sorted(names):
+                raise ValueError("projection calculated fields must be sorted by name")
+            if set(names) != self.calculated_field_ids:
+                raise ValueError(
+                    "projection calculated_fields must match calculated_field_ids"
+                )
         bundle_fields = [self.bundle_id, self.bundle_version, self.bundle_fingerprint]
         if any(value is not None for value in bundle_fields) and not all(
             value is not None for value in bundle_fields
@@ -183,6 +232,26 @@ class ResolvedViewProjection(BaseModel):
             "description": self.description,
             "root_entity_ids": sorted(self.root_entity_ids),
             "field_ids": sorted(self.field_ids),
+            # N6: unset optional members are omitted entirely so introducing
+            # calculated fields cannot change the fingerprint of any
+            # projection that does not use them.
+            **(
+                {"calculated_field_ids": sorted(self.calculated_field_ids)}
+                if self.calculated_field_ids
+                else {}
+            ),
+            # N6: unset optional members are omitted entirely so introducing
+            # calculated-field prompt identity cannot change the fingerprint
+            # of any projection that does not use it.
+            **(
+                {
+                    "calculated_fields": [
+                        item.canonical_payload() for item in self.calculated_fields
+                    ]
+                }
+                if self.calculated_fields
+                else {}
+            ),
             "entities": [entity.canonical_payload() for entity in self.entities],
             "allowed_operations": sorted(self.allowed_operations),
             "allowed_relationships": sorted(self.allowed_relationships),
@@ -215,6 +284,10 @@ class ResolvedViewProjection(BaseModel):
     def contains_field(self, field_id: str) -> bool:
         """Whether the projection permits the given semantic field."""
         return field_id in self.field_ids
+
+    def contains_calculated_field(self, calculated_name: str) -> bool:
+        """Whether the projection permits the given calculated-field name."""
+        return calculated_name in self.calculated_field_ids
 
     def contains_relationship(self, relationship_id: str) -> bool:
         """Whether the projection permits the given relationship."""

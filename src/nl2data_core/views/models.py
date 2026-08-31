@@ -58,6 +58,22 @@ _MAX_VALUE_MAPPING_ENTRIES = 4_096
 _MAX_VALUE_TERMS = 4_096
 _MAX_VALUE_TERM_CHARS = 128
 
+#: Bounded limits for calculated-field members (design D2/D4).
+_MAX_CF_DEPTH = 16
+_MAX_CF_NODES = 64
+_MAX_CALCULATED_FIELDS = 32
+
+#: The closed calculated-field operator whitelist (design D2).
+_CALCULATED_FIELD_OPERATORS = frozenset(
+    {"field", "const", "add", "sub", "mul", "div"}
+)
+
+#: Descriptor data types a calculated-field ``field`` leaf may reference.
+_CALCULATED_FIELD_LEAF_TYPES = frozenset({"int", "float"})
+
+#: Declared output types of a calculated field (design D2).
+CalculatedOutputType = Literal["int", "float"]
+
 
 class _FrozenDict(dict[str, Any]):
     """A deeply immutable mapping; mutation raises ``TypeError``."""
@@ -278,6 +294,258 @@ class SemanticFieldDescriptor(BaseModel):
         return payload
 
 
+def _infer_calculated_output(
+    node: ExprNode,
+    *,
+    fields_by_id: dict[str, SemanticFieldDescriptor],
+    calculated_names: frozenset[str],
+    cf_name: str,
+) -> CalculatedOutputType:
+    """Infer the output type of a calculated-field expression tree (D2).
+
+    ``add``/``sub``/``mul`` infer ``int`` only when both operands infer
+    ``int``, otherwise ``float``; ``div`` always infers ``float``; leaves
+    infer their descriptor ``data_type``.  The same walk enforces the
+    definition-time reference rules: calculated fields do not compose
+    (``CF_002``), referenced fields must exist (``CF_002``), must not be
+    ``pii`` (``CF_004``), and must be numeric (``CF_001``).
+    """
+    if node.op == "const":
+        return "int"
+    if node.op == "field":
+        leaf_id = cast("str", node.field_id)
+        if leaf_id in calculated_names:
+            raise ValueError(
+                f"CF_002: calculated field '{cf_name}' references calculated "
+                f"field '{leaf_id}'; calculated fields do not compose"
+            )
+        field = fields_by_id.get(leaf_id)
+        if field is None:
+            raise ValueError(
+                f"CF_002: calculated field '{cf_name}' references unknown "
+                f"field '{leaf_id}'"
+            )
+        if field.value_semantics is not None and field.value_semantics.pii:
+            raise ValueError(
+                f"CF_004: calculated field '{cf_name}' references pii field "
+                f"'{leaf_id}'"
+            )
+        if field.data_type not in _CALCULATED_FIELD_LEAF_TYPES:
+            raise ValueError(
+                f"CF_001: calculated field '{cf_name}' references non-numeric "
+                f"field '{leaf_id}' (data_type '{field.data_type}')"
+            )
+        return cast("CalculatedOutputType", field.data_type)
+    left = _infer_calculated_output(
+        cast("ExprNode", node.left),
+        fields_by_id=fields_by_id,
+        calculated_names=calculated_names,
+        cf_name=cf_name,
+    )
+    right = _infer_calculated_output(
+        cast("ExprNode", node.right),
+        fields_by_id=fields_by_id,
+        calculated_names=calculated_names,
+        cf_name=cf_name,
+    )
+    if node.op == "div":
+        return "float"
+    return "int" if left == "int" and right == "int" else "float"
+
+
+class ExprNode(BaseModel):
+    """One node of a calculated-field expression tree (design D2).
+
+    The grammar is a closed whitelist: leaves are ``field`` (a bounded
+    identifier) and ``const`` (``int`` only - ``float`` and ``bool`` are
+    rejected so the tree stays inside the fingerprint domain; negative
+    ints are valid), and operators are ``add``, ``sub``, ``mul``, and
+    ``div`` with exactly two children.  The tree is bounded (depth <= 16,
+    node count <= 64), frozen, and JSON-wire safe (canonical payloads are
+    nested dict/list only, never a ``frozenset``).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    op: str
+    field_id: str | None = Field(default=None, pattern=_IDENTIFIER_PATTERN)
+    const: int | None = None
+    left: ExprNode | None = None
+    right: ExprNode | None = None
+
+    @field_validator("const", mode="before")
+    @classmethod
+    def _int_only_const(cls, value: Any) -> Any:
+        # bool is an int subclass and lax coercion would accept integral
+        # floats, so the raw-input boundary rejects both explicitly.
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(
+                "CF_001: const values must be int; float and bool are "
+                "rejected to keep expression fingerprints stable"
+            )
+        return value
+
+    @model_validator(mode="after")
+    def _valid_shape_and_bounds(self) -> ExprNode:
+        if self.op not in _CALCULATED_FIELD_OPERATORS:
+            raise ValueError(
+                f"CF_001: operator '{self.op}' is outside the closed "
+                "whitelist (field, const, add, sub, mul, div)"
+            )
+        if self.op == "field":
+            if self.field_id is None:
+                raise ValueError("CF_001: 'field' leaves require a field_id")
+            if (
+                self.const is not None
+                or self.left is not None
+                or self.right is not None
+            ):
+                raise ValueError(
+                    "CF_001: 'field' leaves must not carry const or operands"
+                )
+        elif self.op == "const":
+            if self.const is None:
+                raise ValueError(
+                    "CF_001: 'const' leaves require an int const value"
+                )
+            if (
+                self.field_id is not None
+                or self.left is not None
+                or self.right is not None
+            ):
+                raise ValueError(
+                    "CF_001: 'const' leaves must not carry field_id or operands"
+                )
+        else:
+            if self.left is None or self.right is None:
+                raise ValueError(
+                    f"CF_001: operator '{self.op}' requires exactly two operands"
+                )
+            if self.field_id is not None or self.const is not None:
+                raise ValueError(
+                    f"CF_001: operator '{self.op}' must not carry field_id or const"
+                )
+        depth, nodes = self._measure()
+        if depth > _MAX_CF_DEPTH:
+            raise ValueError(
+                f"CF_001: expression depth {depth} exceeds the maximum "
+                f"of {_MAX_CF_DEPTH}"
+            )
+        if nodes > _MAX_CF_NODES:
+            raise ValueError(
+                f"CF_001: expression node count {nodes} exceeds the maximum "
+                f"of {_MAX_CF_NODES}"
+            )
+        return self
+
+    def _measure(self) -> tuple[int, int]:
+        """The (depth, node count) of the subtree rooted at this node."""
+        if self.op in ("field", "const"):
+            return 1, 1
+        left_depth, left_nodes = cast("ExprNode", self.left)._measure()
+        right_depth, right_nodes = cast("ExprNode", self.right)._measure()
+        return 1 + max(left_depth, right_depth), 1 + left_nodes + right_nodes
+
+    def field_leaves(self) -> frozenset[str]:
+        """The set of field identifiers referenced by this tree."""
+        if self.op == "field":
+            return frozenset({cast("str", self.field_id)})
+        if self.op == "const":
+            return frozenset()
+        return cast("ExprNode", self.left).field_leaves() | cast(
+            "ExprNode", self.right
+        ).field_leaves()
+
+    def canonical_payload(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {"op": self.op}
+        if self.op == "field":
+            payload["field_id"] = self.field_id
+        elif self.op == "const":
+            payload["const"] = self.const
+        else:
+            payload["left"] = cast("ExprNode", self.left).canonical_payload()
+            payload["right"] = cast("ExprNode", self.right).canonical_payload()
+        return payload
+
+
+class CalculatedField(BaseModel):
+    """One governed row-level calculated field over an entity's own fields.
+
+    The expression references only base fields of its own entity
+    (calculated fields do not compose); the declared ``output_type`` must
+    equal the type the inference table derives from the expression tree
+    (enforced where the descriptor field types are known); and ``requires``
+    is the exact, order-free set of referenced field leaves (``CF_002`` on
+    mismatch, set semantics - declaration order is not constrained).
+    ``zero_division_policy`` controls runtime division-by-zero behavior:
+    ``null`` yields NULL/missing, ``error`` fails execution with the
+    structured ``CF_005`` error.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    name: str = Field(pattern=_IDENTIFIER_PATTERN)
+    label: str = Field(min_length=1, max_length=_MAX_LABEL_CHARS)
+    description: str = Field(default="", max_length=_MAX_DESCRIPTION_CHARS)
+    expression: ExprNode
+    output_type: CalculatedOutputType
+    requires: tuple[str, ...] = Field(max_length=_MAX_CALCULATED_FIELDS)
+    zero_division_policy: Literal["null", "error"] = "null"
+
+    @field_validator("description")
+    @classmethod
+    def _safe_description(cls, value: str) -> str:
+        return validate_safe_description(value)
+
+    @field_validator("requires")
+    @classmethod
+    def _valid_requires(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        for name in value:
+            if re.fullmatch(_IDENTIFIER_PATTERN, name) is None:
+                raise ValueError(
+                    "calculated-field requires entries must be bounded identifiers"
+                )
+        if len(value) != len(set(value)):
+            raise ValueError(
+                "CF_002: calculated-field requires entries must be unique"
+            )
+        return value
+
+    @model_validator(mode="after")
+    def _requires_matches_leaves(self) -> CalculatedField:
+        if set(self.requires) != self.expression.field_leaves():
+            raise ValueError(
+                "CF_002: requires must exactly match the set of field leaves "
+                "referenced by the expression (order-free)"
+            )
+        return self
+
+    def content_hash(self) -> str:
+        """sha256 over the canonical tree, policy, and output type (D6).
+
+        Both ``zero_division_policy`` and ``output_type`` affect execution
+        semantics and CAST behavior, so both are definition identity.
+        """
+        return sha256_fingerprint(
+            {
+                "expression": self.expression.canonical_payload(),
+                "zero_division_policy": self.zero_division_policy,
+                "output_type": self.output_type,
+            }
+        )
+
+    def canonical_payload(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "label": self.label,
+            "description": self.description,
+            "expression": self.expression.canonical_payload(),
+            "output_type": self.output_type,
+            "requires": sorted(self.requires),
+            "zero_division_policy": self.zero_division_policy,
+        }
+
+
 class SemanticRelationshipDescriptor(BaseModel):
     """One bounded semantic relationship between two entities."""
 
@@ -311,6 +579,9 @@ class SemanticEntityDescriptor(BaseModel):
     relationships: tuple[SemanticRelationshipDescriptor, ...] = Field(
         default_factory=tuple, max_length=_MAX_RELATIONSHIPS
     )
+    calculated_fields: tuple[CalculatedField, ...] | None = Field(
+        default=None, max_length=_MAX_CALCULATED_FIELDS
+    )
 
     @field_validator("description")
     @classmethod
@@ -337,8 +608,53 @@ class SemanticEntityDescriptor(BaseModel):
             raise ValueError("entity relationship ids must be unique")
         return value
 
+    @model_validator(mode="after")
+    def _validate_calculated_fields(self) -> SemanticEntityDescriptor:
+        """Entity-level calculated-field rules (design D4).
+
+        A set member must be non-empty; names are unique within the entity
+        and must not collide with any field id of the same entity (the
+        ``CF_003`` namespace rule); and every expression's declared output
+        must equal the inferred output given the entity's own field types.
+        """
+        if self.calculated_fields is None:
+            return self
+        if not self.calculated_fields:
+            raise ValueError(
+                "a provided calculated_fields member must be non-empty "
+                "(set means non-empty)"
+            )
+        names = [calculated.name for calculated in self.calculated_fields]
+        if len(names) != len(set(names)):
+            raise ValueError(
+                "CF_001: calculated field names must be unique within the entity"
+            )
+        field_ids = {field.field_id for field in self.fields}
+        for name in names:
+            if name in field_ids:
+                raise ValueError(
+                    f"CF_001: calculated field name '{name}' collides with a "
+                    "field id of the same entity"
+                )
+        fields_by_id = {field.field_id: field for field in self.fields}
+        calculated_names = frozenset(names)
+        for calculated in self.calculated_fields:
+            inferred = _infer_calculated_output(
+                calculated.expression,
+                fields_by_id=fields_by_id,
+                calculated_names=calculated_names,
+                cf_name=calculated.name,
+            )
+            if calculated.output_type != inferred:
+                raise ValueError(
+                    f"CF_001: calculated field '{calculated.name}' declares "
+                    f"output type '{calculated.output_type}' but the "
+                    f"expression infers '{inferred}'"
+                )
+        return self
+
     def canonical_payload(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "entity_id": self.entity_id,
             "label": self.label,
             "description": self.description,
@@ -347,6 +663,21 @@ class SemanticEntityDescriptor(BaseModel):
                 relationship.canonical_payload() for relationship in self.relationships
             ],
         }
+        # Invariant N6: an optional semantic member that is unset MUST be
+        # omitted from the canonical payload so its introduction cannot
+        # change the fingerprint of any entity that does not use it.
+        if self.calculated_fields is not None:
+            payload["calculated_fields"] = [
+                calculated.canonical_payload() for calculated in self.calculated_fields
+            ]
+        return payload
+
+    def calculated_field(self, name: str) -> CalculatedField | None:
+        """The calculated field with the given name, or ``None`` when absent."""
+        for calculated in self.calculated_fields or ():
+            if calculated.name == name:
+                return calculated
+        return None
 
 
 class SemanticDescriptor(BaseModel):
@@ -388,6 +719,21 @@ class SemanticDescriptor(BaseModel):
         ]
         if len(relationship_ids) != len(set(relationship_ids)):
             raise ValueError("descriptor relationship ids must be unique across entities")
+        calculated_names = [
+            calculated.name
+            for entity in value
+            for calculated in entity.calculated_fields or ()
+        ]
+        if len(calculated_names) != len(set(calculated_names)):
+            raise ValueError(
+                "descriptor calculated field names must be unique across entities"
+            )
+        collisions = sorted(set(calculated_names) & set(field_ids))
+        if collisions:
+            raise ValueError(
+                "descriptor calculated field names must not collide with any "
+                f"field id (first collision: '{collisions[0]}')"
+            )
         entity_id_set = set(ids)
         for entity in value:
             for relationship in entity.relationships:
@@ -442,6 +788,22 @@ class SemanticDescriptor(BaseModel):
             relationship.relationship_id
             for entity in self.entities
             for relationship in entity.relationships
+        )
+
+    def calculated_field(self, name: str) -> CalculatedField | None:
+        """The first calculated field with the given name, or ``None``."""
+        for entity in self.entities:
+            calculated = entity.calculated_field(name)
+            if calculated is not None:
+                return calculated
+        return None
+
+    def all_calculated_field_ids(self) -> frozenset[str]:
+        """Every calculated field name declared anywhere in the descriptor."""
+        return frozenset(
+            calculated.name
+            for entity in self.entities
+            for calculated in entity.calculated_fields or ()
         )
 
 

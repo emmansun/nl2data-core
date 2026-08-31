@@ -87,6 +87,86 @@ def _sort_documents(
     return ordered
 
 
+def _eval_expression(value: Any, document: Mapping[str, Any]) -> Any:
+    """Evaluate one bounded MQL expression against a document.
+
+    Supports the arithmetic/conditional subset the calculated-field
+    expansion emits (``$add``/``$subtract``/``$multiply``/``$divide``/
+    ``$cond``/``$eq``) plus ``$path`` references and literals.  BSON
+    numeric semantics are mirrored: ``$divide`` always yields a double,
+    while int arithmetic stays int.  A zero ``$divide`` denominator
+    raises with the driver's division-by-zero server code, so the
+    adapter's execution layer can surface the structured ``CF_005``
+    failure.
+    """
+    if isinstance(value, str):
+        if not value.startswith("$"):
+            raise MongoExecutionError(
+                f"fake executor does not support expression '{value}'",
+                details={"expression": value},
+            )
+        resolved = _path_value(document, value[1:])
+        return None if resolved is _MISSING else resolved
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, (list, tuple)):
+        return [_eval_expression(item, document) for item in value]
+    if isinstance(value, Mapping) and len(value) == 1:
+        operator, argument = next(iter(value.items()))
+        if operator == "$cond":
+            if not isinstance(argument, (list, tuple)) or len(argument) != 3:
+                raise MongoExecutionError(
+                    "fake executor requires $cond as [if, then, else]",
+                    details={"operator": operator},
+                )
+            # Branches evaluate lazily so a guarded $divide never raises
+            # on the untaken path (the null zero-division policy).
+            condition = _eval_expression(argument[0], document)
+            return _eval_expression(argument[1] if condition else argument[2], document)
+        if operator == "$eq":
+            operands = _eval_expression(argument, document)
+            return operands[0] == operands[1]
+        if operator in {"$toLong", "$toDouble"}:
+            operand = _eval_expression(argument, document)
+            if operand is None:
+                return None
+            if not isinstance(operand, (int, float)) or isinstance(operand, bool):
+                raise MongoExecutionError(
+                    f"fake executor requires a numeric operand for '{operator}'",
+                    details={"operator": operator},
+                )
+            return int(operand) if operator == "$toLong" else float(operand)
+        if operator in {"$add", "$subtract", "$multiply", "$divide"}:
+            left, right = (
+                _eval_expression(item, document) for item in argument
+            ) if isinstance(argument, (list, tuple)) and len(argument) == 2 else (None, None)
+            if not isinstance(left, (int, float)) or not isinstance(right, (int, float)):
+                raise MongoExecutionError(
+                    f"fake executor requires numeric operands for '{operator}'",
+                    details={"operator": operator},
+                )
+            if operator == "$add":
+                return left + right
+            if operator == "$subtract":
+                return left - right
+            if operator == "$multiply":
+                return left * right
+            if right == 0:
+                raise MongoExecutionError(
+                    "can't $divide by zero",
+                    details={"server_error_code": "16608"},
+                )
+            return float(left) / float(right)
+        raise MongoExecutionError(
+            f"fake executor does not support expression '{operator}'",
+            details={"expression": operator},
+        )
+    raise MongoExecutionError(
+        "fake executor does not support the expression value type",
+        details={"value_type": type(value).__name__},
+    )
+
+
 def _project_document(
     document: Mapping[str, Any], projection: Mapping[str, Any]
 ) -> dict[str, Any]:
@@ -98,10 +178,21 @@ def _project_document(
         if isinstance(marker, str) and marker.startswith("$")
     }
     inclusions = {path for path, marker in projection.items() if marker == 1}
-    if inclusions or renames:
+    computed = {
+        path: marker
+        for path, marker in projection.items()
+        if isinstance(marker, (Mapping, list, tuple))
+    }
+    if inclusions or renames or computed:
         result: dict[str, Any] = {}
         #: (length, path) ordering keeps nested builds deterministic.
-        for path in sorted(inclusions | set(renames), key=lambda item: (len(item), item)):
+        for path in sorted(
+            inclusions | set(renames) | set(computed),
+            key=lambda item: (len(item), item),
+        ):
+            if path in computed:
+                result[path] = _eval_expression(computed[path], document)
+                continue
             value = _path_value(document, renames.get(path, path))
             if value is _MISSING:
                 continue
@@ -142,26 +233,33 @@ def _group_documents(
             if alias == "_id":
                 continue
             expr_name, expr_value = next(iter(expression.items()))
-            if isinstance(expr_value, int):
-                if expr_name == "$sum":
+            if isinstance(expr_value, int) and not isinstance(expr_value, bool):
+                if expr_name == "$sum" and expr_value == 1:
                     row[alias] = len(members)
                 else:
                     row[alias] = expr_value
                 continue
-            path = expr_value[1:]
-            values: list[Any] = []
-            for member in members:
-                value = _path_value(member, path)
-                if value is not _MISSING and isinstance(value, (int, float)):
-                    values.append(value)
+            if isinstance(expr_value, str) and expr_value.startswith("$"):
+                path = expr_value[1:]
+                values = [
+                    _path_value(member, path)
+                    for member in members
+                ]
+            else:
+                values = [
+                    _eval_expression(expr_value, member) for member in members
+                ]
+            numeric = [
+                value for value in values if isinstance(value, (int, float))
+            ]
             if expr_name == "$sum":
-                row[alias] = sum(values)
+                row[alias] = sum(numeric)
             elif expr_name == "$avg":
-                row[alias] = sum(values) / len(values) if values else None
+                row[alias] = sum(numeric) / len(numeric) if numeric else None
             elif expr_name == "$min":
-                row[alias] = min(values) if values else None
+                row[alias] = min(numeric) if numeric else None
             elif expr_name == "$max":
-                row[alias] = max(values) if values else None
+                row[alias] = max(numeric) if numeric else None
             else:
                 raise MongoExecutionError(
                     f"fake executor does not support expression '{expr_name}'",

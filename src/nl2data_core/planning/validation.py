@@ -36,6 +36,7 @@ class AuthorizedView(BaseModel):
     source_id: str = Field(pattern=_IDENTIFIER_PATTERN)
     root_entity_ids: frozenset[str] = Field(default_factory=frozenset)
     field_ids: frozenset[str] = Field(default_factory=frozenset)
+    calculated_field_ids: frozenset[str] = Field(default_factory=frozenset)
     catalog_fingerprint: str | None = Field(default=None, pattern=_FINGERPRINT_PATTERN)
 
     # -- optional resolved-view binding (unbound compatibility when absent)
@@ -67,6 +68,10 @@ class AuthorizedView(BaseModel):
     def contains_field(self, field_id: str) -> bool:
         return field_id in self.field_ids
 
+    def contains_calculated_field(self, calculated_name: str) -> bool:
+        """Whether the view permits the given calculated-field name."""
+        return calculated_name in self.calculated_field_ids
+
     def allowed_aggregations_for(self, field_id: str) -> frozenset[str] | None:
         """The aggregations permitted for a field, or ``None`` when unconstrained."""
         if self.field_aggregation_restrictions is None:
@@ -86,6 +91,7 @@ class AuthorizedView(BaseModel):
             source_id=projection.source_id,
             root_entity_ids=projection.root_entity_ids,
             field_ids=projection.field_ids,
+            calculated_field_ids=projection.calculated_field_ids,
             catalog_fingerprint=projection.catalog_fingerprint,
             view_id=projection.view_id,
             view_version=projection.view_version,

@@ -15,6 +15,23 @@
 # from the per-run attribution summary.  When a bundle descriptor first
 # declares the mapping, keep these annotations in sync with it: they are
 # metadata only and are not cross-validated against the bundle.
+#
+# Questions that would plausibly select a calculated field carry a
+# ``calculated_fields`` annotation (corpus metadata for the v4.2
+# calculated-field semantics slice): the expected calculated-field name
+# and the attribution each case is expected to produce (CF_HIT when the
+# model selects the declared field, CF_NOT_REFERENCED when it is declared
+# but the question does not use it, CF_NOT_DECLARED when the active
+# bundle does not declare it yet, CF_COMPILE_FAIL when expansion fails).
+# The same rules as the value-semantics annotations apply: annotations
+# are documentation for evaluation runs; the evidence SQL stays
+# authoritative; an actual outcome that differs from the annotation is
+# an acceptable, recorded attribution deviation - not a case failure;
+# the stage gates read the combined CF_NOT_DECLARED + CF_NOT_REFERENCED
+# rate (< 10%) and the CF_COMPILE_FAIL rate (< 5%) from the per-run
+# calculated_field_summary().  When a bundle descriptor first declares a
+# calculated field, keep these annotations in sync with it: they are
+# metadata only and are not cross-validated against the bundle.
 
 questions:
   - id: q1_gmv_top_regions
@@ -24,6 +41,9 @@ questions:
       field: status
       business_terms: [paid, shipped, refunded]
       expected_outcomes: [VS_HIT, VS_HIT, VS_HIT]
+    calculated_fields:
+      - name: doubled_amount
+        expected_outcome: CF_HIT
     evidence_sql: |
       SELECT region,
              SUM(amount) AS gmv,
@@ -41,6 +61,11 @@ questions:
   - id: q2_refund_rate_by_category
     text: "Refund-rate outliers by product category."
     capabilities: [aggregation, join]
+    calculated_fields:
+      # Declared but not plausibly referenced by this ratio question:
+      # annotating it exercises the CF_NOT_REFERENCED deviation path.
+      - name: doubled_amount
+        expected_outcome: CF_NOT_REFERENCED
     evidence_sql: |
       SELECT p.category,
              COUNT(DISTINCT o.order_id) FILTER (WHERE o.status = 'refunded') AS refunded_orders,
@@ -226,6 +251,9 @@ questions:
       field: status
       business_terms: [paid, shipped, refunded]
       expected_outcomes: [VS_HIT, VS_HIT, VS_HIT]
+    calculated_fields:
+      - name: doubled_amount
+        expected_outcome: CF_HIT
     evidence_sql: |
       SELECT tenant_id,
              COUNT(*)        AS order_count,

@@ -10,6 +10,9 @@ hidden policy rules.
 
 from .context import ResolutionContext
 from .models import (
+    CalculatedField,
+    CalculatedOutputType,
+    ExprNode,
     SemanticDescriptor,
     SemanticEntityDescriptor,
     SemanticFieldDescriptor,
@@ -24,6 +27,9 @@ from .projection import ResolvedViewEntity, ResolvedViewField, ResolvedViewProje
 from .registry import ViewRegistry
 
 __all__ = [
+    "CalculatedField",
+    "CalculatedOutputType",
+    "ExprNode",
     "ResolutionContext",
     "ResolutionIssue",
     "ResolutionOutcome",

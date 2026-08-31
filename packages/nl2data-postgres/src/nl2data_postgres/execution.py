@@ -7,6 +7,7 @@ from typing import Any
 
 from nl2data_core.adapters.models import ExecutionResult
 from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.compilation.expansion import ZeroDivisionPolicyError
 
 from .client import PostgresPool
 from .config import PostgresAdapterConfig
@@ -64,6 +65,11 @@ class PostgresExecutor:
             try:
                 cursor = connection.execute(sql)
             except Exception as error:
+                if getattr(error, "sqlstate", None) == "22012":
+                    raise ZeroDivisionPolicyError(
+                        "calculated-field division by zero",
+                        details={"sqlstate": "22012"},
+                    ) from error
                 raise PostgresExecutionError(
                     "postgresql execution failed",
                     details={"cause_type": type(error).__name__},

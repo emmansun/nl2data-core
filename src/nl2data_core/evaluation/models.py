@@ -8,6 +8,7 @@ credentials, and raw prompts never cross the evaluation boundary.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from datetime import datetime
 from enum import StrEnum
 from typing import Any, Literal
@@ -87,6 +88,92 @@ def value_semantics_attribution_records(
     )
 
 
+class CalculatedFieldAttribution(StrEnum):
+    """Bounded, evidence-safe calculated-field attribution codes (D9).
+
+    ``CF_HIT`` is a selection that referenced a declared calculated field
+    and compiled, ``CF_COMPILE_FAIL`` an expansion failure recorded as a
+    structured failure on the case, ``CF_NOT_DECLARED`` an annotated
+    expected field the active bundle does not declare, and
+    ``CF_NOT_REFERENCED`` a declared field the case did not reference
+    (the D10 prompt-context quality signal).
+    """
+
+    CF_HIT = "CF_HIT"
+    CF_COMPILE_FAIL = "CF_COMPILE_FAIL"
+    CF_NOT_DECLARED = "CF_NOT_DECLARED"
+    CF_NOT_REFERENCED = "CF_NOT_REFERENCED"
+
+
+class CalculatedFieldAttributionRecord(BaseModel):
+    """One per-selection attribution record (bounded identifiers only)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    selection_id: str = Field(pattern=_IDENTIFIER_PATTERN)
+    name: str = Field(pattern=_IDENTIFIER_PATTERN)
+    attribution: CalculatedFieldAttribution
+
+
+def calculated_field_attribution_records(
+    ir: SemanticQueryIR,
+    *,
+    declared_calculated_fields: Iterable[str] = (),
+    compile_failed_fields: Iterable[str] = (),
+    expected_calculated_fields: Iterable[str] = (),
+) -> tuple[CalculatedFieldAttributionRecord, ...]:
+    """Derive evaluation-layer calculated-field attribution (design D9).
+
+    ``declared_calculated_fields`` are the names the active bundle
+    declares, ``compile_failed_fields`` the subset whose expansion
+    failed, and ``expected_calculated_fields`` the corpus annotation for
+    the case.  Annotation-vs-actual deviations are recorded, never
+    crashes: only bounded identifiers and codes are emitted.
+    """
+    declared = frozenset(declared_calculated_fields)
+    failed = frozenset(compile_failed_fields) & declared
+    expected = frozenset(expected_calculated_fields)
+    records: list[CalculatedFieldAttributionRecord] = []
+    referenced: set[str] = set()
+    for selection in ir.selections:
+        if selection.field_id not in declared:
+            # Plain physical-field selections contribute nothing; a
+            # selection referencing an undeclared calculated-field name is
+            # a fail-closed CF_003 rejection upstream, never a run-time
+            # attribution concern.
+            continue
+        referenced.add(selection.field_id)
+        attribution = (
+            CalculatedFieldAttribution.CF_COMPILE_FAIL
+            if selection.field_id in failed
+            else CalculatedFieldAttribution.CF_HIT
+        )
+        records.append(
+            CalculatedFieldAttributionRecord(
+                selection_id=selection.selection_id,
+                name=selection.field_id,
+                attribution=attribution,
+            )
+        )
+    for name in sorted(expected - declared):
+        records.append(
+            CalculatedFieldAttributionRecord(
+                selection_id="expected",
+                name=name,
+                attribution=CalculatedFieldAttribution.CF_NOT_DECLARED,
+            )
+        )
+    for name in sorted((expected & declared) - referenced):
+        records.append(
+            CalculatedFieldAttributionRecord(
+                selection_id="expected",
+                name=name,
+                attribution=CalculatedFieldAttribution.CF_NOT_REFERENCED,
+            )
+        )
+    return tuple(records)
+
+
 class MandatoryAssertion(BaseModel):
     """One mandatory assertion evaluated against protected case evidence."""
 
@@ -108,10 +195,26 @@ class EvaluationCase(BaseModel):
     name: str = Field(min_length=1, max_length=256)
     ir: SemanticQueryIR
     binding: PhysicalBinding | None = None
+    declared_calculated_fields: tuple[str, ...] = Field(
+        default_factory=tuple, max_length=32
+    )
+    expected_calculated_fields: tuple[str, ...] = Field(
+        default_factory=tuple, max_length=32
+    )
     mandatory_assertions: tuple[MandatoryAssertion, ...] = Field(
         default_factory=tuple, max_length=100
     )
     skip_reason: str | None = Field(default=None, max_length=512)
+
+    @model_validator(mode="after")
+    def _unique_calculated_field_metadata(self) -> EvaluationCase:
+        for label, names in (
+            ("declared", self.declared_calculated_fields),
+            ("expected", self.expected_calculated_fields),
+        ):
+            if len(names) != len(set(names)):
+                raise ValueError(f"{label} calculated field names must be unique")
+        return self
 
 
 class EvaluationDataset(BaseModel):
@@ -180,11 +283,26 @@ class CaseEvidence(BaseModel):
     value_semantics_attribution: tuple[ValueSemanticsAttributionRecord, ...] = Field(
         default_factory=tuple, max_length=1_000
     )
+    calculated_field_attribution: tuple[CalculatedFieldAttributionRecord, ...] = Field(
+        default_factory=tuple, max_length=1_000
+    )
     error: ErrorRecord | None = None
     fingerprint: str = Field(default="", pattern=_FINGERPRINT_PATTERN)
 
     @model_validator(mode="after")
     def _compute_fingerprint(self) -> CaseEvidence:
+        # N6: calculated-field attribution is omitted when unset so legacy
+        # evidence fingerprints stay byte-identical (task 8.2).
+        calculated_section = (
+            {
+                "calculated_field_attribution": [
+                    record.model_dump()
+                    for record in self.calculated_field_attribution
+                ]
+            }
+            if self.calculated_field_attribution
+            else {}
+        )
         fingerprint = sha256_fingerprint(
             {
                 "ir_fingerprint": self.ir_fingerprint,
@@ -195,6 +313,7 @@ class CaseEvidence(BaseModel):
                     record.model_dump()
                     for record in self.value_semantics_attribution
                 ],
+                **calculated_section,
                 "error": self.error.safe_dump() if self.error is not None else None,
             }
         )
@@ -295,6 +414,24 @@ class EvaluationReport(BaseModel):
             if result.evidence is None:
                 continue
             for record in result.evidence.value_semantics_attribution:
+                summary[record.attribution.value] += 1
+        return summary
+
+    def calculated_field_summary(self) -> dict[str, int]:
+        """Per-run calculated-field attribution summary (design D9).
+
+        Counts bounded attribution codes across every case's evidence so
+        the roadmap gates (combined ``CF_NOT_DECLARED + CF_NOT_REFERENCED
+        < 10%`` and ``CF_COMPILE_FAIL < 5%``) read this report directly;
+        no expressions, physical names, or values are included.
+        """
+        summary: dict[str, int] = {
+            code.value: 0 for code in CalculatedFieldAttribution
+        }
+        for result in self.results:
+            if result.evidence is None:
+                continue
+            for record in result.evidence.calculated_field_attribution:
                 summary[record.attribution.value] += 1
         return summary
 

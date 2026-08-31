@@ -46,6 +46,26 @@ DEFAULT_STAGES = frozenset(
 #: Expression operators allowed inside ``$group`` accumulators.
 DEFAULT_EXPRESSIONS = frozenset({"$sum", "$avg", "$min", "$max"})
 
+#: Computed-expression operators the deterministic calculated-field compiler
+#: emits into ``$project`` and ``$group``; anything else fails closed.
+_COMPUTED_EXPRESSION_OPERATORS = frozenset(
+    {
+        "$add",
+        "$subtract",
+        "$multiply",
+        "$divide",
+        "$cond",
+        "$eq",
+        "$toLong",
+        "$toDouble",
+    }
+)
+
+#: Maximum nesting depth accepted inside a computed expression tree; it
+#: mirrors the calculated-field tree depth bound so adversarial specs can
+#: never drive the guard into unbounded recursion.
+_MAX_EXPRESSION_DEPTH = 16
+
 #: Keys that would inject JavaScript, regex evaluation, or unapproved
 #: constructs into a filter; each is rejected with a specific reason.
 _JS_KEYS = frozenset(
@@ -300,6 +320,66 @@ def _spec_bounded_rows(spec: MongoQuerySpec) -> int | None:
     return None
 
 
+def _validate_computed_expression(
+    value: Any,
+    policy: MongoGuardPolicy,
+    reasons: list[str],
+    *,
+    depth: int = 0,
+    derived_paths: frozenset[str] = frozenset(),
+) -> None:
+    """Bounded validation of computed expression trees (calculated fields).
+
+    Only the arithmetic/conditional operators the deterministic compiler
+    emits are accepted; operand paths must stay in the allowed scope and
+    nesting depth is capped so adversarial specs cannot exhaust the guard.
+    """
+    if depth > _MAX_EXPRESSION_DEPTH:
+        reasons.append("computed expression exceeds the maximum nesting depth")
+        return
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            _validate_computed_expression(
+                item, policy, reasons, depth=depth + 1, derived_paths=derived_paths
+            )
+        return
+    if not isinstance(value, Mapping):
+        reasons.append(
+            "computed expression operands must be operators, '$path' references, or literals"
+        )
+        return
+    if len(value) != 1:
+        reasons.append("computed expression objects must be single-key operators")
+        return
+    operator, argument = next(iter(value.items()))
+    if operator not in _COMPUTED_EXPRESSION_OPERATORS:
+        reasons.append(f"computed expression operator '{operator}' is not approved")
+        return
+    if operator == "$cond":
+        if not isinstance(argument, (list, tuple)) or len(argument) != 3:
+            reasons.append("$cond requires a three-element [if, then, else] array")
+            return
+    elif operator in {"$toLong", "$toDouble"}:
+        argument = (argument,)
+    elif not isinstance(argument, (list, tuple)) or len(argument) != 2:
+        reasons.append(f"'{operator}' requires a two-element operand array")
+        return
+    for branch in argument:
+        if isinstance(branch, str) and branch.startswith("$"):
+            path = branch[1:]
+            if path == "_id" or path in policy.allowed_fields or path in derived_paths:
+                continue
+            reasons.append(
+                f"computed expression path '{branch}' is outside the allowed scope"
+            )
+            continue
+        if branch is None or isinstance(branch, (bool, int, float)):
+            continue
+        _validate_computed_expression(
+            branch, policy, reasons, depth=depth + 1, derived_paths=derived_paths
+        )
+
+
 def _validate_projection(
     projection: Mapping[str, Any],
     policy: MongoGuardPolicy,
@@ -330,8 +410,16 @@ def _validate_projection(
                 marker == "$_id" or (marker.startswith("$") and marker[1:] in policy.allowed_fields)
             ):
                 continue
+            if isinstance(marker, (Mapping, list)):
+                # Bounded computed expression (an expanded calculated field);
+                # its operand paths are validated recursively.
+                _validate_computed_expression(
+                    marker, policy, reasons, derived_paths=derived_paths
+                )
+                continue
             reasons.append(
-                f"projection value for '{path}' must be 1, 0, or a '$path' expression"
+                f"projection value for '{path}' must be 1, 0, a '$path' "
+                "expression, or a computed expression"
             )
         return
     markers = set(projection.values())
@@ -423,7 +511,8 @@ def _validate_aggregate(
                     derived_paths=frozenset(derived),
                 )
                 if not any(
-                    marker == 1 or isinstance(marker, str)
+                    marker == 1
+                    or isinstance(marker, (str, Mapping, list, tuple))
                     for path, marker in argument.items()
                     if path != "_id"
                 ):
@@ -507,7 +596,11 @@ def _validate_group(argument: Any, policy: MongoGuardPolicy, reasons: list[str])
         if expr_name not in policy.allowed_expressions:
             reasons.append(f"$group expression '{expr_name}' is not approved by the profile")
             continue
-        if isinstance(expr_value, int):
+        if isinstance(expr_value, (Mapping, list, tuple)):
+            # Bounded computed expression (an expanded calculated field);
+            # its operand paths are validated recursively.
+            _validate_computed_expression(expr_value, policy, reasons)
+        elif isinstance(expr_value, int):
             if expr_name == "$sum" and expr_value != 1:
                 reasons.append("$sum constant must be 1 (counting)")
         elif isinstance(expr_value, str):

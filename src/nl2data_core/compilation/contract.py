@@ -31,6 +31,7 @@ from nl2data_core.governance.models import EffectiveLimits, ExecutionAuthorizati
 from nl2data_core.planning.ir.models import IRViewReference, LogicalJoinPlan, SemanticQueryIR
 from nl2data_core.planning.models import PhysicalBinding
 from nl2data_core.planning.validation import AuthorizedView
+from nl2data_core.views.models import CalculatedField
 
 _FINGERPRINT_PATTERN = r"^sha256:[0-9a-f]{64}$"
 _IDENTIFIER_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_\-\.]{0,127}$"
@@ -40,6 +41,12 @@ _IDENTIFIER_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_\-\.]{0,127}$"
 #: is rejected outright - strictness lands before version divergence so
 #: no evidence can exist in an "unversioned" state.
 PLANNER_IDENTITY_VERSIONING = False
+
+#: Activation switch for expansion-identity versioning strictness (v4.2 D12).
+#: When versioning becomes active, evidence missing ``expansion_identity``
+#: is rejected outright - the same strictness ordering as the planner
+#: identity guard, so legacy evidence stays valid until the switch flips.
+EXPANSION_IDENTITY_VERSIONING = False
 
 
 def _utc_now() -> datetime:
@@ -75,6 +82,13 @@ class CompilationContext(BaseModel):
     compiler_context: PhysicalBinding | None = None
     join_plan: LogicalJoinPlan | None = None
     planner_identity: str | None = Field(default=None, pattern=_IDENTIFIER_PATTERN)
+    #: Bundle-anchored calculated-field definitions available for
+    #: compile-time expansion (v4.2 D1); unset when none are declared.
+    calculated_fields: tuple[CalculatedField, ...] | None = None
+    #: Expansion-implementation identity anchored on the producer side
+    #: (v4.2 D12); compilers copy it into the evidence so the symmetric
+    #: pre-execution guard can reject drift and one-sided identities.
+    expansion_identity: str | None = Field(default=None, pattern=_IDENTIFIER_PATTERN)
 
     @model_validator(mode="after")
     def _consistent(self) -> CompilationContext:
@@ -139,6 +153,10 @@ class CompilationEvidence(BaseModel):
     artifact_fingerprint: str = Field(pattern=_FINGERPRINT_PATTERN)
     join_plan_fingerprint: str | None = Field(default=None, pattern=_FINGERPRINT_PATTERN)
     planner_identity: str | None = Field(default=None, pattern=_IDENTIFIER_PATTERN)
+    calculated_field_hashes: tuple[CalculatedFieldHash, ...] | None = Field(
+        default=None, max_length=32
+    )
+    expansion_identity: str | None = Field(default=None, pattern=_IDENTIFIER_PATTERN)
 
     @model_validator(mode="after")
     def _validate_references(self) -> CompilationEvidence:
@@ -146,7 +164,27 @@ class CompilationEvidence(BaseModel):
         for fingerprint in self.mandatory_filter_fingerprints:
             if not pattern.fullmatch(fingerprint):
                 raise ValueError("obligation references must be sha256 fingerprints")
+        if self.calculated_field_hashes is not None:
+            names = [record.name for record in self.calculated_field_hashes]
+            if names != sorted(names) or len(names) != len(set(names)):
+                raise ValueError(
+                    "calculated field hash records must be unique and sorted by name"
+                )
         return self
+
+
+class CalculatedFieldHash(BaseModel):
+    """Frozen name+hash record of one referenced calculated field (v4.2 D6).
+
+    The hash covers the canonical expression tree, the zero-division
+    policy, and the output type - never the tree itself, physical names,
+    or values.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    name: str = Field(pattern=_IDENTIFIER_PATTERN)
+    hash: str = Field(pattern=_FINGERPRINT_PATTERN)
 
 
 class CompileResult(BaseModel):
@@ -225,35 +263,44 @@ class IRCompiler(Protocol):
 
 def compilation_evidence_fingerprint(evidence: CompilationEvidence) -> str:
     """Stable evidence fingerprint of the safe compilation facts."""
-    return sha256_fingerprint(
-        {
-            "ir_version": evidence.ir_version,
-            "ir_fingerprint": evidence.ir_fingerprint,
-            "source_id": evidence.source_id,
-            "operation": evidence.operation,
-            "field_ids": sorted(evidence.field_ids),
-            "view_fingerprint": evidence.view_fingerprint,
-            "bundle_fingerprint": evidence.bundle_fingerprint,
-            "policy_fingerprint": evidence.policy_fingerprint,
-            "tenant_scope_fingerprint": evidence.tenant_scope_fingerprint,
-            "purpose": evidence.purpose,
-            "adapter_type": evidence.adapter_type,
-            "capability_ids": sorted(evidence.capability_ids),
-            "required_capabilities": sorted(evidence.required_capabilities),
-            "mandatory_filter_fingerprints": sorted(
-                evidence.mandatory_filter_fingerprints
-            ),
-            "max_rows": evidence.max_rows,
-            "max_columns": evidence.max_columns,
-            "max_execution_seconds": evidence.max_execution_seconds,
-            "max_result_bytes": evidence.max_result_bytes,
-            "compiler_identity": evidence.compiler_identity,
-            "compiler_version": evidence.compiler_version,
-            "artifact_fingerprint": evidence.artifact_fingerprint,
-            "join_plan_fingerprint": evidence.join_plan_fingerprint,
-            "planner_identity": evidence.planner_identity,
-        }
-    )
+    payload = {
+        "ir_version": evidence.ir_version,
+        "ir_fingerprint": evidence.ir_fingerprint,
+        "source_id": evidence.source_id,
+        "operation": evidence.operation,
+        "field_ids": sorted(evidence.field_ids),
+        "view_fingerprint": evidence.view_fingerprint,
+        "bundle_fingerprint": evidence.bundle_fingerprint,
+        "policy_fingerprint": evidence.policy_fingerprint,
+        "tenant_scope_fingerprint": evidence.tenant_scope_fingerprint,
+        "purpose": evidence.purpose,
+        "adapter_type": evidence.adapter_type,
+        "capability_ids": sorted(evidence.capability_ids),
+        "required_capabilities": sorted(evidence.required_capabilities),
+        "mandatory_filter_fingerprints": sorted(
+            evidence.mandatory_filter_fingerprints
+        ),
+        "max_rows": evidence.max_rows,
+        "max_columns": evidence.max_columns,
+        "max_execution_seconds": evidence.max_execution_seconds,
+        "max_result_bytes": evidence.max_result_bytes,
+        "compiler_identity": evidence.compiler_identity,
+        "compiler_version": evidence.compiler_version,
+        "artifact_fingerprint": evidence.artifact_fingerprint,
+        "join_plan_fingerprint": evidence.join_plan_fingerprint,
+        "planner_identity": evidence.planner_identity,
+    }
+    # N6 (v4.2): unset optional members are omitted entirely so evidence
+    # for queries without calculated fields keeps its previous fingerprint
+    # byte-identically.
+    if evidence.calculated_field_hashes:
+        payload["calculated_field_hashes"] = [
+            {"name": record.name, "hash": record.hash}
+            for record in evidence.calculated_field_hashes
+        ]
+    if evidence.expansion_identity is not None:
+        payload["expansion_identity"] = evidence.expansion_identity
+    return sha256_fingerprint(payload)
 
 
 def artifact_guard_evidence_fingerprint(guard: ArtifactGuardResult) -> str:
@@ -297,6 +344,7 @@ def verify_pre_execution_guard(
     authorization: ExecutionAuthorization | None,
     now: datetime | None = None,
     identity_versioning: bool | None = None,
+    expansion_identity_versioning: bool | None = None,
 ) -> tuple[str, ...]:
     """Re-verify the full compiler-governance chain immediately before execution.
 
@@ -308,12 +356,18 @@ def verify_pre_execution_guard(
     without context - fails the guard because a one-sided identity cannot
     be drift-checked.  When ``identity_versioning`` is active (default:
     :data:`PLANNER_IDENTITY_VERSIONING`), evidence missing a planner
-    identity is rejected outright.  Returns human-safe reasons; an empty
-    tuple means the chain verified and execution may proceed.  The
+    identity is rejected outright.  The expansion-identity guard (v4.2 D12)
+    mirrors the planner-identity guard: drift and one-sided identities are
+    rejected, and when ``expansion_identity_versioning`` is active
+    (default: :data:`EXPANSION_IDENTITY_VERSIONING`) evidence missing an
+    expansion identity is rejected outright.  Returns human-safe reasons;
+    an empty tuple means the chain verified and execution may proceed.  The
     boundary never raises and never broadens.
     """
     if identity_versioning is None:
         identity_versioning = PLANNER_IDENTITY_VERSIONING
+    if expansion_identity_versioning is None:
+        expansion_identity_versioning = EXPANSION_IDENTITY_VERSIONING
     reasons: list[str] = []
 
     if evidence.ir_version != context.ir.ir_version:
@@ -352,6 +406,31 @@ def verify_pre_execution_guard(
         reasons.append(
             "compilation evidence is missing a planner identity and planner "
             "identity versioning is active"
+        )
+    # Expansion-identity drift guard (v4.2 D12): symmetric, fail-closed.
+    if context.expansion_identity is not None and evidence.expansion_identity is None:
+        reasons.append(
+            "compilation evidence lacks the expansion identity declared by the "
+            "compilation context"
+        )
+    elif context.expansion_identity is None and evidence.expansion_identity is not None:
+        reasons.append(
+            "compilation evidence carries an expansion identity the compilation "
+            "context does not declare"
+        )
+    elif (
+        context.expansion_identity is not None
+        and evidence.expansion_identity is not None
+        and evidence.expansion_identity != context.expansion_identity
+    ):
+        reasons.append(
+            "compilation evidence expansion identity does not match the current "
+            "expansion identity"
+        )
+    if expansion_identity_versioning and evidence.expansion_identity is None:
+        reasons.append(
+            "compilation evidence is missing an expansion identity and "
+            "expansion identity versioning is active"
         )
     if evidence.purpose != context.purpose:
         reasons.append("compilation evidence does not match the current purpose")

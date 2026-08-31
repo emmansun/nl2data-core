@@ -23,9 +23,18 @@ from nl2data_core.compilation.contract import (
     CompilationEvidence,
     CompileResult,
 )
+from nl2data_core.compilation.expansion import (
+    EXPANSION_IDENTITY,
+    calculated_field_hashes,
+    contains_division,
+    expand_sql,
+    resolve_calculated_fields,
+    zero_division_supported,
+)
 from nl2data_core.planning.ir.models import IRFilter, LogicalJoinPlan, SemanticQueryIR
 from nl2data_core.planning.ir.validation import validate_ir, verify_ir_fingerprint
 from nl2data_core.planning.models import PhysicalBinding
+from nl2data_core.views.models import CalculatedField
 
 from .models import sql_artifact_fingerprint
 
@@ -169,13 +178,21 @@ def compile_sql(
             "IR fingerprint does not match its canonical payload",
             details={"ir_id": ir.ir_id},
         )
-    validation = validate_ir(ir, view=context.view)
+    validation = validate_ir(
+        ir, view=context.view, calculated_field_ids=declared_calculated(ir, context)
+    )
     if not validation.valid:
         raise SQLCompileError(
             "IR failed structural validation",
             details={"issue_codes": ",".join(validation.issue_codes())},
         )
-    artifact = _compile(ir, binding, join_plan=context.join_plan)
+    calculated = resolve_calculated_fields(ir, context)
+    if calculated and context.expansion_identity != EXPANSION_IDENTITY:
+        raise SQLCompileError(
+            "calculated-field expansion identity does not match the SQL compiler"
+        )
+    _reject_unenforceable_zero_division(calculated, binding.dialect)
+    artifact = _compile(ir, binding, join_plan=context.join_plan, calculated=calculated)
     limits = context.effective_limits
     evidence = CompilationEvidence(
         ir_version=ir.ir_version,
@@ -205,8 +222,39 @@ def compile_sql(
             context.join_plan.fingerprint if context.join_plan is not None else None
         ),
         planner_identity=context.planner_identity,
+        calculated_field_hashes=calculated_field_hashes(ir, context),
+        expansion_identity=EXPANSION_IDENTITY if calculated else None,
     )
     return CompileResult(artifact=artifact, evidence=evidence)
+
+
+def declared_calculated(
+    ir: SemanticQueryIR, context: CompilationContext
+) -> frozenset[str] | None:
+    """The calculated-field names the context declares, for IR re-validation."""
+    names = frozenset(definition.name for definition in context.calculated_fields or ())
+    return names or None
+
+
+def _reject_unenforceable_zero_division(
+    calculated: dict[str, CalculatedField], dialect: str
+) -> None:
+    """Fail closed when the dialect cannot enforce a declared division policy.
+
+    SQLite yields NULL for division by zero, so an ``error``-policy
+    calculated field over SQLite would silently degrade to the null
+    policy; the compile fails instead (v4.2 D1/N1).
+    """
+    for name, definition in calculated.items():
+        if contains_division(definition.expression) and not zero_division_supported(
+            definition.zero_division_policy, dialect
+        ):
+            raise SQLCompileError(
+                f"calculated field '{name}' declares zero_division_policy="
+                f"'{definition.zero_division_policy}', which dialect "
+                f"'{dialect}' cannot enforce; refusing to compile",
+                details={"calculated_field": name, "dialect": dialect},
+            )
 
 
 def _compile(
@@ -214,6 +262,7 @@ def _compile(
     binding: PhysicalBinding,
     *,
     join_plan: LogicalJoinPlan | None = None,
+    calculated: dict[str, CalculatedField] | None = None,
 ) -> str:
     """Compile a validated IR into SQL; the binding is guaranteed present."""
     dialect = binding.dialect
@@ -265,9 +314,32 @@ def _compile(
             selection.field_id
             for selection in ir.selections
             if selection.aggregation == "none"
+            and selection.field_id not in (calculated or {})
         ]
     )
     for selection in ir.selections:
+        definition = (calculated or {}).get(selection.field_id)
+        if definition is not None:
+            # D1: expand the calculated field deterministically at compile
+            # time; the aggregation kind applies uniformly to the expanded
+            # expression (including ``none``, the row-level case).
+            expanded = expand_sql(
+                definition,
+                binding=binding,
+                dialect=dialect,
+                resolve_leaf=_qualified_column,
+            )
+            if selection.aggregation != "none":
+                selections.append(
+                    f"{selection.aggregation.upper()}({expanded}) AS "
+                    f"{quote_identifier(selection.alias or definition.name)}"
+                )
+            else:
+                selections.append(
+                    f"{expanded} AS "
+                    f"{quote_identifier(selection.alias or definition.name)}"
+                )
+            continue
         physical = binding.physical_name(selection.field_id)
         if physical is None:
             raise SQLCompileError(

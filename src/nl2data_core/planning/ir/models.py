@@ -23,7 +23,14 @@ from collections.abc import Mapping
 from math import isfinite
 from typing import Any, Literal, cast
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from nl2data_core.canonical import canonical_json, sha256_fingerprint
 from nl2data_core.planning.models import AggregationKind, FilterOperator, OrderDirection
@@ -427,6 +434,69 @@ class IRExtension(BaseModel):
         }
 
 
+#: The reserved parameterized placeholder extension kind (v4.2 reservation)
+#: mapped to the capability that must be declared to accept it.  Nothing
+#: declares the capability in v4.2, so every construction path that emits
+#: the placeholder fails closed (D8).
+NAMED_QUERY_PLACEHOLDER_KIND = "named_query_placeholder"
+NAMED_QUERY_PLACEHOLDER_CAPABILITY = "named-query-placeholders"
+
+
+class NamedQueryPlaceholderParameter(BaseModel):
+    """One typed scalar parameter of a reserved NamedQuery placeholder."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    name: str = Field(pattern=_IDENTIFIER_PATTERN)
+    scalar_type: Literal["str", "int", "float", "bool"]
+    required: bool = True
+
+    def canonical_payload(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "scalar_type": self.scalar_type,
+            "required": self.required,
+        }
+
+
+class NamedQueryPlaceholderExtension(BaseModel):
+    """Validated payload schema of the reserved placeholder extension.
+
+    Bounded query reference plus a bounded list of typed scalar
+    parameters; JSON-wire safe with no physical names or executable
+    material (the generic ``IRExtension`` payload checks already reject
+    non-JSON values and physical content before this schema applies).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    query_ref: str = Field(pattern=_IDENTIFIER_PATTERN)
+    parameters: tuple[NamedQueryPlaceholderParameter, ...] = Field(
+        default_factory=tuple, max_length=_MAX_EXTENSIONS
+    )
+
+    @field_validator("parameters")
+    @classmethod
+    def _unique_parameter_names(
+        cls, value: tuple[NamedQueryPlaceholderParameter, ...]
+    ) -> tuple[NamedQueryPlaceholderParameter, ...]:
+        names = [parameter.name for parameter in value]
+        if len(names) != len(set(names)):
+            raise ValueError("placeholder parameter names must be unique")
+        return value
+
+    def canonical_payload(self) -> dict[str, Any]:
+        return {
+            "query_ref": self.query_ref,
+            "parameters": [parameter.canonical_payload() for parameter in self.parameters],
+        }
+
+    @classmethod
+    def validate_payload(cls, payload: dict[str, Any]) -> NamedQueryPlaceholderExtension:
+        """Validate a raw extension payload against the placeholder schema."""
+        return cls.model_validate(payload)
+
+
 class SemanticQueryIR(BaseModel):
     """An immutable versioned canonical semantic query.
 
@@ -474,6 +544,26 @@ class SemanticQueryIR(BaseModel):
             if re.fullmatch(_IDENTIFIER_PATTERN, capability) is None:
                 raise ValueError("required capabilities must be bounded identifiers")
         return value
+
+    @model_validator(mode="after")
+    def _validate_reserved_placeholder_payloads(self) -> SemanticQueryIR:
+        """Structurally validate the reserved placeholder payload schema.
+
+        The reservation is schema-only and fail-closed: an extension of the
+        reserved kind whose payload violates the placeholder schema fails
+        IR construction, so the schema cannot rot before v4.4 consumes it.
+        """
+        for extension in self.extensions:
+            if extension.kind != NAMED_QUERY_PLACEHOLDER_KIND:
+                continue
+            try:
+                NamedQueryPlaceholderExtension.validate_payload(extension.payload)
+            except ValidationError as error:
+                raise ValueError(
+                    f"extension '{extension.extension_id}' uses the reserved "
+                    f"'{NAMED_QUERY_PLACEHOLDER_KIND}' kind with an invalid payload: {error}"
+                ) from error
+        return self
 
     @model_validator(mode="after")
     def _compute_fingerprint(self) -> SemanticQueryIR:

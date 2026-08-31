@@ -116,6 +116,31 @@ member: the bundle-referenced descriptor snapshot is unavailable or its
 catalog fingerprint does not match the authorized view — value
 resolution fails closed).
 
+### Calculated fields (v4.2)
+
+| Code | Retryable | Meaning |
+| --- | --- | --- |
+| `CF_001` | No | Calculated-field expression rejected (operator outside the closed whitelist, non-int constant, non-numeric leaf, bounds exceeded, declared output type does not match the inferred type) |
+| `CF_002` | No | Invalid reference inside a calculated-field expression (unknown field id, or composition: a calculated field referencing another calculated field) |
+| `CF_003` | No | A selection references an undeclared calculated-field name; fails closed at IR validation |
+| `CF_004` | No | Bidirectional pii isolation: a calculated-field expression references a `pii: true` field (definition time), or a `pii` declaration is applied to a field already referenced by a declared calculated field (bundle validation time). Future field-masking policy targets must join the same check. |
+| `CF_005` | No | Runtime zero-division failure under the `error` policy; structured execution failure, never a partial result |
+
+`CF_001` and `CF_002` fail at descriptor definition time (and are
+re-validated fail-closed at compile time); `CF_003` fails at IR
+validation; `CF_004` is enforced **bidirectionally** because masking is
+enforced by adapter post-processing on output columns (see the
+[pii masking ADR](../architecture/adr-pii-masking-enforcement-point.md))
+— a derived output column would carry unmasked-derived values past that
+enforcement point, so either arrival order is rejected;
+`CF_005` is the execution-stage translation of a zero division under
+the declared `error` `zero_division_policy` (MongoDB server code 16608,
+SQLite fail-closed at compile time because it cannot enforce the
+policy). Evaluation-layer attribution codes CF_HIT, CF_COMPILE_FAIL,
+CF_NOT_DECLARED, and CF_NOT_REFERENCED are bounded
+evidence metadata, not error codes — see
+[Semantic layer](../architecture/semantic-layer.md#calculated-field-attribution).
+
 ### Durable state
 
 | Code | Retryable | Meaning |

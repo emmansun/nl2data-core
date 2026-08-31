@@ -206,16 +206,87 @@ schema + 指纹属性，延迟到
 
 ### 切片门禁（路线图）
 
-下一个语义层切片（v4.2，计算字段）在 v4.1 质量门禁达成前
-**不得启动**：**`VS_HIT` ≥ 90%**，覆盖带标注的 demo/评估语料，
+v4.1 质量门禁——**`VS_HIT` ≥ 90%**，覆盖带标注的 demo/评估语料，
 从完整语料运行的归因摘要
-（`EvaluationReport.value_semantics_summary()`）读取。门禁记录在
-本路线图说明中，不在代码里——归因维度就是被测量的输入。
+（`EvaluationReport.value_semantics_summary()`）读取——是 v4.2 切片
+（计算字段）启动所依据的前提条件。门禁记录在本路线图说明中，
+不在代码里——归因维度就是被测量的输入。v4.2 门禁记录在下方
+[计算字段切片门禁](#计算字段切片门禁路线图)。
+
+## 计算字段（v4.2）
+
+实体描述符可以声明一个有界的 `CalculatedField` 列表（数量 ≤ 32）：
+对实体自身数值字段的受治理、已指纹化的表达式，由编译器在编译期
+确定性展开。表达式语言是封闭白名单（`field`、`const`、`add`、
+`sub`、`mul`、`div`）；每个被拒绝的构造及其替代路径记录在
+[ADR-045](adr-calculated-field-operator-whitelist.zh-CN.md)。
+
+**编译器做什么。** 表达式永远不进入 IR —— 选择项**按名称**引用
+计算字段（未知名称由 `CF_003` fail-closed 拒绝），引用它的 IR 会
+携带 `calculated-fields` 能力；编译器重新校验表达式树，通过物理
+绑定解析 `field` 叶子，并发出带显式 CAST 的适配器原生输出以强制
+声明的输出类型（`div` 为真除法；一致性套件固定 `7 / 2 → 3.5` 以
+捕获 SQLite 整数除法截断）。运行期没有任何解释。`zero_division_policy`
+（`null` | `error`）按字段声明：`null` 通过守卫展开产生 NULL/缺失，
+`error` 抛出结构化的 `CF_005` 执行失败。
+
+**治理链。** 计算字段是实体级可选成员，因此不变式 **N6 原样适用**
+（见下方清单）：声明它就是快照破坏事件，且**对计算字段内容的任何
+修改——表达式、策略、label、输出类型——都是快照破坏事件**，必须
+遵循与值语义相同的升级清单（descriptor fingerprint → snapshot
+fingerprint → 旧 Bundle 的 `catalog_incompatible` → 重新发布 →
+重新审计证据）。对 `pii: true` 字段的引用在**两个方向**上都被
+`CF_004` 拒绝：在计算字段定义期，以及在 Bundle 校验期（后续对
+已被计算字段引用的字段应用 pii）。未来字段掩码策略模型落地时，
+其目标字段必须接入同一交集检查。理由（掩码由适配器对
+输出列的后处理强制；派生列会绕过该执行点）见
+[pii 掩码 ADR](adr-pii-masking-enforcement-point.zh-CN.md) 与
+ADR-045。
+
+**提示上下文。** 计算字段身份（`name`、`label`、`description`、
+`output_type`——绝不是表达式或策略）作为有界、安全内容校验过的
+上下文进入模型指令包。模型仍然只按名称引用：模型发出的表达式
+材料会被结构化拒绝（N4）。
+
+### 计算字段归因
+
+评估层把计算字段结果聚合为有界的 `CF_HIT` / `CF_COMPILE_FAIL` /
+`CF_NOT_DECLARED` / `CF_NOT_REFERENCED` 归因——按选择项记录在
+`CaseEvidence` 上，按用例、按运行通过
+`EvaluationReport.calculated_field_summary()` 汇总。
+`demo/questions/questions.yml` 中的语料标注遵循与值语义标注相同的
+仅元数据模式：偏差被记录，绝不会导致崩溃。
+
+### 计算字段切片门禁（路线图）
+
+v4.2 质量门禁从完整带标注语料运行的 `calculated_field_summary()`
+读取：组合 **`CF_NOT_DECLARED + CF_NOT_REFERENCED < 10%`** 与 DSL
+表达式失败率（**`CF_COMPILE_FAIL` < 5%**）。与 v4.1 门禁一样，
+门禁记录在本路线图说明中，不在代码里。
+
+### 首次采纳指引
+
+在声明计算字段之前，先评估适配器的 `calculated-fields` 能力支持：
+未声明该能力的适配器上，引用查询会 fail-closed。第一个声明计算
+字段的 Bundle 会改变快照 fingerprint，需要重新发布与证据重新审计
+（与 v4.1 清单逐字相同），因此建议配合计划内的重新发布窗口声明。
+
+### NamedQuery 占位符保留（v4.4）
+
+IR 携带一个保留的、零行为扩展 schema（`named_query_placeholder`，
+能力 `named-query-placeholders`）：类型化标量参数负载（`name`、
+`scalar_type` 取值 `str|int|float|bool`、`required`），不含物理名称。
+在 v4.2 中该保留是 **fail-closed** 的：没有任何适配器声明该能力，
+携带占位符的查询无法执行，无效的占位符负载会导致 IR 构造失败。
+占位符在计算字段表达式树内结构上不可表达；v4.4 扩展白名单时不得
+开放这条路径。运行期参数值需要 v4.1 的 bool/int 子类纪律（const
+值是指纹域标量，不是伪装成 int 的 Python bool）。v4.4 可以在自己的
+变更中修订该保留——按 N6 对称性，移除是指纹安全的。
 
 ## 可选成员评审清单（N6）
 
-未来每一个*可选*描述符成员（例如 v4.2 的 `CalculatedField` 或 v4.3 的
-`Metric`）都继承不变式 **N6**：未设置的成员必须完全从
+未来每一个*可选*描述符成员（v4.1 的 `ValueSemantics`、v4.2 的
+`CalculatedField`、v4.3 的 `Metric`）都继承不变式 **N6**：未设置的成员必须完全从
 `canonical_payload()` 中省略，而不是序列化为 `null`，这样引入该成员后，
 所有 descriptor、snapshot 与 bundle 的 fingerprint 保持逐字节一致。
 合并新的可选成员前请确认：

@@ -13,7 +13,13 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from nl2data_core.canonical import sha256_fingerprint
 
-from .models import IR_VERSION, IRFilter, SemanticQueryIR
+from .models import (
+    IR_VERSION,
+    NAMED_QUERY_PLACEHOLDER_CAPABILITY,
+    NAMED_QUERY_PLACEHOLDER_KIND,
+    IRFilter,
+    SemanticQueryIR,
+)
 
 _IDENTIFIER_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_\-\.]{0,127}$"
 
@@ -31,6 +37,18 @@ _CAPABILITY_TO_OPERATION = {
     "ordering": "order",
     "contains": "filter",
     "list_ops": "filter",
+}
+
+
+#: Capability that must be declared when IR selections reference declared
+#: calculated fields (v4.2 calculated-field semantics, D5).
+_CALCULATED_FIELDS_CAPABILITY = "calculated-fields"
+
+#: Reserved extension kinds mapped to the capability that accepts them; an
+#: extension kind absent from this map requires a capability equal to its
+#: own kind (the pre-v4.2 rule).
+_REQUIRED_CAPABILITY_BY_KIND = {
+    NAMED_QUERY_PLACEHOLDER_KIND: NAMED_QUERY_PLACEHOLDER_CAPABILITY,
 }
 
 
@@ -93,6 +111,7 @@ def validate_ir(
     require_bounded: bool = True,
     max_limit: int = 1_000_000,
     required_time_fields: frozenset[str] = frozenset(),
+    calculated_field_ids: frozenset[str] | None = None,
 ) -> IRValidationResult:
     """Validate IR invariants before any compiler or adapter is called.
 
@@ -100,6 +119,10 @@ def validate_ir(
     .AuthorizedView` the IR may reference (imported lazily to keep the IR
     layer free of view coupling at module scope).  ``require_bounded``
     rejects an unbounded IR wherever a bounded result is required.
+    ``calculated_field_ids`` optionally carries the declared calculated
+    field names the IR's selections may reference (fail-closed CF_003
+    checks apply only when the set is non-empty, so legacy validation is
+    unchanged for queries without calculated fields).
     """
     issues: list[IRValidationIssue] = []
 
@@ -250,9 +273,16 @@ def validate_ir(
             "provenance.root_entity_id",
         )
 
+    # -- calculated-field references (fail-closed, v4.2) ---------------------
+    declared_calculated = frozenset(calculated_field_ids) if calculated_field_ids else frozenset()
+    if view is not None:
+        view_calculated = getattr(view, "calculated_field_ids", None)
+        if isinstance(view_calculated, frozenset) and view_calculated:
+            declared_calculated = declared_calculated | view_calculated
+
     # -- authorized view ----------------------------------------------------
     if view is not None:
-        _validate_view_scope(ir, view, issues)
+        _validate_view_scope(ir, view, issues, declared_calculated)
         if _view_binding_fingerprint(view) is not None:
             _validate_view_binding(ir, view, issues)
 
@@ -281,7 +311,10 @@ def validate_ir(
     # -- extensions fail closed ---------------------------------------------
     declared = frozenset(ir.required_capabilities)
     for extension in ir.extensions:
-        if extension.kind not in declared:
+        required_capability = _REQUIRED_CAPABILITY_BY_KIND.get(
+            extension.kind, extension.kind
+        )
+        if required_capability not in declared:
             _append(
                 issues,
                 "unsupported_extension",
@@ -289,6 +322,8 @@ def validate_ir(
                 "required capability",
                 f"extensions.{extension.extension_id}",
             )
+
+    _validate_calculated_references(ir, declared_calculated, issues)
 
     return IRValidationResult(
         valid=not issues,
@@ -298,13 +333,80 @@ def validate_ir(
     )
 
 
+def _validate_calculated_references(
+    ir: SemanticQueryIR,
+    declared_calculated: frozenset[str],
+    issues: list[IRValidationIssue],
+) -> None:
+    """Calculated-field reference checks (v4.2, fail-closed).
+
+    Only selections may reference calculated fields; a filter, grouping,
+    or ordering that references one fails closed with ``CF_003``.  Every
+    selection that resolves to a declared calculated field requires the
+    ``calculated-fields`` capability so unsupported compilers and adapters
+    reject the query through the existing unsupported-capability path.
+    No-op when no calculated fields are declared, so legacy validation is
+    byte-for-byte unchanged for queries without calculated fields.
+    """
+    if not declared_calculated:
+        return
+    capabilities = frozenset(ir.required_capabilities)
+    for selection in ir.selections:
+        if (
+            selection.field_id in declared_calculated
+            and _CALCULATED_FIELDS_CAPABILITY not in capabilities
+        ):
+            _append(
+                issues,
+                "calculated_fields_capability_missing",
+                f"selection '{selection.selection_id}' references calculated "
+                f"field '{selection.field_id}' but the 'calculated-fields' "
+                "capability is not declared",
+                "required_capabilities",
+            )
+    for filter_ in ir.filters:
+        if filter_.field_id in declared_calculated:
+            _append(
+                issues,
+                "CF_003",
+                f"filter field '{filter_.field_id}' is a calculated field; only "
+                "selections may reference calculated fields",
+                f"filters.{filter_.filter_id}",
+            )
+    for grouping in ir.groupings:
+        if grouping.field_id in declared_calculated:
+            _append(
+                issues,
+                "CF_003",
+                f"grouping field '{grouping.field_id}' is a calculated field; only "
+                "selections may reference calculated fields",
+                f"groupings.{grouping.grouping_id}",
+            )
+    for ordering in ir.orderings:
+        if ordering.field_id in declared_calculated:
+            _append(
+                issues,
+                "CF_003",
+                f"ordering field '{ordering.field_id}' is a calculated field; only "
+                "selections may reference calculated fields",
+                f"orderings.{ordering.ordering_id}",
+            )
+
+
 def _validate_view_scope(
-    ir: SemanticQueryIR, view: object, issues: list[IRValidationIssue]
+    ir: SemanticQueryIR,
+    view: object,
+    issues: list[IRValidationIssue],
+    declared_calculated: frozenset[str] = frozenset(),
 ) -> None:
     """Scope checks against the authorized view (source/entity/fields).
 
     ``view`` is intentionally untyped: the IR layer must stay free of view
     coupling at module scope, so attribute access is checked structurally.
+    ``declared_calculated`` carries the calculated-field names a selection
+    may reference (never colliding with field ids per D4); when non-empty,
+    an undeclared selection reference fails closed with ``CF_003`` instead
+    of the legacy ``field_out_of_scope`` code.
     """
     if ir.source_id != view.source_id:  # type: ignore[attr-defined]
         _append(
@@ -322,14 +424,30 @@ def _validate_view_scope(
             "root_entity_id",
         )
     for selection in ir.selections:
+        if selection.field_id in declared_calculated:
+            # Calculated-field names never collide with field ids (D4); the
+            # capability check lives in _validate_calculated_references.
+            continue
         if not view.contains_field(selection.field_id):  # type: ignore[attr-defined]
-            _append(
-                issues,
-                "field_out_of_scope",
-                f"selection field '{selection.field_id}' is outside the authorized view",
-                f"selections.{selection.selection_id}",
-            )
+            if declared_calculated:
+                _append(
+                    issues,
+                    "CF_003",
+                    f"selection field '{selection.field_id}' resolves to no "
+                    "declared field or calculated field of the authorized view",
+                    f"selections.{selection.selection_id}",
+                )
+            else:
+                _append(
+                    issues,
+                    "field_out_of_scope",
+                    f"selection field '{selection.field_id}' is outside the authorized view",
+                    f"selections.{selection.selection_id}",
+                )
     for filter_ in ir.filters:
+        if filter_.field_id in declared_calculated:
+            # Already flagged as CF_003 by _validate_calculated_references.
+            continue
         if not view.contains_field(filter_.field_id):  # type: ignore[attr-defined]
             _append(
                 issues,
@@ -338,6 +456,8 @@ def _validate_view_scope(
                 f"filters.{filter_.filter_id}",
             )
     for grouping in ir.groupings:
+        if grouping.field_id in declared_calculated:
+            continue
         if not view.contains_field(grouping.field_id):  # type: ignore[attr-defined]
             _append(
                 issues,
@@ -346,6 +466,8 @@ def _validate_view_scope(
                 f"groupings.{grouping.grouping_id}",
             )
     for ordering in ir.orderings:
+        if ordering.field_id in declared_calculated:
+            continue
         if not view.contains_field(ordering.field_id):  # type: ignore[attr-defined]
             _append(
                 issues,

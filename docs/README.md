@@ -50,6 +50,8 @@ and security warnings, and they always link to the canonical English page.
 | [Metadata lifecycle](architecture/metadata-lifecycle.md) | English-first（暂无中文翻译，请阅读英文原文） |
 | [Semantic layer](architecture/semantic-layer.md) | [语义层 (简体中文)](architecture/semantic-layer.zh-CN.md) — 完整翻译 |
 | [ADR: pii masking enforcement point](architecture/adr-pii-masking-enforcement-point.md) | [ADR：pii 掩码执行点 (简体中文)](architecture/adr-pii-masking-enforcement-point.zh-CN.md) — 完整翻译 |
+| [ADR-045: calculated-field operator whitelist](architecture/adr-calculated-field-operator-whitelist.md) | [ADR-045：计算字段操作符白名单 (简体中文)](architecture/adr-calculated-field-operator-whitelist.zh-CN.md) — 完整翻译 |
+| [ADR registry](architecture/adr-registry.md) | English-first（暂无中文翻译，请阅读英文原文） |
 | [Evidence and fingerprints](architecture/evidence-and-fingerprints.md) | [证据与指纹 (简体中文)](architecture/evidence-and-fingerprints.zh-CN.md) — 完整翻译 |
 | [Local development](development/local-development.md) | English-first（暂无中文翻译，请阅读英文原文） |
 | [Adding an adapter or provider](development/adding-adapter-or-provider.md) | English-first（暂无中文翻译，请阅读英文原文） |

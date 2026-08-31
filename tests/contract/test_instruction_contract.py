@@ -27,6 +27,7 @@ from nl2data_core.ai.instructions import (
     DEFAULT_SAFETY_CONSTRAINTS,
     AuthorizedContextReference,
     BehaviorInstruction,
+    CalculatedFieldPromptReference,
     InstructionValidationError,
     ModelInstructionBundle,
     OutputContract,
@@ -42,6 +43,13 @@ from nl2data_core.ai.models import ModelInvocationRequest, RejectedIntent, Resol
 from nl2data_core.ai.protocol import ModelCapabilities
 from nl2data_core.ai.resolver import IntentResolver
 from nl2data_core.planning.validation import AuthorizedView
+from nl2data_core.views.models import ViewProvenance
+from nl2data_core.views.projection import (
+    ResolvedCalculatedField,
+    ResolvedViewEntity,
+    ResolvedViewField,
+    ResolvedViewProjection,
+)
 
 FINGERPRINT = "sha256:" + "a" * 64
 
@@ -203,10 +211,13 @@ class TestCanonicalSerialization:
             "safety_constraints",
             "output_contract",
             "context_references",
+            "calculated_fields",
             "provenance",
             "fingerprint",
         }
         assert dumped["role"]["role"] == "You are a data analyst."
+        # N6: bundles without calculated fields carry the member unset.
+        assert dumped["calculated_fields"] is None
 
     def test_any_section_change_changes_the_fingerprint(self) -> None:
         base = make_bundle()
@@ -421,6 +432,188 @@ class TestAssembly:
         assert first.startswith("sha256:")
         assert first != make_bundle().fingerprint
         assert first != make_bundle().output_contract.fingerprint
+
+
+class TestCalculatedFieldPromptContext:
+    """D10: bounded calculated-field identity as prompt context (v4.2)."""
+
+    def _reference(self, **overrides) -> CalculatedFieldPromptReference:
+        values = {
+            "name": "margin",
+            "label": "Margin",
+            "description": "Revenue minus cost",
+            "output_type": "int",
+        }
+        values.update(overrides)
+        return CalculatedFieldPromptReference(**values)
+
+    def test_reference_bounds_are_enforced(self) -> None:
+        with pytest.raises(ValidationError):
+            self._reference(label="x" * 257)
+        with pytest.raises(ValidationError):
+            self._reference(description="x" * 1_025)
+        with pytest.raises(ValidationError):
+            self._reference(name="has space")
+        with pytest.raises(ValidationError):
+            self._reference(output_type="string")
+
+    @pytest.mark.parametrize(
+        ("text", "reason"),
+        [
+            ("password=hunter2", "credential_marker"),
+            ("never emit db.orders.find()", "mql_expression"),
+            ("return SELECT * FROM orders", "sql_statement"),
+        ],
+    )
+    def test_unsafe_reference_text_is_rejected(self, text: str, reason: str) -> None:
+        with pytest.raises(InstructionValidationError) as exc:
+            self._reference(label=text)
+        assert exc.value.reason == f"calculated_field_reference:{reason}"
+
+    def test_n6_unset_member_is_omitted_from_canonical_payload(self) -> None:
+        without = make_bundle()
+        assert "calculated_fields" not in without.canonical_payload()
+        assert "calculated_fields" in make_bundle(
+            calculated_fields=(self._reference(),)
+        ).canonical_payload()
+
+    def test_identity_change_changes_the_fingerprint(self) -> None:
+        base = make_bundle()
+        with_reference = make_bundle(calculated_fields=(self._reference(),))
+        with_other = make_bundle(
+            calculated_fields=(self._reference(output_type="float"),)
+        )
+        assert len({base.fingerprint, with_reference.fingerprint, with_other.fingerprint}) == 3
+
+    def test_duplicate_names_are_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            make_bundle(calculated_fields=(self._reference(), self._reference()))
+
+    def test_too_many_references_are_rejected(self) -> None:
+        references = tuple(
+            self._reference(name=f"cf_{index}") for index in range(1_001)
+        )
+        with pytest.raises(ValidationError):
+            make_bundle(calculated_fields=references)
+
+    def test_reference_carries_identity_only(self) -> None:
+        payload = str(self._reference().canonical_payload())
+        assert set(self._reference().canonical_payload()) == {
+            "name",
+            "label",
+            "description",
+            "output_type",
+        }
+        for material in ("expression", "zero_division", "requires"):
+            assert material not in payload
+
+    def make_projection(self, **overrides) -> ResolvedViewProjection:
+        values = {
+            "view_id": "view-1",
+            "view_version": 1,
+            "descriptor_id": "descriptor-1",
+            "source_id": "sales",
+            "root_entity_ids": frozenset({"order"}),
+            "field_ids": frozenset({"order_id", "amount"}),
+            "calculated_field_ids": frozenset({"margin"}),
+            "calculated_fields": (
+                ResolvedCalculatedField(
+                    name="margin",
+                    label="Margin",
+                    description="Revenue minus cost",
+                    output_type="int",
+                    content_hash=FINGERPRINT,
+                ),
+            ),
+            "entities": (
+                ResolvedViewEntity(
+                    entity_id="order",
+                    label="Order",
+                    fields=(
+                        ResolvedViewField(
+                            field_id="order_id", label="Order id", data_type="int"
+                        ),
+                        ResolvedViewField(
+                            field_id="amount", label="Amount", data_type="float"
+                        ),
+                    ),
+                ),
+            ),
+            "provenance": ViewProvenance(
+                descriptor_fingerprint=FINGERPRINT, resolver_version=1
+            ),
+        }
+        values.update(overrides)
+        return ResolvedViewProjection(**values)
+
+    def test_projection_n6_and_identity_consistency(self) -> None:
+        with_cf = self.make_projection()
+        assert "calculated_fields" in with_cf.canonical_payload()
+        without = self.make_projection(
+            calculated_field_ids=frozenset(), calculated_fields=None
+        )
+        assert "calculated_fields" not in without.canonical_payload()
+        assert with_cf.fingerprint != without.fingerprint
+        with pytest.raises(ValidationError):
+            # Identity records must match the declared name set.
+            self.make_projection(
+                calculated_field_ids=frozenset({"margin", "ratio"}),
+                calculated_fields=(
+                    ResolvedCalculatedField(
+                        name="margin", label="Margin", output_type="int"
+                    ),
+                ),
+            )
+
+    def test_assembly_derives_identity_from_the_projection(self) -> None:
+        bundle = assemble_instruction_bundle(
+            request=QueryRequest(request_id="cf-1", prompt="total order amount"),
+            context=make_context(),
+            view=make_view(),
+            projection=self.make_projection(),
+        )
+        assert bundle.calculated_fields is not None
+        assert [reference.name for reference in bundle.calculated_fields] == ["margin"]
+        assert bundle.calculated_fields[0].output_type == "int"
+        payload = str(bundle.canonical_payload())
+        for material in ("expression", "zero_division", "requires"):
+            assert material not in payload
+
+    def test_assembly_without_calculated_fields_stays_unset(self) -> None:
+        bundle = assemble_instruction_bundle(
+            request=QueryRequest(request_id="cf-2", prompt="total order amount"),
+            context=make_context(),
+            view=make_view(),
+            projection=self.make_projection(
+                calculated_field_ids=frozenset(), calculated_fields=None
+            ),
+        )
+        assert bundle.calculated_fields is None
+
+    async def test_model_expression_material_is_rejected_structurally(self) -> None:
+        """N4: the model references a calculated field by name only; any
+        expression material it emits has no home in the structured intent
+        contract and is rejected by the existing structural validation."""
+        tampered = {
+            "intent": {
+                **VALID_INTENT["intent"],
+                "selections": [
+                    {
+                        "selection_id": "s1",
+                        "field_id": "order_id",
+                        "expression": "amount - cost",
+                    }
+                ],
+            }
+        }
+        provider = FakeModelProvider(default_response=tampered)
+        resolver = IntentResolver(view=make_view(), semantic_references=make_references())
+        outcome = await resolver.resolve(
+            QueryRequest(request_id="cf-3", prompt="total order amount"),
+            provider,
+        )
+        assert isinstance(outcome, RejectedIntent)
+        assert provider.call_count == 1  # rejected after the call, before use
 
 
 class TestResolverIntegration:

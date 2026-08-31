@@ -1,0 +1,106 @@
+# semantic-admin-api Delta
+
+## MODIFIED Requirements
+
+### Requirement: Admin service exposes a versioned control plane
+The admin package SHALL expose a versioned transport-neutral application-service contract for bounded metadata discovery, snapshot/proposal inspection, assembly draft creation and inspection, assertion-level review, assembly approval, Bundle verification/publication/activation, active lookup, drift decisions, audit lookup, version listing, and rollback. It SHALL not expose end-user natural-language query execution.
+
+#### Scenario: Capabilities are discoverable
+- **WHEN** an authorized host calls the service capability method
+- **THEN** the result lists only implemented admin operations and their prerequisites
+
+#### Scenario: Query execution is not an admin operation
+- **WHEN** a host attempts to invoke natural-language query execution through the admin service
+- **THEN** the operation is absent or rejected as unsupported
+
+#### Scenario: Assembly lifecycle operations are discoverable
+- **WHEN** an authorized host inspects admin capabilities after this change
+- **THEN** the response describes supported draft, review, approval, publish, activation, rollback, audit, and version-listing operations with safe prerequisites
+
+### Requirement: Admin requests require trusted host authorization
+Every API request SHALL receive a host-provided trusted authentication and authorization context. Read and mutation permissions SHALL be checked against tenant/source scope; client-supplied scope claims SHALL be treated as untrusted routing input until authorized. Lifecycle mutations SHALL additionally require the host-authorized role for the requested Author, Reviewer, Approver, or Publisher action.
+
+#### Scenario: Missing authentication fails closed
+- **WHEN** a service method is called without a trusted host authorization context
+- **THEN** it is rejected without reading or mutating catalog content
+
+#### Scenario: Cross-tenant operation is denied
+- **WHEN** an authenticated operator requests content or a mutation outside the authorized tenant/source scope
+- **THEN** the service returns a safe authorization error without revealing whether the resource exists
+
+#### Scenario: Missing lifecycle role is denied
+- **WHEN** an authenticated operator lacks the required lifecycle role for an assertion decision, approval, publish, activation, or rollback
+- **THEN** the service rejects the request and leaves lifecycle state unchanged
+
+### Requirement: Service results contain bounded safe administrative data
+The service SHALL return typed bounded result objects containing lifecycle statuses, opaque identifiers, fingerprints, versions, counts, timestamps, bounded issues, review summaries, audit references, and safe provenance references. It SHALL never return credentials, resolved DSNs, raw prompts, raw SQL/MQL, native clients, unrestricted sample values, raw provider payloads, unrestricted backend exception text, or raw operator identity beyond host-approved bounded audit references.
+
+#### Scenario: Snapshot detail is safe
+- **WHEN** an authorized host retrieves a MetadataSnapshot or discovery result
+- **THEN** the result contains only allowed structural facts and bounded evidence references
+
+#### Scenario: Backend failure is normalized
+- **WHEN** a database, discoverer, catalog, verifier, or lifecycle operation fails
+- **THEN** the service returns a normalized error code/category with no secret, DSN, raw exception, raw prompt, or raw native payload leakage
+
+#### Scenario: Draft detail omits secrets
+- **WHEN** an authorized host retrieves an assembly draft with deployment bindings
+- **THEN** the response contains only safe reference forms and redacted summaries, never resolved credentials
+
+### Requirement: Proposal review is explicit and auditable
+The service SHALL expose inspect, approve, reject, and revise operations for SemanticProposalSet records and SHALL expose conversion/adaptation from reviewed proposals into assembly assertions. Review mutations SHALL require the expected snapshot/proposal fingerprint or revision, preserve immutable history, and record a bounded host-provided operator audit reference. Proposal review SHALL NOT bypass assembly assertion review where assertion review is required for publication.
+
+#### Scenario: Approval changes eligibility
+- **WHEN** an authorized reviewer approves selected proposal IDs against the expected proposal set fingerprint
+- **THEN** the resulting immutable set marks only those proposals approved and makes them eligible for assertion adaptation
+
+#### Scenario: Stale review is rejected
+- **WHEN** a reviewer submits a decision against a proposal set whose fingerprint or revision has changed
+- **THEN** the API returns a conflict and leaves the newer review state unchanged
+
+#### Scenario: Proposal adaptation preserves provenance
+- **WHEN** approved discovery proposals are adapted into an assembly draft
+- **THEN** the resulting assertions carry bounded proposal provenance as audit-side metadata and remain subject to assertion review bindings before publication
+
+### Requirement: Bundle lifecycle mutations are guarded
+The service SHALL expose validation, verification, publish, activate, active lookup, version listing, audit lookup, and rollback commands that delegate structural, dependency, fingerprint, scope, freshness, completeness, drift, review-binding, verification, publish atomicity, and idempotency checks to the core/catalog. Mutations SHALL require expected draft revision or published fingerprint context, idempotency where applicable, and authorized lifecycle permission.
+
+#### Scenario: Invalid activation preserves current state
+- **WHEN** activation fails validation, compatibility, authorization, freshness, or drift checks
+- **THEN** the service reports a safe rejection and the current active Bundle remains unchanged
+
+#### Scenario: Rollback keeps immutable history
+- **WHEN** an authorized operator rolls back to a previously valid version
+- **THEN** the active pointer changes atomically and both old and new Bundle artifacts remain immutable and retrievable by fingerprint
+
+#### Scenario: Publish delegates lifecycle enforcement
+- **WHEN** a host requests publish for an approved assembly draft
+- **THEN** the service delegates pending-assertion checks, verification, fingerprint computation, audit creation, idempotency, and supersession updates to core/catalog and returns only the bounded outcome
+
+## ADDED Requirements
+
+### Requirement: Assembly draft operations are explicit and revision guarded
+The service SHALL expose create, read, edit, submit-for-review, assertion-decision, and approve operations for assembly drafts. Every mutation SHALL require expected `draft_revision`; stale mutations SHALL return conflict without changing draft content or review state.
+
+#### Scenario: Draft creation returns lifecycle state
+- **WHEN** an authorized author creates an assembly draft from manual input or discovery output
+- **THEN** the response includes an opaque draft identifier, lifecycle state, draft revision, assertion counts, and no semantic bundle fingerprint
+
+#### Scenario: Assertion review changes one assertion
+- **WHEN** an authorized reviewer approves, rejects, or edits one assertion with the current draft revision
+- **THEN** only the targeted assertion and affected review metadata change and the returned draft revision advances
+
+#### Scenario: Stale assertion review is rejected
+- **WHEN** an authorized reviewer submits an assertion decision with an outdated draft revision
+- **THEN** the service returns a conflict and leaves the current draft unchanged
+
+### Requirement: Admin publish returns audit and supersession references
+Publish responses SHALL include bounded references to the published semantic fingerprint, bundle name, business version metadata, audit record, superseded predecessor when present, idempotency status, and activation eligibility. They SHALL NOT include canonical bytes, raw assertions, secrets, resolved DSNs, or raw operator identities unless separately authorized and bounded by the host.
+
+#### Scenario: Publish response is bounded
+- **WHEN** publish succeeds
+- **THEN** the service returns safe identifiers and audit references sufficient for a host UI or release pipeline to display the result
+
+#### Scenario: Idempotent publish reports existing artifact
+- **WHEN** publish is retried with the same semantic payload and idempotency key or matching fingerprint
+- **THEN** the service reports that the existing publication was reused rather than creating a duplicate

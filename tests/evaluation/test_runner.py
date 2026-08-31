@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 
 from nl2data.errors import ErrorCode
+from nl2data_core.compilation.expansion import ZeroDivisionPolicyError
 from nl2data_core.evaluation import (
     CaseEvidence,
     CaseOutcome,
@@ -227,6 +228,59 @@ class TestCleanup:
         assert fixture.provision_calls == 1
         assert fixture.reset_calls >= 2  # isolation reset plus post-case cleanup
         assert fixture.dispose_calls == 1
+
+
+class TestCalculatedFieldAttribution:
+    async def test_runner_records_hit_and_expected_miss(self, tmp_path: Path) -> None:
+        case = make_case(
+            ir=make_ir(
+                selections=(
+                    IRSelection(selection_id="s1", field_id="double_amount"),
+                ),
+                required_capabilities=("calculated-fields",),
+            ),
+            mandatory_assertions=(),
+            declared_calculated_fields=("double_amount", "ratio"),
+            expected_calculated_fields=("double_amount", "ratio"),
+        )
+        runner = EvaluationRunner(
+            dataset=make_dataset(cases=(case,)),
+            run_id="run-1",
+            fixture_factory=lambda: SQLiteFixtureProfile(db_path=tmp_path / "fixture.db"),
+            case_executor=StubExecutor(),
+        )
+        report = await runner.run()
+        assert report.calculated_field_summary()["CF_HIT"] == 1
+        assert report.calculated_field_summary()["CF_NOT_REFERENCED"] == 1
+
+    async def test_runner_records_compile_failure_in_evidence(
+        self, tmp_path: Path
+    ) -> None:
+        case = make_case(
+            ir=make_ir(
+                selections=(
+                    IRSelection(selection_id="s1", field_id="ratio"),
+                ),
+                required_capabilities=("calculated-fields",),
+            ),
+            declared_calculated_fields=("ratio",),
+            expected_calculated_fields=("ratio",),
+        )
+        runner = EvaluationRunner(
+            dataset=make_dataset(cases=(case,)),
+            run_id="run-1",
+            fixture_factory=lambda: SQLiteFixtureProfile(db_path=tmp_path / "fixture.db"),
+            case_executor=StubExecutor(
+                error=ZeroDivisionPolicyError(
+                    "ratio failed", details={"calculated_field": "ratio"}
+                )
+            ),
+        )
+        report = await runner.run()
+        result = report.results[0]
+        assert result.outcome is CaseOutcome.FAIL
+        assert result.evidence is not None
+        assert report.calculated_field_summary()["CF_COMPILE_FAIL"] == 1
 
     async def test_cleanup_occurs_after_failure(self, tmp_path: Path) -> None:
         fixture = SpyFixture(SQLiteFixtureProfile(db_path=tmp_path / "fixture.db"))

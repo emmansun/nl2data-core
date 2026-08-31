@@ -78,6 +78,7 @@ from nl2data_core.compilation.contract import (
     result_lineage_fingerprint,
     verify_pre_execution_guard,
 )
+from nl2data_core.compilation.expansion import EXPANSION_IDENTITY
 from nl2data_core.engine.ports import NOT_CONFIGURED_MESSAGE
 from nl2data_core.governance.authorization import (
     AuthorizationIssuer,
@@ -106,6 +107,7 @@ from nl2data_core.planning.models import PhysicalBinding
 from nl2data_core.planning.validation import AuthorizedView
 from nl2data_core.tenancy.models import TenantScopeContext
 from nl2data_core.tenancy.validation import validate_tenant_scope
+from nl2data_core.views.models import CalculatedField
 from nl2data_core.views.projection import ResolvedViewProjection
 from nl2data_core.workflow.contract import (
     ApprovalRequiredError,
@@ -866,6 +868,22 @@ class _CompileNode(_NodeBase):
                 if self._channel.get("join_plan") is not None
                 else None
             ),
+            calculated_fields=runtime._calculated_fields,
+            # Expansion identity lands on the producer (context) and
+            # consumer (evidence) sides together: the compilers copy it
+            # into the evidence, and the one-sided rejection activates
+            # only when both sides populate it (v4.2 D12 rollout order).
+            expansion_identity=(
+                EXPANSION_IDENTITY
+                if {
+                    selection.field_id for selection in ir.selections
+                }
+                & {
+                    calculated.name
+                    for calculated in runtime._calculated_fields or ()
+                }
+                else None
+            ),
         )
         try:
             result = runtime.compiler.compile(ir, context=compilation_context)
@@ -1374,11 +1392,26 @@ class DeterministicWorkflowRuntime:
         projection: ResolvedViewProjection | None = None,
         relationship_graph: object | None = None,
         join_planner: JoinPlanner | None = None,
+        calculated_fields: tuple[CalculatedField, ...] | None = None,
     ) -> None:
         self._provider = provider
         self._execution = execution
         self._projection = projection
         self._binding = binding
+        self._calculated_fields = calculated_fields
+        if projection is not None:
+            authorized_hashes = {
+                item.name: item.content_hash
+                for item in projection.calculated_fields or ()
+            }
+            supplied_hashes = {
+                item.name: item.content_hash() for item in calculated_fields or ()
+            }
+            if supplied_hashes != authorized_hashes:
+                raise ValueError(
+                    "calculated field definitions must exactly match the "
+                    "authorized projection"
+                )
         self._config = config or ModelConfig()
         self._min_confidence = min_confidence
         self._memory = memory

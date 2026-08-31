@@ -46,6 +46,8 @@ from nl2data_core.tenancy import (
     TenantScopeContext,
 )
 from nl2data_core.views import (
+    CalculatedField,
+    ExprNode,
     ResolutionContext,
     ResolvedViewProjection,
     SemanticDescriptor,
@@ -180,6 +182,22 @@ def make_descriptor(**overrides) -> SemanticDescriptor:
     }
     values.update(overrides)
     return SemanticDescriptor(**values)
+
+
+def make_calculated_field(**overrides) -> CalculatedField:
+    values = {
+        "name": "double_amount",
+        "label": "Double amount",
+        "expression": ExprNode(
+            op="mul",
+            left=ExprNode(op="field", field_id="amount"),
+            right=ExprNode(op="const", const=2),
+        ),
+        "output_type": "float",
+        "requires": ("amount",),
+    }
+    values.update(overrides)
+    return CalculatedField(**values)
 
 
 def make_view_definition(
@@ -423,6 +441,87 @@ def make_bundle_runtime(
         projection=projection,
     )
     return runtime, projection
+
+
+class TestCalculatedFieldAuthorization:
+    def test_runtime_rejects_definition_not_anchored_by_projection(
+        self, tmp_path: Path
+    ) -> None:
+        adapter = make_adapter(tmp_path)
+        projection = ResolvedViewProjection.model_validate(
+            {
+                "view_id": "sales_view",
+                "view_version": 1,
+                "descriptor_id": "sales_descriptor",
+                "source_id": "sales",
+                "root_entity_ids": frozenset({"order"}),
+                "field_ids": FIELDS,
+                "entities": (),
+                "provenance": ViewProvenance(
+                    descriptor_fingerprint=fp("ab"), resolver_version=1
+                ),
+            }
+        )
+        with pytest.raises(ValueError, match="authorized projection"):
+            make_runtime(
+                tmp_path,
+                execution=make_execution(tmp_path, adapter=adapter),
+                projection=projection,
+                calculated_fields=(make_calculated_field(),),
+            )
+
+    def test_runtime_rejects_same_name_with_different_definition(
+        self, tmp_path: Path
+    ) -> None:
+        calculated = make_calculated_field()
+        descriptor = make_descriptor(
+            entities=(
+                SemanticEntityDescriptor(
+                    entity_id="order",
+                    label="Order",
+                    fields=tuple(
+                        make_field(
+                            field_id,
+                            "float" if field_id == "amount" else data_type,
+                        )
+                        for field_id, data_type in VIEW_FIELD_TYPES
+                    ),
+                    calculated_fields=(calculated,),
+                ),
+            )
+        )
+        scope = make_tenant_scope()
+        adapter = make_adapter(tmp_path)
+        execution = make_execution(tmp_path, adapter=adapter, tenant_scope=scope)
+        bundle = make_bundle(descriptor=descriptor)
+        catalog = make_catalog_with_active(bundle)
+        registry = registry_from_active(
+            catalog,
+            descriptor=descriptor,
+            scope=scope,
+            policy_scope=execution.policy_scope,
+        )
+        projection = resolve_active(
+            registry,
+            catalog=catalog,
+            scope=scope,
+            policy_scope=execution.policy_scope,
+            purpose="analytics",
+        )
+        tampered = make_calculated_field(
+            expression=ExprNode(
+                op="mul",
+                left=ExprNode(op="field", field_id="amount"),
+                right=ExprNode(op="const", const=3),
+            )
+        )
+        with pytest.raises(ValueError, match="authorized projection"):
+            make_runtime(
+                tmp_path,
+                execution=execution,
+                projection=projection,
+                calculated_fields=(tampered,),
+            )
 
 
 def request(request_id: str, workflow_id: str) -> QueryRequest:

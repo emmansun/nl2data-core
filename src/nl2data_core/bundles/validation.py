@@ -262,4 +262,35 @@ def validate_bundle(
                 )
             )
 
+    #: Design D11 (direction 2, bundle validation time): a pii or
+    #: field-masking declaration applied to a field already referenced by
+    #: a declared calculated field of the same entity fails validation
+    #: regardless of which feature arrived first.  In v4.2 the checkable
+    #: masking surface is the descriptor's ``pii: true`` declaration;
+    #: field-masking policy templates hook into the same check when they
+    #: land (DDS-020).
+    for entity in bundle.descriptor.entities:
+        referenced: set[str] = set()
+        for calculated in entity.calculated_fields or ():
+            referenced |= calculated.expression.field_leaves()
+        if not referenced:
+            continue
+        for field in entity.fields:
+            if (
+                field.field_id in referenced
+                and field.value_semantics is not None
+                and field.value_semantics.pii
+            ):
+                issues.append(
+                    BundleValidationIssue(
+                        code="CF_004",
+                        message=(
+                            f"field '{field.field_id}' is declared pii and is "
+                            f"referenced by a declared calculated field of entity "
+                            f"'{entity.entity_id}'"
+                        ),
+                        member_id=field.field_id,
+                    )
+                )
+
     return BundleValidationResult(valid=not issues, issues=tuple(issues[: _MAX_ISSUES]))

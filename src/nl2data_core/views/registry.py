@@ -38,7 +38,12 @@ from .models import (
     ViewProvenance,
 )
 from .outcomes import ResolutionIssue, ResolutionOutcome, denied, unavailable
-from .projection import ResolvedViewEntity, ResolvedViewField, ResolvedViewProjection
+from .projection import (
+    ResolvedCalculatedField,
+    ResolvedViewEntity,
+    ResolvedViewField,
+    ResolvedViewProjection,
+)
 
 #: Resolver contract version recorded in every projection provenance.
 _RESOLVER_VERSION = 1
@@ -318,6 +323,8 @@ def _project(
     entities: list[ResolvedViewEntity] = []
     root_entity_ids: set[str] = set()
     field_ids: set[str] = set()
+    calculated_field_ids: set[str] = set()
+    calculated_identity: list[ResolvedCalculatedField] = []
     for entity_id in sorted(included_entities):
         entity = descriptor.entity(entity_id)
         assert entity is not None
@@ -330,6 +337,24 @@ def _project(
         selected -= restrictions.exclude_fields
         if not selected:
             continue
+        # Calculated fields ride with their entity: an included entity makes
+        # its declared calculated fields referencable by name (D4/D5); the
+        # no-collision rule keeps the name space unambiguous.  Bounded
+        # identity (name, label, description, output type) travels with the
+        # projection for prompt-context assembly (D10) - never expressions.
+        for calculated in entity.calculated_fields or ():
+            if not frozenset(calculated.requires).issubset(selected):
+                continue
+            calculated_field_ids.add(calculated.name)
+            calculated_identity.append(
+                ResolvedCalculatedField(
+                    name=calculated.name,
+                    label=calculated.label,
+                    description=calculated.description,
+                    output_type=calculated.output_type,
+                    content_hash=calculated.content_hash(),
+                )
+            )
         resolved_fields = tuple(
             ResolvedViewField(
                 field_id=field.field_id,
@@ -378,6 +403,13 @@ def _project(
         description=definition.description,
         root_entity_ids=frozenset(root_entity_ids),
         field_ids=frozenset(field_ids),
+        calculated_field_ids=frozenset(calculated_field_ids),
+        calculated_fields=(
+            tuple(
+                sorted(calculated_identity, key=lambda item: item.name)
+            )
+            or None
+        ),
         entities=tuple(entities),
         allowed_operations=restrictions.allowed_operations or frozenset({"select"}),
         allowed_relationships=restrictions.allowed_relationships,

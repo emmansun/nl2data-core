@@ -39,6 +39,7 @@ _MAX_SAFETY_TEXT_CHARS = 1_000
 _MAX_SAFETY_CONSTRAINTS = 64
 _MAX_CONTEXT_REFERENCES = 1_000
 _MAX_LABEL_CHARS = 256
+_MAX_DESCRIPTION_CHARS = 1_024
 
 #: Credential-shaped text markers (key=value forms and vendor key formats).
 _CREDENTIAL_PATTERN = re.compile(
@@ -223,6 +224,36 @@ class AuthorizedContextReference(BaseModel):
         return _validate_safe_text(value, "context_reference")
 
 
+class CalculatedFieldPromptReference(BaseModel):
+    """Bounded calculated-field identity in the prompt context (D10).
+
+    Carries name, label, description, and output type only - never the
+    expression tree, the dependency list, or the zero-division policy.  The
+    model references a calculated field by name only (N4); every reference
+    is re-validated downstream (``CF_003``).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    name: str = Field(pattern=_IDENTIFIER_PATTERN)
+    label: str = Field(min_length=1, max_length=_MAX_LABEL_CHARS)
+    description: str = Field(default="", max_length=_MAX_DESCRIPTION_CHARS)
+    output_type: Literal["int", "float"]
+
+    @field_validator("label", "description")
+    @classmethod
+    def _safe_text(cls, value: str) -> str:
+        return _validate_safe_text(value, "calculated_field_reference")
+
+    def canonical_payload(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "label": self.label,
+            "description": self.description,
+            "output_type": self.output_type,
+        }
+
+
 class ProvenanceFingerprints(BaseModel):
     """Safe provenance references; never raw tenant/policy/view identifiers.
 
@@ -269,6 +300,11 @@ class ModelInstructionBundle(BaseModel):
     context_references: tuple[AuthorizedContextReference, ...] = Field(
         default_factory=tuple, max_length=_MAX_CONTEXT_REFERENCES
     )
+    #: Bounded calculated-field identity for prompt context (D10); unset on
+    #: bundles assembled without calculated fields (N6 omit-when-unset).
+    calculated_fields: tuple[CalculatedFieldPromptReference, ...] | None = Field(
+        default=None, max_length=_MAX_CONTEXT_REFERENCES
+    )
     provenance: ProvenanceFingerprints = Field(default_factory=ProvenanceFingerprints)
     fingerprint: str = Field(default="", pattern=_FINGERPRINT_PATTERN)
 
@@ -290,6 +326,18 @@ class ModelInstructionBundle(BaseModel):
         ids = [reference.field_id for reference in value]
         if len(ids) != len(set(ids)):
             raise ValueError("context reference field ids must be unique")
+        return value
+
+    @field_validator("calculated_fields")
+    @classmethod
+    def _unique_calculated_names(
+        cls, value: tuple[CalculatedFieldPromptReference, ...] | None
+    ) -> tuple[CalculatedFieldPromptReference, ...] | None:
+        if value is None:
+            return value
+        names = [reference.name for reference in value]
+        if len(names) != len(set(names)):
+            raise ValueError("calculated field reference names must be unique")
         return value
 
     @model_validator(mode="after")
@@ -315,6 +363,19 @@ class ModelInstructionBundle(BaseModel):
                 {"field_id": reference.field_id, "label": reference.label}
                 for reference in self.context_references
             ],
+            # N6: unset optional members are omitted entirely so introducing
+            # calculated-field prompt context cannot change the fingerprint
+            # of any bundle that does not carry it.
+            **(
+                {
+                    "calculated_fields": [
+                        reference.canonical_payload()
+                        for reference in self.calculated_fields
+                    ]
+                }
+                if self.calculated_fields
+                else {}
+            ),
             "provenance": self.provenance.canonical_payload(),
         }
 
@@ -393,6 +454,19 @@ def assemble_instruction_bundle(
         context_references=tuple(
             AuthorizedContextReference(field_id=reference.field_id, label=reference.label)
             for reference in context.semantic_references
+        ),
+        calculated_fields=(
+            tuple(
+                CalculatedFieldPromptReference(
+                    name=item.name,
+                    label=item.label,
+                    description=item.description,
+                    output_type=item.output_type,
+                )
+                for item in projection.calculated_fields or ()
+            )
+            if projection is not None and projection.calculated_fields
+            else None
         ),
         provenance=ProvenanceFingerprints(
             view_fingerprint=view.view_fingerprint if view.view_bound else None,

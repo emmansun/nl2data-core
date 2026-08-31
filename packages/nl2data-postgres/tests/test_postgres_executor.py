@@ -7,6 +7,7 @@ from collections.abc import Iterator
 from typing import Any
 
 import pytest
+from nl2data_core.compilation.expansion import ZeroDivisionPolicyError
 
 from nl2data_postgres.config import PostgresAdapterConfig
 from nl2data_postgres.errors import PostgresExecutionError
@@ -35,6 +36,15 @@ class FakeConnection:
         if sql.startswith("SET "):
             return FakeCursor(None, [])
         return self._cursor
+
+
+class DivisionByZeroConnection(FakeConnection):
+    def execute(self, sql: str) -> FakeCursor:
+        if sql.startswith("SET "):
+            return FakeCursor(None, [])
+        error = RuntimeError("division by zero")
+        error.sqlstate = "22012"  # type: ignore[attr-defined]
+        raise error
 
 
 class FakePool:
@@ -83,6 +93,13 @@ class TestPostgresExecutor:
         executor._pool = FakePool(FakeConnection(FakeCursor((("id",),), [((1, 2),)])))
         with pytest.raises(PostgresExecutionError):
             executor.execute("SELECT id FROM users LIMIT 1")
+
+    def test_division_by_zero_maps_to_cf_005(self) -> None:
+        executor = _executor()
+        executor._pool = FakePool(DivisionByZeroConnection(FakeCursor(None, [])))
+        with pytest.raises(ZeroDivisionPolicyError) as excinfo:
+            executor.execute("SELECT 1 / 0")
+        assert excinfo.value.code.value == "CF_005"
 
     def test_execute_enforces_row_bound(self) -> None:
         executor = _executor(max_rows=2)

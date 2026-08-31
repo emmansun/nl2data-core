@@ -46,6 +46,7 @@ def _derive_required_capabilities(
     selections: tuple[IRSelection, ...],
     filters: tuple[IRFilter, ...],
     orderings: tuple[IROrdering, ...],
+    calculated_field_ids: frozenset[str] = frozenset(),
 ) -> tuple[str, ...]:
     """Declare the capabilities an IR requires from any compiler."""
     capabilities: set[str] = set()
@@ -61,6 +62,10 @@ def _derive_required_capabilities(
             capabilities.add("contains")
     if orderings:
         capabilities.add("ordering")
+    if calculated_field_ids and any(
+        s.field_id in calculated_field_ids for s in selections
+    ):
+        capabilities.add("calculated-fields")
     return tuple(sorted(capabilities))
 
 
@@ -71,6 +76,7 @@ def build_ir_from_intent(
     catalog_fingerprint: str | None = None,
     policy_view_fingerprint: str | None = None,
     view_reference: IRViewReference | None = None,
+    calculated_field_ids: frozenset[str] | None = None,
 ) -> SemanticQueryIR:
     """Build the canonical Semantic Query IR for a validated structured intent.
 
@@ -82,6 +88,8 @@ def build_ir_from_intent(
     derived from the request id for repeatability.  ``view_reference``
     binds the IR to a resolved-view identity when one is available and is
     omitted entirely in the unbound compatibility mode.
+    ``calculated_field_ids`` carries the declared calculated-field names a
+    selection may reference (``CF_003`` fail-closed otherwise).
     """
     selections = tuple(
         IRSelection(
@@ -136,9 +144,11 @@ def build_ir_from_intent(
             policy_view_fingerprint=policy_view_fingerprint,
             view_reference=view_reference,
         ),
-        required_capabilities=_derive_required_capabilities(selections, filters, orderings),
+        required_capabilities=_derive_required_capabilities(
+            selections, filters, orderings, calculated_field_ids or frozenset()
+        ),
     )
-    result = validate_ir(ir)
+    result = validate_ir(ir, calculated_field_ids=calculated_field_ids)
     if not result.valid:
         codes = ", ".join(result.issue_codes())
         raise ValueError(f"intent produced an invalid IR: {codes}")
@@ -153,13 +163,16 @@ def build_ir_from_multi_entity_intent(
     policy_view_fingerprint: str | None = None,
     view_reference: IRViewReference | None = None,
     join_plan: LogicalJoinPlan | None = None,
+    calculated_field_ids: frozenset[str] | None = None,
 ) -> SemanticQueryIR:
     """Build the canonical Semantic Query IR for a validated multi-entity intent.
 
     Metrics and dimensions are mapped to IR selections; groupings are
     derived from dimensions whenever any metric is aggregated.  The logical
     join plan is recorded in provenance as join-plan evidence but never
-    enters the canonical IR payload directly.
+    enters the canonical IR payload directly.  ``calculated_field_ids``
+    carries the declared calculated-field names a selection may reference
+    (``CF_003`` fail-closed otherwise).
     """
     root_entity_id = join_plan.root_entity_id if join_plan is not None else (
         intent.entity_refs[0].entity_id if intent.entity_refs else ""
@@ -208,7 +221,11 @@ def build_ir_from_multi_entity_intent(
         if aggregated_metrics
     )
 
-    capabilities = set(_derive_required_capabilities(selections, filters, orderings))
+    capabilities = set(
+        _derive_required_capabilities(
+            selections, filters, orderings, calculated_field_ids or frozenset()
+        )
+    )
     if len(intent.entity_refs) > 1:
         capabilities.add("multi_entity")
         capabilities.add("join")
@@ -238,7 +255,7 @@ def build_ir_from_multi_entity_intent(
         provenance=provenance,
         required_capabilities=tuple(sorted(capabilities)),
     )
-    result = validate_ir(ir)
+    result = validate_ir(ir, calculated_field_ids=calculated_field_ids)
     if not result.valid:
         codes = ", ".join(result.issue_codes())
         raise ValueError(f"multi-entity intent produced an invalid IR: {codes}")
@@ -253,6 +270,7 @@ def build_ir_from_resolved_intent(
     policy_view_fingerprint: str | None = None,
     view_reference: IRViewReference | None = None,
     join_plan: LogicalJoinPlan | None = None,
+    calculated_field_ids: frozenset[str] | None = None,
 ) -> SemanticQueryIR:
     """Dispatcher that keeps the single-entity IR path unchanged.
 
@@ -267,6 +285,7 @@ def build_ir_from_resolved_intent(
             policy_view_fingerprint=policy_view_fingerprint,
             view_reference=view_reference,
             join_plan=join_plan,
+            calculated_field_ids=calculated_field_ids,
         )
     return build_ir_from_intent(
         outcome.intent,
@@ -274,4 +293,5 @@ def build_ir_from_resolved_intent(
         catalog_fingerprint=catalog_fingerprint,
         policy_view_fingerprint=policy_view_fingerprint,
         view_reference=view_reference,
+        calculated_field_ids=calculated_field_ids,
     )

@@ -1,0 +1,39 @@
+# calculated-field-semantics Proposal
+
+## Why
+
+The v4.1 slice made value-level semantics a governed semantic asset; the next-highest-value gap is **calculated fields**: business quantities like `avg_order_value = revenue / orders` are currently re-derived by the model or the host on every question, so the same metric is computed inconsistently across questions, adapters, and tenants. The v4.2 slice (per the semantic-layer roadmap) defines a calculated field once as a fingerprinted, authorized, deterministically-compilable semantic object — the design doc's standing rule that every new semantic object must be "fingerprinted, authorized, deterministically compiled, or it does not enter the core library".
+
+The same slice reserves the IR-level **parameterized placeholder schema** that the NamedQuery capability (v4.4) will consume, so the later slice does not need a breaking IR change — schema only, no behavior in v4.2. Corpus attribution dimensions (`CF_*`) make the slice's quality measurable with the same evaluation machinery v4.1 introduced for `VS_*`.
+
+> Precondition note (roadmap): the v4.1 gate — `VS_HIT ≥ 90%` across the annotated corpus, read from `EvaluationReport.value_semantics_summary()` — must be met before this slice starts, per the roadmap note in `docs/architecture/semantic-layer.md`.
+
+## What Changes
+
+- Add a **`CalculatedField` DSL**: an expression tree with a closed operator whitelist (`field`, `const`, `add`, `sub`, `mul`, `div` — no function calls, no subqueries, no string operations, no `CASE WHEN`; each rejection and its alternative path is recorded in an ADR), `int`-only constants (float excluded from the fingerprint domain, per the v4.1 ruling), a declared output type governed by a complete inference table with compiler-enforced CAST, declared field dependencies, and a `zero_division_policy` (`null` | `error`, default `null`).
+- Add `CalculatedField` as an **optional entity-level member** of the semantic descriptor. Invariant **N6 applies unchanged**: an unset member is omitted from `canonical_payload()` entirely (fingerprint-stable introduction); a set member is non-empty, immutable, bounded (depth and node count), JSON-wire safe (nested dict/list only, no `frozenset`), and fully inside the fingerprint domain. Any `CalculatedField` content change is **snapshot-breaking** (the full republish checklist from v4.1 applies verbatim).
+- Compile-time **expression expansion**: the compiler expands the expression tree into adapter-native output (SQL expression / aggregation pipeline stage) using physical bindings; nothing is interpreted at runtime. Whitelist violations fail with a structured `CF_001` error; unknown expression field references fail with `CF_002`; an IR selection referencing an undeclared calculated field fails closed with `CF_003`; a calculated field referencing a `pii: true` field is rejected with `CF_004`, and applying `pii` later over a referenced field is also rejected (definition-time and bundle-validation-time enforcement, masking-bypass closure). Future field-masking policy models must join the same `CF_004` check when that governance surface lands. Runtime division-by-zero under the `error` policy fails with `CF_005`. Compilation evidence anchors the expansion implementation identity, mirroring the v4.1 planner-identity guard.
+- **Dual-adapter conformance**: the same `CalculatedField` definition must produce semantically equivalent results on the SQL adapter (SQLite/Postgres) and the MongoDB adapter, including identical `zero_division_policy` behavior.
+- Reserve the IR **parameterized placeholder capability** for NamedQuery (v4.4): a bounded, fail-closed extension kind (`named_query_placeholder`) gated by a new required capability, with a validated payload schema (query reference + typed scalar parameters). **No behavior in v4.2** — nothing generates or consumes it; adapters reject the capability as unsupported through the existing fail-closed capability gating. No `ir_version` bump; IRs without the extension are byte-identical.
+- Add **`CF_*` attribution dimensions** to the evaluation runner (`CF_HIT`, `CF_NOT_DECLARED`, `CF_NOT_REFERENCED`, `CF_COMPILE_FAIL`), recorded per selection on evaluation-layer evidence with per-case and per-run summaries, mirroring the v4.1 `VS_*` pattern; the stage gate reads the combined not-declared/not-referenced rate. Annotate the demo corpus with expected calculated-field attributions.
+
+Out of scope (later slices, unchanged from the roadmap): Metric/TimeSemantics with time intelligence (v4.3), NamedQuery behavior and trigger gating (v4.4), fiscal calendars, per-metric timezones, derived ratio operators beyond the arithmetic whitelist, string/regex operators, adapter-provided UDFs, pii masking enforcement (deferred behind the v4.1 spike ADR).
+
+## Capabilities
+
+### New Capabilities
+- `calculated-field-semantics`: the calculated-field DSL — expression tree model and closed operator whitelist, structural validation rules (reference existence, division policy, aggregation-context and type checks, depth/node bounds), compile-time expansion to adapter-native output, dual-adapter semantic equivalence, structured `CF_001`–`CF_005` error codes, bidirectional pii reference isolation, expansion-identity anchoring, expression-hash evidence (fingerprints-only), and IR-level reference rules for selections.
+
+### Modified Capabilities
+- `semantic-model-bundles`: `CalculatedField` enters as an optional entity-level descriptor member — N6 omit-when-unset fingerprint stability, set-means-non-empty validation, bidirectional pii isolation enforced at bundle validation, and the snapshot-breaking republish chain for any calculated-field content change.
+- `canonical-semantic-query-ir`: reserved parameterized placeholder schema — a bounded, fail-closed extension kind with a validated payload, gated by a required capability; adapters reject the capability as unsupported in v4.2; no `ir_version` change and byte-identical fingerprints for IRs that do not use it.
+- `evaluation-runner`: bounded `CF_*` attribution dimensions derived from calculated-field outcomes, recorded on evaluation-layer evidence (per selection, aggregated per case, summarized per run) so stage gates can read the v4.2 gate (combined not-declared/not-referenced rate `< 10%` and DSL expression failure rate `< 5%`).
+
+## Impact
+
+- **Code**: `src/nl2data_core/views/models.py` (CalculatedField + expression tree models, N6 payload), `src/nl2data_core/ai/errors.py` (CF_001–CF_005 codes), `src/nl2data_core/planning/ir/models.py` + `validation.py` (placeholder extension schema, calculated-field reference validation), `src/nl2data_core/compilation/` (expression expansion + expression-hash evidence + expansion identity), SQL and MongoDB adapter compile paths (dual-adapter expansion), `src/nl2data_core/evaluation/models.py` (CF_* attribution).
+- **Adapters/packages**: `packages/nl2data-mongodb` pipeline expansion; SQL adapter dialect handling (SQLite + Postgres).
+- **Tests**: unit (DSL bounds/validation), contract (expansion + IR reference rules), security (expression content, placeholder fail-closed), evaluation (CF_* attribution), conformance (dual-adapter equivalence).
+- **Docs**: semantic-layer docs (EN + zh-CN) with the N6 optional-member checklist extended to `CalculatedField`, the snapshot-breaking upgrade checklist, the DSL whitelist ADR (ADR-045) and a unified ADR registry index, error-codes reference, and roadmap gate notes (combined not-declared/not-referenced rate `< 10%`, DSL failure rate `< 5%`).
+- **Demo**: `demo/questions/questions.yml` corpus annotations for calculated-field attributions.
+- **No breaking changes**: N6 keeps every existing fingerprint byte-identical; IRs without the placeholder extension are unchanged; fields without calculated semantics resolve exactly as before.

@@ -2,6 +2,8 @@
 
 from .models import (
     IR_VERSION,
+    NAMED_QUERY_PLACEHOLDER_CAPABILITY,
+    NAMED_QUERY_PLACEHOLDER_KIND,
     SCALAR_TYPES,
     IRExtension,
     IRFilter,
@@ -11,6 +13,8 @@ from .models import (
     IRResultShape,
     IRSelection,
     IRTimeContext,
+    NamedQueryPlaceholderExtension,
+    NamedQueryPlaceholderParameter,
     SemanticQueryIR,
 )
 from .validation import (
@@ -32,6 +36,10 @@ __all__ = [
     "IRValidationResult",
     "IR_VERSION",
     "IRExtension",
+    "NAMED_QUERY_PLACEHOLDER_CAPABILITY",
+    "NAMED_QUERY_PLACEHOLDER_KIND",
+    "NamedQueryPlaceholderExtension",
+    "NamedQueryPlaceholderParameter",
     "SCALAR_TYPES",
     "SemanticQueryIR",
     "validate_ir",
