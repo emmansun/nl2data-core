@@ -64,6 +64,23 @@ conflicts return normalized `conflict`; missing roles return
 references only, never assertion payloads, resolved connections, or raw operator
 identities.
 
+## Verification Suite
+
+`await verify_draft(...)` requires `assembly:verify`, an expected draft revision,
+and a configured policy profile. The host supplies the trusted verification
+executor and candidate-bound execution-context factory. Verification may use
+temporary fixtures and ephemeral secret resolution, but it does not mutate the
+draft, approval state, catalog, or active pointer.
+
+Planned publication uses `PublishDraftCommand` with the selected policy and
+fresh `VerificationSuiteEvidence`. The service passes those bindings to core;
+it does not reinterpret skipped, unavailable, timed-out, failed, or not-run
+outcomes. `get_verification_evidence(...)` requires `assembly:audit` and returns
+only bounded suite/layer/case statuses, counts, issue codes, identities, and
+fingerprints. Queries, observations, expected or actual values, physical names,
+deployment references, credentials, and backend exceptions never enter Admin
+result DTOs.
+
 ## Semantic authoring
 
 `validate_authoring(...)` accepts `AuthoringDocumentCommand`, requires

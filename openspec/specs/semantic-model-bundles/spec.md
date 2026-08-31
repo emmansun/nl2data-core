@@ -2,9 +2,7 @@
 
 ## Purpose
 Define versioned, immutable, validated Semantic Model Bundles and their safe catalog lifecycle, including reviewed metadata-discovery inputs.
-
 ## Requirements
-
 ### Requirement: Semantic Model Bundles are immutable and versioned
 The system SHALL represent a published Semantic Model Bundle as an immutable, versioned runtime artifact emitted by the semantic assembly publish operation. A published bundle SHALL contain bounded semantic entities, fields, relationships, calculated-field definitions, measures/aggregation metadata, source/catalog references, compatibility metadata, and safe runtime metadata. Its semantic fingerprint SHALL cover only canonical semantic payload and SHALL become authoritative only at successful publish; an in-memory candidate MAY precompute the same value for validation. Bundle semantic facts MAY originate from approved assembly assertions, but a bundle SHALL contain no pending or rejected assertion authority, credentials, connection strings, raw executable SQL/MQL/code, native objects, or authorization claims. The admin API SHALL expose only safe metadata and opaque references for Bundle content.
 
@@ -55,23 +53,23 @@ A bundle SHALL preserve safe runtime metadata and references needed to trace pub
 - **THEN** they have the same semantic bundle fingerprint
 
 ### Requirement: Catalog publication is atomic and replaceable
-The system SHALL define a replaceable catalog protocol and implementations supporting immutable publish by semantic fingerprint, lookup by bundle name/fingerprint and business version metadata, active snapshot lookup, atomic activation, supersession-chain traversal, and rollback only to a previously published valid bundle. Publication SHALL validate and verify before making a bundle available, SHALL persist the immutable artifact and publish audit record atomically, SHALL be idempotent for identical semantic content, and SHALL never expose a partial bundle. The admin API SHALL delegate these decisions to the catalog and SHALL not implement a competing active pointer.
+The system SHALL define a replaceable catalog protocol and implementations supporting immutable publish by semantic fingerprint, lookup by bundle name/fingerprint and business version metadata, active snapshot lookup, atomic activation, supersession-chain traversal, and rollback only to a previously published valid bundle. Governed assembly publication SHALL validate the configured verification policy and require passing evidence bound to the exact plan, approved draft revision, manifest, candidate Bundle, tenant/source context, runner identity, and executor identities before making a bundle available. It SHALL persist the immutable artifact, manifest, verification summary/reference, publish audit, and supersession update atomically, SHALL be idempotent for identical semantic content and equivalent bound evidence, and SHALL never expose a partial bundle. The Admin API SHALL delegate these decisions to the core/catalog and SHALL not implement a competing verification or active pointer.
 
 #### Scenario: Invalid bundle remains unpublished and inactive
-- **WHEN** publication validation or verification fails
-- **THEN** the catalog does not publish or activate the bundle, creates no partial audit record, and returns structured issues
+- **WHEN** publication validation or any required verification layer fails, is unavailable, skipped, timed out, or not run
+- **THEN** the catalog does not publish or activate the bundle, creates no partial verification/audit record, and returns structured issues
 
 #### Scenario: Duplicate semantic content is idempotent
-- **WHEN** an approved assembly draft publishes semantic content whose fingerprint already exists for the bundle name
-- **THEN** the catalog returns the existing immutable publication without creating a duplicate artifact
+- **WHEN** an approved assembly draft publishes semantic content whose fingerprint already exists for the bundle name with an equivalent accepted verification plan/evidence binding
+- **THEN** the catalog returns the existing immutable publication and its verification/audit references without creating a duplicate artifact
 
 #### Scenario: Activation switches complete snapshots
-- **WHEN** a valid published bundle is activated
+- **WHEN** a valid verified published bundle is activated
 - **THEN** subsequent View resolutions observe the complete new snapshot, while existing evidence continues to identify the previous bundle fingerprint
 
 #### Scenario: Rollback selects an immutable version
 - **WHEN** an operator rolls back to a previously published valid fingerprint
-- **THEN** the catalog changes the active pointer to that version without mutating either bundle artifact or assigning a new fingerprint
+- **THEN** the catalog changes the active pointer to that version without mutating either bundle artifact, verification evidence, or assigning a new fingerprint
 
 ### Requirement: Published bundle loaders reject lifecycle metadata in semantic payload
 Bundle loaders SHALL reject canonical semantic payloads that include assembly-only lifecycle metadata such as `review_state`, `review_binding`, approval chains, rejected assertions, deployment bindings, activation markers, or file `apiVersion`. These fields MAY appear in surrounding safe envelopes where explicitly defined, but SHALL NOT be accepted as bundle semantic content.
@@ -189,3 +187,11 @@ A bundle whose descriptor adopts or edits any calculated-field content SHALL be 
 #### Scenario: Republication restores validity
 - **WHEN** the bundle is rebuilt and republished against the new snapshot
 - **THEN** validation succeeds and previously issued evidence for the old bundle identity is treated as stale
+
+### Requirement: Verification lifecycle data stays outside semantic identity
+Verification plans, case definitions, runner/executor identities, statuses, durations, protected result references, issue codes, and suite evidence SHALL NOT enter the Bundle canonical semantic payload or semantic fingerprint. They SHALL be lifecycle evidence bound by fingerprints in the publish audit. Changing only verification lifecycle data SHALL require renewed approval/verification according to policy but SHALL NOT change otherwise identical Bundle semantic identity.
+
+#### Scenario: Verification plan change preserves semantic fingerprint
+- **WHEN** two approved candidates have identical semantic payload but different verification plans
+- **THEN** their candidate Bundle semantic fingerprints are equal while their plan and verification evidence fingerprints differ
+

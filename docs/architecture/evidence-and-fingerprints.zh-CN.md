@@ -185,6 +185,9 @@ flowchart TD
 
 ## 下一步
 
+- [验证套件](verification-suite.zh-CN.md)说明不进入 Bundle 身份的计划、运行器、
+  执行器和发布证据绑定。
+
 - [治理与多租户](governance-and-tenancy.md) — 指纹如何绑定授权。
 - [工作流状态](workflow-state.md) — 证据指纹如何在重启后持久化。
 - [元数据生命周期](metadata-lifecycle.md) — 快照与 Bundle 指纹及漂移。

@@ -126,6 +126,11 @@ def lower_authoring(
             authoring_description=model.metadata.description,
             authoring_source_references=normalized.source_references,
             authoring_compatibility=model.spec.compatibility,
+            verification_plan=(
+                model.spec.verification_plan.to_plan()
+                if model.spec.verification_plan is not None
+                else None
+            ),
         )
     except ValidationError:
         diagnostic = AuthoringDiagnostic(

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Protocol, cast
+from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -14,10 +14,22 @@ from nl2data_core.bundles import (
     PublishIdempotencyStatus,
     PublishVerificationSummary,
     SemanticModelBundle,
-    validate_bundle,
 )
 from nl2data_core.canonical import sha256_fingerprint
 from nl2data_core.metadata.policy import ProductionActivationContext
+from nl2data_core.verification.execution import VerificationExecutionContext
+from nl2data_core.verification.models import (
+    VerificationLayerEvidence,
+    VerificationPlan,
+    VerificationSuiteEvidence,
+)
+from nl2data_core.verification.policy import COMPATIBILITY_POLICY, VerificationPolicy
+from nl2data_core.verification.smoke import RunnableVerificationExecutor
+from nl2data_core.verification.structural import CoreStructuralVerificationRunner
+from nl2data_core.verification.suite import (
+    compatibility_suite_evidence,
+    validate_bound_evidence,
+)
 
 from .authorization import (
     LifecycleAction,
@@ -31,7 +43,6 @@ from .models import (
     AssemblyDraft,
     AssemblyState,
     AssertionProvenanceKind,
-    AssertionType,
     ReviewState,
 )
 from .separation import SeparationOfDutiesDecision
@@ -77,8 +88,31 @@ class SemanticBundleEmitter(Protocol):
     def emit(self, draft: AssemblyDraft) -> SemanticModelBundle: ...
 
 
+class SynchronousVerificationProvider(Protocol):
+    """Host-controlled bridge for running the async suite outside core publish."""
+
+    def provide(
+        self,
+        *,
+        plan: VerificationPlan,
+        policy: VerificationPolicy,
+        structural_evidence: VerificationLayerEvidence,
+        context: VerificationExecutionContext,
+        draft_id: str,
+        draft_revision: int,
+    ) -> VerificationSuiteEvidence: ...
+
+
 class AssemblyPublicationCatalog(Protocol):
     """Tenant-bound catalog port used by the atomic assembly publish gate."""
+
+    def authoritative_draft_matches(
+        self,
+        draft: AssemblyDraft,
+        *,
+        expected_revision: int,
+        tenant_scope_fingerprint: str,
+    ) -> bool | None: ...
 
     def publish(
         self,
@@ -86,6 +120,7 @@ class AssemblyPublicationCatalog(Protocol):
         *,
         accepted_assertion_manifest: AcceptedAssertionManifest | None = None,
         audit: PublishAuditRecord | None = None,
+        verification_evidence: VerificationSuiteEvidence | None = None,
         production: ProductionActivationContext | None = None,
         draft: AssemblyDraft | None = None,
         expected_revision: int | None = None,
@@ -102,6 +137,7 @@ class AssemblyPublishOutcome(BaseModel):
     bundle: SemanticModelBundle | None = None
     manifest: AcceptedAssertionManifest | None = None
     audit_reference: str | None = None
+    verification_evidence_reference: str | None = None
     superseded_fingerprint: str | None = None
     idempotency_status: PublishIdempotencyStatus | None = None
     issues: tuple[AssemblyPublishIssue, ...] = Field(
@@ -131,6 +167,7 @@ def _catalog_outcome(
             bundle=outcome.bundle,
             manifest=manifest,
             audit_reference=outcome.audit_reference,
+            verification_evidence_reference=outcome.verification_evidence_reference,
             superseded_fingerprint=outcome.superseded_fingerprint,
             idempotency_status=outcome.idempotency_status,
         )
@@ -140,112 +177,6 @@ def _catalog_outcome(
             AssemblyPublishIssue(code=issue.code, message=issue.message)
             for issue in outcome.issues
         ),
-    )
-
-
-def _payload_contains(actual: Any, expected: Any) -> bool:
-    if isinstance(expected, dict):
-        return isinstance(actual, dict) and all(
-            key in actual and _payload_contains(actual[key], value)
-            for key, value in expected.items()
-        )
-    if isinstance(expected, (list, tuple)):
-        return isinstance(actual, (list, tuple)) and list(actual) == list(expected)
-    return cast(bool, actual == expected)
-
-
-def _bundle_assertion_payload(
-    assertion_type: AssertionType,
-    payload: dict[str, Any],
-    bundle: SemanticModelBundle,
-) -> dict[str, Any] | None:
-    descriptor = bundle.descriptor
-    descriptor_id = payload.get("descriptor_id")
-    if descriptor_id != descriptor.descriptor_id:
-        return None
-    base = {"descriptor_id": descriptor.descriptor_id}
-    if assertion_type is AssertionType.ENTITY:
-        entity = descriptor.entity(str(payload.get("entity_id")))
-        if entity is None:
-            return None
-        return {**base, **entity.canonical_payload()}
-    if assertion_type in {
-        AssertionType.FIELD,
-        AssertionType.MAPPING,
-        AssertionType.CALCULATED_FIELD,
-    }:
-        entity = descriptor.entity(str(payload.get("entity_id")))
-        if entity is None:
-            return None
-        if assertion_type is AssertionType.CALCULATED_FIELD:
-            calculated = entity.calculated_field(str(payload.get("name")))
-            return (
-                {**base, "entity_id": entity.entity_id, **calculated.canonical_payload()}
-                if calculated is not None
-                else None
-            )
-        field = next(
-            (
-                item
-                for item in entity.fields
-                if item.field_id == payload.get("field_id")
-            ),
-            None,
-        )
-        if field is None:
-            return None
-        candidate = {**base, "entity_id": entity.entity_id, **field.canonical_payload()}
-        if assertion_type is AssertionType.MAPPING:
-            semantics = field.value_semantics
-            if semantics is None:
-                return None
-            candidate.update(semantics.canonical_payload())
-        return candidate
-    if assertion_type is AssertionType.RELATIONSHIP:
-        relationship = next(
-            (
-                item
-                for entity in descriptor.entities
-                for item in entity.relationships
-                if item.relationship_id == payload.get("relationship_id")
-            ),
-            None,
-        )
-        return (
-            {**base, **relationship.canonical_payload()}
-            if relationship is not None
-            else None
-        )
-    if assertion_type is AssertionType.MEASURE:
-        measure = next(
-            (item for item in bundle.measures if item.measure_id == payload.get("measure_id")),
-            None,
-        )
-        return {**base, **measure.canonical_payload()} if measure is not None else None
-    if assertion_type is AssertionType.GRAIN:
-        grain = next(
-            (item for item in bundle.grains if item.grain_id == payload.get("grain_id")),
-            None,
-        )
-        return {**base, **grain.canonical_payload()} if grain is not None else None
-    return None
-
-
-def _manifest_matches_bundle(
-    manifest: AcceptedAssertionManifest,
-    bundle: SemanticModelBundle,
-) -> bool:
-    return all(
-        (
-            candidate := _bundle_assertion_payload(
-                assertion.type,
-                assertion.payload,
-                bundle,
-            )
-        )
-        is not None
-        and _payload_contains(candidate, assertion.payload)
-        for assertion in manifest.assertions
     )
 
 
@@ -259,6 +190,12 @@ def publish_assembly(
     emitter: SemanticBundleEmitter,
     verifier: ManifestBundleVerifier,
     catalog: AssemblyPublicationCatalog,
+    structural_runner: CoreStructuralVerificationRunner | None = None,
+    verification_policy: VerificationPolicy | None = None,
+    verification_context: VerificationExecutionContext | None = None,
+    verification_evidence: VerificationSuiteEvidence | None = None,
+    verification_executor: RunnableVerificationExecutor | None = None,
+    verification_provider: SynchronousVerificationProvider | None = None,
     approval_chain: tuple[str, ...] = (),
     production: ProductionActivationContext | None = None,
 ) -> AssemblyPublishOutcome:
@@ -273,6 +210,26 @@ def publish_assembly(
     draft.require_revision(expected_revision)
     if draft.state is not AssemblyState.APPROVED:
         return _rejected("draft_not_approved", "publication requires an approved draft")
+    frozen_plan_fingerprint = (
+        draft.verification_plan.fingerprint
+        if draft.verification_plan is not None
+        else None
+    )
+    if draft.approved_verification_plan_fingerprint != frozen_plan_fingerprint:
+        return _rejected(
+            "verification_plan_binding_mismatch",
+            "the frozen verification plan does not match the approved draft binding",
+        )
+    preflight = getattr(catalog, "authoritative_draft_matches", None)
+    if preflight is not None and preflight(
+        draft,
+        expected_revision=expected_revision,
+        tenant_scope_fingerprint=authorization.tenant_scope_fingerprint,
+    ) is False:
+        return _rejected(
+            "draft_revision_conflict",
+            "the authoritative assembly draft changed before verification",
+        )
     if any(
         assertion.review_state is ReviewState.PENDING
         or not assertion.has_valid_review_binding()
@@ -291,34 +248,24 @@ def publish_assembly(
         bundle = emitter.emit(draft)
     except Exception:
         return _rejected("bundle_emission_failed", "semantic Bundle emission failed")
-    if (
-        bundle.bundle_id != draft.bundle_id
-        or bundle.model_version != draft.model_version
-        or bundle.descriptor.source_id != draft.source_id
-    ):
-        return _rejected(
-            "bundle_identity_mismatch",
-            "emitted bundle identity or source does not match the approved draft",
-        )
-    validation = validate_bundle(bundle)
-    if not validation.valid:
+    layer_one = (structural_runner or CoreStructuralVerificationRunner()).run(
+        draft,
+        bundle,
+        expected_revision=expected_revision,
+        expected_source_id=authorization.source_id,
+    )
+    if not layer_one.valid:
         return AssemblyPublishOutcome(
             kind="rejected",
             issues=tuple(
                 AssemblyPublishIssue(code=issue.code, message=issue.message)
-                for issue in validation.issues[:_MAX_ISSUES]
+                for issue in layer_one.issues
             ),
         )
     try:
-        manifest = AcceptedAssertionManifest.from_draft(
-            draft,
-            bundle_fingerprint=bundle.fingerprint,
-        )
-        if not _manifest_matches_bundle(manifest, bundle):
-            return _rejected(
-                "manifest_mismatch",
-                "accepted assertions do not match the emitted semantic Bundle",
-            )
+        if layer_one.manifest is None:
+            return _rejected("manifest_derived", "accepted assertion manifest is unavailable")
+        manifest = layer_one.manifest
         verification = verifier.verify(draft, manifest, bundle)
     except Exception:
         return _rejected(
@@ -327,6 +274,84 @@ def publish_assembly(
         )
     if not verification.valid:
         return AssemblyPublishOutcome(kind="rejected", issues=verification.issues)
+    manifest_fingerprint = sha256_fingerprint(manifest.canonical_payload())
+    source_scope_fingerprint = sha256_fingerprint(
+        {"source_id": authorization.source_id}
+    )
+    if draft.verification_plan is None:
+        selected_policy = verification_policy or COMPATIBILITY_POLICY
+        if selected_policy != COMPATIBILITY_POLICY:
+            return _rejected(
+                "verification_plan_required",
+                "the selected verification policy requires an approved plan",
+            )
+        suite_evidence = compatibility_suite_evidence(
+            structural_evidence=layer_one.evidence,
+            draft_id=draft.draft_id,
+            draft_revision=draft.draft_revision,
+            bundle_fingerprint=bundle.fingerprint,
+            manifest_fingerprint=manifest_fingerprint,
+            tenant_scope_fingerprint=authorization.tenant_scope_fingerprint,
+            source_scope_fingerprint=source_scope_fingerprint,
+        )
+    else:
+        if verification_policy is None:
+            return _rejected(
+                "verification_policy_required",
+                "planned publication requires an explicit verification policy",
+            )
+        selected_policy = verification_policy
+        if (
+            draft.verification_plan.policy_profile != selected_policy.policy_id
+            or draft.verification_plan.policy_version != selected_policy.policy_version
+        ):
+            return _rejected(
+                "verification_policy_mismatch",
+                "the selected policy does not match the approved verification plan",
+            )
+        if verification_context is None:
+            return _rejected(
+                "verification_context_required",
+                "planned publication requires a bound verification context",
+            )
+        supplied_evidence = verification_evidence
+        if supplied_evidence is None and verification_provider is not None:
+            try:
+                supplied_evidence = verification_provider.provide(
+                    plan=draft.verification_plan,
+                    policy=selected_policy,
+                    structural_evidence=layer_one.evidence,
+                    context=verification_context,
+                    draft_id=draft.draft_id,
+                    draft_revision=draft.draft_revision,
+                )
+            except Exception:
+                return _rejected(
+                    "verification_provider_failed",
+                    "verification provider failed safely",
+                )
+        if supplied_evidence is None:
+            return _rejected(
+                "verification_evidence_required",
+                "planned publication requires fresh bound verification evidence",
+            )
+        suite_evidence = supplied_evidence
+        if not validate_bound_evidence(
+            suite_evidence,
+            plan=draft.verification_plan,
+            policy=selected_policy,
+            context=verification_context,
+            draft_id=draft.draft_id,
+            draft_revision=draft.draft_revision,
+            executor=verification_executor,
+        ):
+            return _rejected(
+                "verification_evidence_mismatch",
+                "verification evidence is failed, stale, or bound to different inputs",
+            )
+    evidence_reference = (
+        f"verification-{suite_evidence.fingerprint.removeprefix('sha256:')[:24]}"
+    )
     provenance_counts = {
         kind: sum(
             1
@@ -389,6 +414,21 @@ def publish_assembly(
                 structural_valid=True,
                 manifest_equivalent=True,
                 host_callback_count=1,
+                suite_version=suite_evidence.suite_version,
+                policy_profile=suite_evidence.policy_profile,
+                policy_version=suite_evidence.policy_version,
+                policy_fingerprint=suite_evidence.policy_fingerprint,
+                plan_fingerprint=suite_evidence.plan_fingerprint,
+                runner_id=suite_evidence.runner_id,
+                runner_version=suite_evidence.runner_version,
+                layer_statuses=tuple(
+                    layer.status.value for layer in suite_evidence.layers
+                ),
+                layer_case_counts=tuple(
+                    len(layer.cases) for layer in suite_evidence.layers
+                ),
+                evidence_fingerprint=suite_evidence.fingerprint,
+                evidence_reference=evidence_reference,
             ),
             idempotency_status=PublishIdempotencyStatus.CREATED,
             deployment_bindings=DeploymentBindingRedactionSummary(
@@ -409,6 +449,7 @@ def publish_assembly(
         bundle,
         accepted_assertion_manifest=manifest,
         audit=audit,
+        verification_evidence=suite_evidence,
         production=production,
         draft=draft,
         expected_revision=expected_revision,

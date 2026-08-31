@@ -16,6 +16,7 @@
 | Configuration schema | `schema_version: 1` (literal) | Unsupported versions fail closed — never silently downgraded |
 | Workflow state snapshots | explicit `schema_version` | Additive migrations only; newer-than-runtime schema rejected |
 | Instruction contract | versioned `ModelInstructionBundle` | Unsupported bundle versions fail closed (`INSTRUCTION_VERSION_INCOMPATIBLE`) |
+| Verification plans/evidence | `verification_version: 1`, versioned policy/runner/executor identity | `compatibility-v1` is explicit structural-only behavior; `production-v1` requires all three layers; missing evidence is `legacy_unverified` and never silently upgraded |
 
 ## What is compatible
 
@@ -32,6 +33,9 @@
 - **Manual fallback paths**: manually authored descriptors/bundles and
   adapters without snapshot bindings keep working unchanged
   (`expected_snapshot_fingerprint=None`).
+- **Verification-only changes**: plans and evidence require renewed lifecycle
+  approval as configured, but remain outside Bundle semantic identity. Existing
+  published Bundle fingerprints remain byte-identical.
 
 ## What is not compatible (by design)
 

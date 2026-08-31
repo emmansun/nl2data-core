@@ -123,5 +123,8 @@ If a credential is accidentally exposed:
 
 ## Next steps
 
+- [Verification Suite operations](verification-suite.md) covers ephemeral
+  fixture/deployment secret resolution and evidence redaction.
+
 - [Troubleshooting](troubleshooting.md)
 - [密钥与实时测试 (简体中文)](secrets.zh-CN.md)

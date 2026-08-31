@@ -15,6 +15,7 @@ callers.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from threading import RLock
 from typing import Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -26,6 +27,8 @@ from nl2data_core.metadata.policy import (
     ActivationCheckResult,
     ProductionActivationContext,
 )
+from nl2data_core.verification.models import VerificationStatus, VerificationSuiteEvidence
+from nl2data_core.verification.policy import PRODUCTION_POLICY
 
 from .models import (
     BUNDLE_SCHEMA_VERSION,
@@ -83,6 +86,9 @@ class BundleCatalogOutcome(BaseModel):
     ]
     bundle: SemanticModelBundle | None = None
     audit_reference: str | None = Field(default=None, pattern=_IDENTIFIER_PATTERN)
+    verification_evidence_reference: str | None = Field(
+        default=None, pattern=_IDENTIFIER_PATTERN
+    )
     superseded_fingerprint: str | None = None
     idempotency_status: PublishIdempotencyStatus | None = None
     issues: tuple[BundleCatalogIssue, ...] = Field(
@@ -126,6 +132,7 @@ class BundleCatalogOutcome(BaseModel):
                 else None
             ),
             "audit_reference": self.audit_reference,
+            "verification_evidence_reference": self.verification_evidence_reference,
             "superseded_fingerprint": self.superseded_fingerprint,
             "idempotency_status": (
                 self.idempotency_status.value
@@ -143,6 +150,7 @@ def _success(
     bundle: SemanticModelBundle,
     *,
     audit_reference: str | None = None,
+    verification_evidence_reference: str | None = None,
     superseded_fingerprint: str | None = None,
     idempotency_status: PublishIdempotencyStatus | None = None,
 ) -> BundleCatalogOutcome:
@@ -150,6 +158,7 @@ def _success(
         kind=kind,
         bundle=bundle,
         audit_reference=audit_reference,
+        verification_evidence_reference=verification_evidence_reference,
         superseded_fingerprint=superseded_fingerprint,
         idempotency_status=idempotency_status,
     )
@@ -176,6 +185,7 @@ class BundlePublication(BaseModel):
     bundle: SemanticModelBundle
     accepted_assertion_manifest: AcceptedAssertionManifest | None = None
     audit: PublishAuditRecord | None = None
+    verification_evidence: VerificationSuiteEvidence | None = None
     state: PublishedVersionState = PublishedVersionState.AVAILABLE
     supersession: SupersessionMetadata = Field(default_factory=SupersessionMetadata)
     published_at: datetime = Field(default_factory=_utc_now)
@@ -193,6 +203,16 @@ class BundlePublication(BaseModel):
             or self.audit.bundle_fingerprint != self.bundle.fingerprint
         ):
             raise ValueError("publish audit does not match publication")
+        evidence = self.verification_evidence
+        if evidence is not None and (
+            evidence.bundle_fingerprint != self.bundle.fingerprint
+            or evidence.status is not VerificationStatus.PASSED
+        ):
+            raise ValueError("verification evidence does not match publication")
+        if evidence is not None and self.audit is not None and (
+            self.audit.verification.evidence_fingerprint != evidence.fingerprint
+        ):
+            raise ValueError("publish audit verification summary does not match evidence")
         return self
 
 
@@ -215,6 +235,7 @@ class SemanticBundleCatalog(Protocol):
         *,
         accepted_assertion_manifest: AcceptedAssertionManifest | None = None,
         audit: PublishAuditRecord | None = None,
+        verification_evidence: VerificationSuiteEvidence | None = None,
         production: ProductionActivationContext | None = None,
         draft: AssemblyDraft | None = None,
         expected_revision: int | None = None,
@@ -236,6 +257,12 @@ class SemanticBundleCatalog(Protocol):
         bundle_id: str,
         fingerprint: str,
     ) -> PublishAuditRecord | None: ...
+
+    def verification_evidence(
+        self,
+        bundle_id: str,
+        fingerprint: str,
+    ) -> VerificationSuiteEvidence | None: ...
 
     def active(self, bundle_id: str) -> SemanticModelBundle | None: ...
 
@@ -277,6 +304,27 @@ class InMemorySemanticBundleCatalog:
         self._publications: dict[tuple[str | None, str], tuple[BundlePublication, ...]] = {}
         self._active: dict[tuple[str | None, str], BundlePublication] = {}
         self._history: dict[tuple[str | None, str], tuple[BundlePublication, ...]] = {}
+        self._lock = RLock()
+
+    def authoritative_draft_matches(
+        self,
+        draft: AssemblyDraft,
+        *,
+        expected_revision: int,
+        tenant_scope_fingerprint: str,
+    ) -> bool | None:
+        """Preflight an exact authoritative draft when a store is configured."""
+        if self._draft_store is None:
+            return None
+        authoritative = self._draft_store.get(
+            draft.draft_id,
+            tenant_scope_fingerprint=tenant_scope_fingerprint,
+        )
+        return (
+            authoritative is not None
+            and authoritative.draft_revision == expected_revision
+            and authoritative.file_payload() == draft.file_payload()
+        )
 
     def publish(
         self,
@@ -284,6 +332,7 @@ class InMemorySemanticBundleCatalog:
         *,
         accepted_assertion_manifest: AcceptedAssertionManifest | None = None,
         audit: PublishAuditRecord | None = None,
+        verification_evidence: VerificationSuiteEvidence | None = None,
         production: ProductionActivationContext | None = None,
         draft: AssemblyDraft | None = None,
         expected_revision: int | None = None,
@@ -328,32 +377,29 @@ class InMemorySemanticBundleCatalog:
         )
         if not result.valid:
             return _failure_from_validation(result)
-        key = (tenant_scope_fingerprint, bundle.bundle_id)
-        existing = self._publications.get(key, ())
-        for publication in existing:
-            if publication.bundle.fingerprint == bundle.fingerprint:
-                return _success(
-                    "reused",
-                    publication.bundle,
-                    audit_reference=(
-                        publication.audit.audit_id
-                        if publication.audit is not None
-                        else None
-                    ),
-                    superseded_fingerprint=(
-                        publication.supersession.predecessor_fingerprint
-                    ),
-                    idempotency_status=PublishIdempotencyStatus.REUSED,
-                )
-        if any(
-            publication.bundle.model_version == bundle.model_version
-            for publication in existing
+        if verification_evidence is not None and (
+            verification_evidence.bundle_fingerprint != bundle.fingerprint
+            or verification_evidence.status is not VerificationStatus.PASSED
         ):
             return _failure(
-                "conflict",
-                "version_exists",
-                f"bundle '{bundle.bundle_id}' version '{bundle.model_version}' "
-                "is already published",
+                "rejected",
+                "verification_evidence_mismatch",
+                "verification evidence does not match the published bundle",
+            )
+        evidence_reference = (
+            f"verification-{verification_evidence.fingerprint.removeprefix('sha256:')[:24]}"
+            if verification_evidence is not None
+            else None
+        )
+        if verification_evidence is not None and (
+            audit is None
+            or audit.verification.evidence_fingerprint != verification_evidence.fingerprint
+            or audit.verification.evidence_reference != evidence_reference
+        ):
+            return _failure(
+                "rejected",
+                "verification_audit_mismatch",
+                "publish audit does not match verification evidence",
             )
         if accepted_assertion_manifest is not None and (
             accepted_assertion_manifest.bundle_id != bundle.bundle_id
@@ -373,6 +419,56 @@ class InMemorySemanticBundleCatalog:
                 "audit_mismatch",
                 "publish audit does not match the published bundle",
             )
+        key = (tenant_scope_fingerprint, bundle.bundle_id)
+        with self._lock:
+            return self._publish_validated(
+                key=key,
+                bundle=bundle,
+                accepted_assertion_manifest=accepted_assertion_manifest,
+                audit=audit,
+                verification_evidence=verification_evidence,
+                evidence_reference=evidence_reference,
+            )
+
+    def _publish_validated(
+        self,
+        *,
+        key: tuple[str | None, str],
+        bundle: SemanticModelBundle,
+        accepted_assertion_manifest: AcceptedAssertionManifest | None,
+        audit: PublishAuditRecord | None,
+        verification_evidence: VerificationSuiteEvidence | None,
+        evidence_reference: str | None,
+    ) -> BundleCatalogOutcome:
+        """Check and append one already-validated publication under the catalog lock."""
+        existing = self._publications.get(key, ())
+        for publication in existing:
+            if publication.bundle.fingerprint != bundle.fingerprint:
+                continue
+            return _success(
+                "reused",
+                publication.bundle,
+                audit_reference=(
+                    publication.audit.audit_id if publication.audit is not None else None
+                ),
+                verification_evidence_reference=(
+                    publication.audit.verification.evidence_reference
+                    if publication.audit is not None
+                    else None
+                ),
+                superseded_fingerprint=publication.supersession.predecessor_fingerprint,
+                idempotency_status=PublishIdempotencyStatus.REUSED,
+            )
+        if any(
+            publication.bundle.model_version == bundle.model_version
+            for publication in existing
+        ):
+            return _failure(
+                "conflict",
+                "version_exists",
+                f"bundle '{bundle.bundle_id}' version '{bundle.model_version}' "
+                "is already published",
+            )
         predecessor = existing[-1] if existing else None
         predecessor_fingerprint = (
             predecessor.bundle.fingerprint if predecessor is not None else None
@@ -381,6 +477,7 @@ class InMemorySemanticBundleCatalog:
             bundle=bundle,
             accepted_assertion_manifest=accepted_assertion_manifest,
             audit=audit,
+            verification_evidence=verification_evidence,
             supersession=SupersessionMetadata(
                 predecessor_fingerprint=predecessor_fingerprint,
             ),
@@ -404,6 +501,7 @@ class InMemorySemanticBundleCatalog:
             "published",
             bundle,
             audit_reference=audit.audit_id if audit is not None else None,
+            verification_evidence_reference=evidence_reference,
             superseded_fingerprint=predecessor_fingerprint,
             idempotency_status=PublishIdempotencyStatus.CREATED,
         )
@@ -479,6 +577,21 @@ class InMemorySemanticBundleCatalog:
             if publication.bundle.fingerprint == fingerprint:
                 return publication.audit
         return None
+
+    def verification_evidence(
+        self,
+        bundle_id: str,
+        fingerprint: str,
+        *,
+        tenant_scope_fingerprint: str | None = None,
+    ) -> VerificationSuiteEvidence | None:
+        """Return immutable bounded verification evidence for a publication."""
+        publication = self._publication_by_fingerprint(
+            bundle_id,
+            fingerprint,
+            tenant_scope_fingerprint=tenant_scope_fingerprint,
+        )
+        return publication.verification_evidence if publication is not None else None
 
     def publication_records(
         self,
@@ -600,6 +713,21 @@ class InMemorySemanticBundleCatalog:
             check = production.check()
             if not check.allowed:
                 return _failure_from_activation_check(check)
+            from nl2data_core.verification.suite import evidence_satisfies_policy
+
+            evidence = publication.verification_evidence
+            if (
+                evidence is None
+                or evidence.policy_profile != PRODUCTION_POLICY.policy_id
+                or evidence.policy_version != PRODUCTION_POLICY.policy_version
+                or evidence.policy_fingerprint != PRODUCTION_POLICY.fingerprint
+                or not evidence_satisfies_policy(evidence, policy=PRODUCTION_POLICY)
+            ):
+                return _failure(
+                    "rejected",
+                    "verification_evidence_required",
+                    "production activation requires passing production verification evidence",
+                )
         for dependency in bundle.dependencies:
             dependency_bundle = self.get(
                 dependency.bundle_id,

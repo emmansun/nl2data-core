@@ -58,6 +58,14 @@ def _sorted_payload(model: SemanticAssemblyAuthoring) -> dict[str, Any]:
     spec["deploymentBindings"] = sorted(
         spec.get("deploymentBindings", []), key=lambda item: item["bindingId"]
     )
+    verification_plan = spec.get("verificationPlan")
+    if verification_plan is not None:
+        verification_plan["smokeCases"] = sorted(
+            verification_plan.get("smokeCases", []), key=lambda item: item["caseId"]
+        )
+        verification_plan["semanticCases"] = sorted(
+            verification_plan.get("semanticCases", []), key=lambda item: item["caseId"]
+        )
     compatibility = spec.get("compatibility", {})
     if "compatible_catalog_fingerprints" in compatibility:
         compatibility["compatible_catalog_fingerprints"] = sorted(
@@ -251,8 +259,23 @@ def _draft_payload(draft: AssemblyDraft) -> dict[str, Any] | None:
                 }
                 for binding in draft.deployment_bindings
             ],
+            **(
+                {
+                    "verificationPlan": _draft_verification_plan_payload(
+                        draft.verification_plan
+                    )
+                }
+                if draft.verification_plan is not None
+                else {}
+            ),
         },
     }
+
+
+def _draft_verification_plan_payload(plan: Any) -> dict[str, Any]:
+    from .models import AuthoringVerificationPlan
+
+    return AuthoringVerificationPlan.model_validate(plan.canonical_payload()).authoring_payload()
 
 
 def export_authoring_draft(draft: AssemblyDraft) -> AuthoringExportResult:

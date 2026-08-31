@@ -38,6 +38,7 @@ from nl2data_core.bundles import (
     SemanticModelBundle,
     SemanticSourceReference,
 )
+from nl2data_core.canonical import sha256_fingerprint
 from nl2data_core.metadata import (
     MetadataEvidence,
     MetadataField,
@@ -51,6 +52,11 @@ from nl2data_core.metadata import (
 )
 from nl2data_core.metadata.inference import infer_proposals
 from nl2data_core.metadata.production import SnapshotLifecycleState
+from nl2data_core.verification import (
+    COMPATIBILITY_POLICY,
+    VerificationLayerEvidence,
+)
+from nl2data_core.verification.suite import compatibility_suite_evidence
 from nl2data_core.views import (
     SemanticDescriptor,
     SemanticEntityDescriptor,
@@ -244,6 +250,44 @@ def make_audit(bundle: SemanticModelBundle, **overrides: object) -> PublishAudit
     return PublishAuditRecord.model_validate(values)
 
 
+def make_verification_evidence(
+    draft: AssemblyDraft,
+    bundle: SemanticModelBundle,
+    manifest: AcceptedAssertionManifest,
+):
+    return compatibility_suite_evidence(
+        structural_evidence=VerificationLayerEvidence(
+            layer="layer_1", status="passed"
+        ),
+        draft_id=draft.draft_id,
+        draft_revision=draft.draft_revision,
+        bundle_fingerprint=bundle.fingerprint,
+        manifest_fingerprint=sha256_fingerprint(manifest.canonical_payload()),
+        tenant_scope_fingerprint=TENANT_A,
+        source_scope_fingerprint=sha256_fingerprint({"source_id": draft.source_id}),
+    )
+
+
+def make_verified_audit(bundle: SemanticModelBundle, evidence) -> PublishAuditRecord:
+    reference = f"verification-{evidence.fingerprint.removeprefix('sha256:')[:24]}"
+    verification = PublishVerificationSummary(
+        structural_valid=True,
+        manifest_equivalent=True,
+        host_callback_count=1,
+        suite_version=evidence.suite_version,
+        policy_profile=COMPATIBILITY_POLICY.policy_id,
+        policy_version=COMPATIBILITY_POLICY.policy_version,
+        policy_fingerprint=COMPATIBILITY_POLICY.fingerprint,
+        runner_id=evidence.runner_id,
+        runner_version=evidence.runner_version,
+        layer_statuses=tuple(layer.status.value for layer in evidence.layers),
+        layer_case_counts=tuple(len(layer.cases) for layer in evidence.layers),
+        evidence_fingerprint=evidence.fingerprint,
+        evidence_reference=reference,
+    )
+    return make_audit(bundle, verification=verification)
+
+
 class TestDurableAssemblyDrafts:
     def test_draft_survives_catalog_restart(self) -> None:
         pool = FakePostgresPool()
@@ -304,6 +348,102 @@ class TestDurableAssemblyPublication:
             idempotency_key=idempotency_key,
             tenant_scope_fingerprint=TENANT_A,
         )
+
+    def _publish_verified(
+        self,
+        catalog: PostgreSQLSemanticCatalog,
+        draft: AssemblyDraft,
+        bundle: SemanticModelBundle,
+        *,
+        idempotency_key: str = "publish-verified-v1",
+    ):
+        manifest = AcceptedAssertionManifest.from_draft(
+            draft, bundle_fingerprint=bundle.fingerprint
+        )
+        evidence = make_verification_evidence(draft, bundle, manifest)
+        return catalog.publish(
+            bundle,
+            accepted_assertion_manifest=manifest,
+            verification_evidence=evidence,
+            audit=make_verified_audit(bundle, evidence),
+            draft=draft,
+            expected_revision=draft.draft_revision,
+            idempotency_key=idempotency_key,
+            tenant_scope_fingerprint=TENANT_A,
+        )
+
+    def test_verification_evidence_survives_restart_and_is_tenant_isolated(self) -> None:
+        pool = FakePostgresPool()
+        first = PostgreSQLSemanticCatalog(pool=pool, now=pool.clock.now)
+        draft = make_approved_draft()
+        bundle = make_bundle()
+        first.create(draft, tenant_scope_fingerprint=TENANT_A)
+        outcome = self._publish_verified(first, draft, bundle)
+        assert outcome.kind == "published"
+        assert outcome.verification_evidence_reference is not None
+
+        restarted = PostgreSQLSemanticCatalog(pool=pool, now=pool.clock.now)
+        evidence = restarted.verification_evidence(
+            bundle.bundle_id,
+            bundle.fingerprint,
+            tenant_scope_fingerprint=TENANT_A,
+        )
+        assert evidence is not None
+        assert outcome.verification_evidence_reference == (
+            f"verification-{evidence.fingerprint.removeprefix('sha256:')[:24]}"
+        )
+        assert restarted.verification_evidence(
+            bundle.bundle_id,
+            bundle.fingerprint,
+            tenant_scope_fingerprint=TENANT_B,
+        ) is None
+        assert pool.statement_journal.index("insert_accepted_manifest") < (
+            pool.statement_journal.index("insert_verification_evidence")
+        ) < pool.statement_journal.index("insert_publish_audit")
+
+    def test_verified_reuse_returns_original_evidence_and_audit_references(self) -> None:
+        catalog, _ = make_postgres_catalog()
+        draft = make_approved_draft()
+        bundle = make_bundle()
+        catalog.create(draft, tenant_scope_fingerprint=TENANT_A)
+        created = self._publish_verified(catalog, draft, bundle)
+        reused = self._publish_verified(catalog, draft, bundle)
+        assert reused.kind == "reused"
+        assert reused.audit_reference == created.audit_reference
+        assert (
+            reused.verification_evidence_reference
+            == created.verification_evidence_reference
+        )
+
+    def test_tampered_verification_evidence_fails_closed(self) -> None:
+        catalog, pool = make_postgres_catalog()
+        draft = make_approved_draft()
+        bundle = make_bundle()
+        catalog.create(draft, tenant_scope_fingerprint=TENANT_A)
+        self._publish_verified(catalog, draft, bundle)
+        row = next(iter(pool.verification_evidence.values()))
+        row["evidence_fingerprint"] = fp("99")
+        with pytest.raises(SemanticCatalogError) as rejected:
+            catalog.verification_evidence(
+                bundle.bundle_id,
+                bundle.fingerprint,
+                tenant_scope_fingerprint=TENANT_A,
+            )
+        assert rejected.value.code is SemanticCatalogErrorCode.ENVELOPE_REJECTED
+
+    def test_failure_after_evidence_insert_rolls_back_all_publication_rows(self) -> None:
+        catalog, pool = make_postgres_catalog()
+        draft = make_approved_draft()
+        bundle = make_bundle()
+        catalog.create(draft, tenant_scope_fingerprint=TENANT_A)
+        pool.fail_next(OperationalError("secret backend detail"), after=9)
+        with pytest.raises(SemanticCatalogError):
+            self._publish_verified(catalog, draft, bundle)
+        assert not pool.publications
+        assert not pool.accepted_manifests
+        assert not pool.verification_evidence
+        assert not pool.publish_audits
+        assert not pool.published_versions
 
     def test_publication_records_survive_restart_and_reload_by_fingerprint(self) -> None:
         pool = FakePostgresPool()

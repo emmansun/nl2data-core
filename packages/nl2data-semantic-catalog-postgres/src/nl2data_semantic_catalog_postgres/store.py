@@ -68,6 +68,8 @@ from nl2data_core.metadata.production import (
     SnapshotLifecycleState,
 )
 from nl2data_core.metadata.proposals import SemanticProposalSet
+from nl2data_core.verification.models import VerificationStatus, VerificationSuiteEvidence
+from nl2data_core.verification.policy import PRODUCTION_POLICY
 from nl2data_core.workflow.durable import tenant_scope_namespace
 from pydantic import ValidationError
 
@@ -241,6 +243,16 @@ SQL_TEMPLATES: dict[str, str] = {
     "read_accepted_manifest": (
         "SELECT envelope, schema_version FROM "
         "{schema}.accepted_assertion_manifests WHERE scope_namespace = %s "
+        "AND bundle_id = %s AND bundle_fingerprint = %s"
+    ),
+    "insert_verification_evidence": (
+        "INSERT INTO {schema}.verification_suite_evidence (scope_namespace, "
+        "bundle_id, bundle_fingerprint, evidence_fingerprint, schema_version, "
+        "envelope, created_at) VALUES (%s, %s, %s, %s, %s, %s, %s)"
+    ),
+    "read_verification_evidence": (
+        "SELECT evidence_fingerprint, envelope, schema_version FROM "
+        "{schema}.verification_suite_evidence WHERE scope_namespace = %s "
         "AND bundle_id = %s AND bundle_fingerprint = %s"
     ),
     "insert_publish_audit": (
@@ -861,6 +873,19 @@ class PostgreSQLSemanticCatalog:
                 cause=error,
             ) from error
 
+    def _evidence_from_envelope(
+        self, envelope: CatalogEnvelope
+    ) -> VerificationSuiteEvidence:
+        try:
+            return VerificationSuiteEvidence.model_validate(envelope.payload)
+        except ValidationError as error:
+            raise SemanticCatalogError(
+                SemanticCatalogErrorCode.ENVELOPE_REJECTED,
+                "persisted verification evidence failed reconstruction",
+                details={"cause_type": "ValidationError"},
+                cause=error,
+            ) from error
+
     def _bundle_from_envelope(self, envelope: CatalogEnvelope) -> SemanticModelBundle:
         try:
             bundle = SemanticModelBundle(**envelope.payload)
@@ -1297,6 +1322,24 @@ class PostgreSQLSemanticCatalog:
             )
         return draft
 
+    def authoritative_draft_matches(
+        self,
+        draft: AssemblyDraft,
+        *,
+        expected_revision: int,
+        tenant_scope_fingerprint: str,
+    ) -> bool:
+        """Preflight the exact persisted draft before external verification work."""
+        authoritative = self.get_draft(
+            draft.draft_id,
+            tenant_scope_fingerprint=tenant_scope_fingerprint,
+        )
+        return (
+            authoritative is not None
+            and authoritative.draft_revision == expected_revision
+            and authoritative.file_payload() == draft.file_payload()
+        )
+
     def replace(
         self,
         draft: AssemblyDraft,
@@ -1351,6 +1394,7 @@ class PostgreSQLSemanticCatalog:
         *,
         accepted_assertion_manifest: AcceptedAssertionManifest | None = None,
         audit: PublishAuditRecord | None = None,
+        verification_evidence: VerificationSuiteEvidence | None = None,
         production: ProductionActivationContext | None = None,
         tenant_scope_fingerprint: str | None = None,
         draft: AssemblyDraft | None = None,
@@ -1387,6 +1431,48 @@ class PostgreSQLSemanticCatalog:
                 "audit_mismatch",
                 "publish audit does not match the published bundle",
             )
+        if verification_evidence is not None and (
+            verification_evidence.bundle_fingerprint != bundle.fingerprint
+            or verification_evidence.status is not VerificationStatus.PASSED
+        ):
+            return _failure(
+                "rejected",
+                "verification_evidence_mismatch",
+                "verification evidence does not match the published bundle",
+            )
+        evidence_reference = (
+            f"verification-{verification_evidence.fingerprint.removeprefix('sha256:')[:24]}"
+            if verification_evidence is not None
+            else None
+        )
+        if verification_evidence is not None and (
+            audit is None
+            or audit.verification.evidence_fingerprint != verification_evidence.fingerprint
+            or audit.verification.evidence_reference != evidence_reference
+            or audit.verification.policy_profile != verification_evidence.policy_profile
+            or audit.verification.policy_version != verification_evidence.policy_version
+            or audit.verification.policy_fingerprint
+            != verification_evidence.policy_fingerprint
+            or audit.verification.plan_fingerprint
+            != verification_evidence.plan_fingerprint
+            or audit.verification.runner_id != verification_evidence.runner_id
+            or audit.verification.runner_version != verification_evidence.runner_version
+        ):
+            return _failure(
+                "rejected",
+                "verification_audit_mismatch",
+                "publish audit does not match verification evidence",
+            )
+        if verification_evidence is not None and (
+            accepted_assertion_manifest is None
+            or verification_evidence.manifest_fingerprint
+            != sha256_fingerprint(accepted_assertion_manifest.canonical_payload())
+        ):
+            return _failure(
+                "rejected",
+                "verification_manifest_mismatch",
+                "verification evidence does not match the accepted manifest",
+            )
         if (draft is None) != (expected_revision is None):
             raise ValueError("draft and expected_revision must be supplied together")
         if idempotency_key is not None and (
@@ -1416,6 +1502,14 @@ class PostgreSQLSemanticCatalog:
                 ArtifactKind.PUBLISH_AUDIT,
                 audit_payload,
                 sha256_fingerprint(audit_payload),
+            )
+        evidence_envelope = None
+        if verification_evidence is not None:
+            evidence_payload = verification_evidence.model_dump(mode="json")
+            evidence_envelope = self._encode(
+                ArtifactKind.VERIFICATION_SUITE_EVIDENCE,
+                evidence_payload,
+                sha256_fingerprint(evidence_payload),
             )
         with self._transaction() as conn:
             if draft is not None:
@@ -1447,6 +1541,26 @@ class PostgreSQLSemanticCatalog:
                         "conflict",
                         "draft_changed",
                         "assembly draft content changed before publication",
+                    )
+                if verification_evidence is not None and (
+                    verification_evidence.draft_id != persisted_draft.draft_id
+                    or verification_evidence.draft_revision
+                    != persisted_draft.draft_revision
+                    or verification_evidence.plan_fingerprint
+                    != (
+                        persisted_draft.verification_plan.fingerprint
+                        if persisted_draft.verification_plan is not None
+                        else None
+                    )
+                    or verification_evidence.tenant_scope_fingerprint
+                    != tenant_scope_fingerprint
+                    or verification_evidence.source_scope_fingerprint
+                    != sha256_fingerprint({"source_id": persisted_draft.source_id})
+                ):
+                    return _failure(
+                        "rejected",
+                        "verification_evidence_mismatch",
+                        "verification evidence does not match the locked draft scope",
                     )
             self._execute(
                 conn,
@@ -1483,6 +1597,9 @@ class PostgreSQLSemanticCatalog:
                 existing_audit = self._read_publish_audit(
                     conn, namespace, bundle.bundle_id, bundle.fingerprint
                 )
+                self._read_verification_evidence(
+                    conn, namespace, bundle.bundle_id, bundle.fingerprint
+                )
                 version_record = self._execute(
                     conn,
                     "read_published_version",
@@ -1493,6 +1610,11 @@ class PostgreSQLSemanticCatalog:
                     existing_bundle,
                     audit_reference=(
                         existing_audit.audit_id if existing_audit is not None else None
+                    ),
+                    verification_evidence_reference=(
+                        existing_audit.verification.evidence_reference
+                        if existing_audit is not None
+                        else None
                     ),
                     superseded_fingerprint=(
                         version_record["predecessor_fingerprint"]
@@ -1544,6 +1666,20 @@ class PostgreSQLSemanticCatalog:
                         bundle.fingerprint,
                         ENVELOPE_SCHEMA_VERSION,
                         manifest_envelope,
+                        now,
+                    ),
+                )
+            if evidence_envelope is not None and verification_evidence is not None:
+                self._execute(
+                    conn,
+                    "insert_verification_evidence",
+                    (
+                        namespace,
+                        bundle.bundle_id,
+                        bundle.fingerprint,
+                        verification_evidence.fingerprint,
+                        ENVELOPE_SCHEMA_VERSION,
+                        evidence_envelope,
                         now,
                     ),
                 )
@@ -1610,6 +1746,7 @@ class PostgreSQLSemanticCatalog:
             "published",
             bundle,
             audit_reference=audit.audit_id if audit is not None else None,
+            verification_evidence_reference=evidence_reference,
             superseded_fingerprint=predecessor_fingerprint,
             idempotency_status=PublishIdempotencyStatus.CREATED,
         )
@@ -1746,6 +1883,114 @@ class PostgreSQLSemanticCatalog:
             )
         return audit
 
+    def _read_verification_evidence(
+        self,
+        conn: Any,
+        namespace: str,
+        bundle_id: str,
+        fingerprint: str,
+    ) -> VerificationSuiteEvidence | None:
+        row = self._execute(
+            conn,
+            "read_verification_evidence",
+            (namespace, bundle_id, fingerprint),
+        ).fetchone()
+        if row is None:
+            return None
+        envelope = self._decode(
+            row["envelope"],
+            ArtifactKind.VERIFICATION_SUITE_EVIDENCE,
+            row_schema_version=row["schema_version"],
+        )
+        evidence = self._evidence_from_envelope(envelope)
+        if (
+            evidence.bundle_fingerprint != fingerprint
+            or evidence.fingerprint != row["evidence_fingerprint"]
+        ):
+            raise SemanticCatalogError(
+                SemanticCatalogErrorCode.ENVELOPE_REJECTED,
+                "persisted verification evidence metadata does not match publication",
+                details={"cause_type": "VerificationEvidenceMetadataMismatch"},
+            )
+        return evidence
+
+    def verification_evidence(
+        self,
+        bundle_id: str,
+        fingerprint: str,
+        *,
+        tenant_scope_fingerprint: str | None = None,
+    ) -> VerificationSuiteEvidence | None:
+        """Load immutable bounded verification evidence for a publication."""
+        namespace = _namespace(tenant_scope_fingerprint)
+        with self._transaction() as conn:
+            evidence = self._read_verification_evidence(
+                conn, namespace, bundle_id, fingerprint
+            )
+            if evidence is None:
+                return None
+            audit = self._read_publish_audit(conn, namespace, bundle_id, fingerprint)
+            manifest_row = self._execute(
+                conn,
+                "read_accepted_manifest",
+                (namespace, bundle_id, fingerprint),
+            ).fetchone()
+            draft_row = self._execute(
+                conn,
+                "read_assembly_draft",
+                (namespace, evidence.draft_id),
+            ).fetchone()
+            if (
+                tenant_scope_fingerprint is None
+                or evidence.tenant_scope_fingerprint != tenant_scope_fingerprint
+                or audit is None
+                or audit.verification.evidence_fingerprint != evidence.fingerprint
+                or audit.verification.policy_profile != evidence.policy_profile
+                or audit.verification.policy_version != evidence.policy_version
+                or audit.verification.policy_fingerprint != evidence.policy_fingerprint
+                or audit.verification.plan_fingerprint != evidence.plan_fingerprint
+                or audit.verification.runner_id != evidence.runner_id
+                or audit.verification.runner_version != evidence.runner_version
+                or manifest_row is None
+                or draft_row is None
+            ):
+                raise SemanticCatalogError(
+                    SemanticCatalogErrorCode.ENVELOPE_REJECTED,
+                    "persisted verification evidence does not match publish audit",
+                    details={"cause_type": "VerificationAuditMismatch"},
+                )
+            manifest_envelope = self._decode(
+                manifest_row["envelope"],
+                ArtifactKind.ACCEPTED_ASSERTION_MANIFEST,
+                row_schema_version=manifest_row["schema_version"],
+            )
+            draft_envelope = self._decode(
+                draft_row["envelope"],
+                ArtifactKind.ASSEMBLY_DRAFT,
+                row_schema_version=draft_row["schema_version"],
+            )
+            manifest = self._manifest_from_envelope(manifest_envelope)
+            draft = self._draft_from_envelope(draft_envelope)
+            if (
+                evidence.manifest_fingerprint
+                != sha256_fingerprint(manifest.canonical_payload())
+                or evidence.draft_revision != draft.draft_revision
+                or evidence.plan_fingerprint
+                != (
+                    draft.verification_plan.fingerprint
+                    if draft.verification_plan is not None
+                    else None
+                )
+                or evidence.source_scope_fingerprint
+                != sha256_fingerprint({"source_id": draft.source_id})
+            ):
+                raise SemanticCatalogError(
+                    SemanticCatalogErrorCode.ENVELOPE_REJECTED,
+                    "persisted verification evidence binding is invalid",
+                    details={"cause_type": "VerificationBindingMismatch"},
+                )
+            return evidence
+
     def publish_audit(
         self,
         bundle_id: str,
@@ -1811,6 +2056,9 @@ class PostgreSQLSemanticCatalog:
                         bundle=self._bundle_from_envelope(bundle_envelope),
                         accepted_assertion_manifest=manifest,
                         audit=self._read_publish_audit(
+                            conn, namespace, bundle_id, fingerprint
+                        ),
+                        verification_evidence=self._read_verification_evidence(
                             conn, namespace, bundle_id, fingerprint
                         ),
                         state=PublishedVersionState(row["lifecycle_state"]),
@@ -1928,6 +2176,23 @@ class PostgreSQLSemanticCatalog:
                 check = production.check()
                 if not check.allowed:
                     return _failure_from_activation_check(check)
+                from nl2data_core.verification.suite import evidence_satisfies_policy
+
+                evidence = self._read_verification_evidence(
+                    conn, namespace, bundle_id, bundle.fingerprint
+                )
+                if (
+                    evidence is None
+                    or evidence.policy_profile != PRODUCTION_POLICY.policy_id
+                    or evidence.policy_version != PRODUCTION_POLICY.policy_version
+                    or evidence.policy_fingerprint != PRODUCTION_POLICY.fingerprint
+                    or not evidence_satisfies_policy(evidence, policy=PRODUCTION_POLICY)
+                ):
+                    return _failure(
+                        "rejected",
+                        "verification_evidence_required",
+                        "production activation requires passing production verification evidence",
+                    )
             for dependency in bundle.dependencies:
                 dep = self._execute(
                     conn,

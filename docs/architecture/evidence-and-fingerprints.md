@@ -212,6 +212,9 @@ problem, never a rewrite of evidence.
 
 ## Next steps
 
+- [Verification Suite](verification-suite.md) explains plan, runner, executor,
+  and publication evidence bindings that remain outside Bundle identity.
+
 - [Governance and tenancy](governance-and-tenancy.md) — how fingerprints
   bind authorization.
 - [Workflow state](workflow-state.md) — how evidence fingerprints

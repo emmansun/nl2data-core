@@ -21,7 +21,8 @@ Every document declares:
 - `spec.source.sourceId` and at least one entity
 
 `spec` may also contain fields, nested relationships and calculated fields,
-measures, grains, source references, compatibility, and deployment bindings.
+measures, grains, source references, compatibility, deployment bindings, and a
+bounded `verificationPlan`.
 See the [complete demo document](../../demo/authoring/sales-semantic-assembly.yaml).
 
 Identifiers are 1-128 characters and use letters, digits, `_`, `-`, and `.`.
@@ -92,6 +93,13 @@ a reviewed, modified, or otherwise non-representable draft is rejected rather
 than exported lossily.
 
 ## Rejected features
+
+`verificationPlan` accepts policy/version, bounded deadlines, canonical
+Semantic IR, fixture profile identifiers, capability requirements, smoke
+assertions, and semantic contracts. It rejects supplied fingerprints,
+approval bindings, statuses, evidence, runner/executor identities, SQL/MQL,
+physical names, and credentials. Lowering attaches the plan to the revision-zero
+draft; later plan edits use normal revision and reapproval rules.
 
 The schema rejects unknown members and all lifecycle-owned fields, including
 assertion IDs, provenance, review state/bindings, draft revision, approver or

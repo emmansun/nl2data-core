@@ -16,6 +16,7 @@
 | Semantic IR + canonical fingerprints | Implemented + conformant | Contract suite | — |
 | Semantic View resolution (fail-closed) | Implemented + conformant | Contract + security suites | — |
 | Semantic assembly drafts, assertion review, approval, publish audit | Implemented + conformant | Unit + contract + security suites | — |
+| Three-layer semantic Bundle Verification Suite and SQLite reference executor | Implemented + conformant | Model, execution, orchestration, publish, Admin, catalog, and security suites | Controlled fixture profiles; production requires explicit policy and executor identity |
 | Semantic Assembly YAML validation, import, and deterministic export | Implemented + conformant | Unit + Admin contract + security suites | `PyYAML`; Admin operations require scoped host authentication |
 | Semantic Model Bundles + fingerprint publication/supersession catalog | Implemented + conformant | Contract + security suites | — |
 | Durable semantic catalog (PostgreSQL) | Implemented + verified | Real-service CI profile | `nl2data-semantic-catalog-postgres` + service |

@@ -16,6 +16,9 @@ from nl2data_core.assembly.publishing import (
 )
 from nl2data_core.metadata.catalog import SemanticSnapshotCatalog
 from nl2data_core.metadata.models import MetadataSnapshot
+from nl2data_core.verification.execution import VerificationExecutionContext
+from nl2data_core.verification.policy import VerificationPolicy
+from nl2data_core.verification.smoke import RunnableVerificationExecutor
 
 from .auth import AuthContext
 from .dtos import (
@@ -122,9 +125,26 @@ class AdminServiceDependencies(Protocol):
     lifecycle_authorizer: LifecycleAuthorizer | None
     bundle_emitter: SemanticBundleEmitter | None
     manifest_verifier: ManifestBundleVerifier | None
+    verification_executor: RunnableVerificationExecutor | None
+    verification_context_factory: VerificationExecutionContextFactory | None
+    verification_policies: dict[str, VerificationPolicy]
     separation_mode: SeparationOfDutiesMode
 
     @property
     def audit_reference(self) -> str:
         """Host-provided audit reference for mutating operations."""
         ...
+
+
+class VerificationExecutionContextFactory(Protocol):
+    """Host factory for trusted candidate-bound verification execution context."""
+
+    def create(
+        self,
+        *,
+        draft: Any,
+        candidate: Any,
+        manifest: Any,
+        policy: VerificationPolicy,
+        auth_context: AuthContext,
+    ) -> VerificationExecutionContext: ...

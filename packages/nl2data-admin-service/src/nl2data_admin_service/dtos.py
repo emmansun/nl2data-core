@@ -12,6 +12,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
+from nl2data_core.verification.models import VerificationSuiteEvidence
 from pydantic import BaseModel, ConfigDict, Field
 
 from .auth import Permission
@@ -352,6 +353,72 @@ class DraftRevisionCommand(BaseModel):
     expected_revision: int = Field(ge=0)
 
 
+class VerifyDraftCommand(DraftRevisionCommand):
+    """Side-effect-free verification request selecting a configured policy."""
+
+    policy_profile: str = Field(pattern=_IDENTIFIER_PATTERN)
+
+
+class PublishDraftCommand(DraftRevisionCommand):
+    """Publish request that may carry safe precomputed suite evidence."""
+
+    policy_profile: str = Field(pattern=_IDENTIFIER_PATTERN)
+    verification_evidence: VerificationSuiteEvidence | None = None
+
+
+class VerificationCaseSummary(BaseModel):
+    """Safe case outcome without query, expected, or observed values."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    case_id: str = Field(pattern=_IDENTIFIER_PATTERN)
+    status: str = Field(min_length=1, max_length=32)
+    assertion_count: int = Field(ge=0, le=100)
+    passed_assertion_count: int = Field(ge=0, le=100)
+    issue_codes: tuple[str, ...] = Field(default_factory=tuple, max_length=32)
+
+
+class VerificationLayerSummary(BaseModel):
+    """Safe layer outcome and bounded case summaries."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    layer_id: str = Field(pattern=_IDENTIFIER_PATTERN)
+    status: str = Field(min_length=1, max_length=32)
+    cases: tuple[VerificationCaseSummary, ...] = Field(default_factory=tuple, max_length=1_000)
+
+
+class VerificationEvidenceReference(BaseModel):
+    """Safe suite identity exposed by verify and audit operations."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    suite_version: int = Field(ge=1, le=1_000)
+    status: str = Field(min_length=1, max_length=32)
+    policy_profile: str = Field(pattern=_IDENTIFIER_PATTERN)
+    policy_version: int = Field(ge=1, le=1_000)
+    plan_fingerprint: str | None = Field(default=None, pattern=_FINGERPRINT_PATTERN)
+    runner_id: str = Field(pattern=_IDENTIFIER_PATTERN)
+    runner_version: int = Field(ge=1, le=1_000)
+    executor_id: str | None = Field(default=None, pattern=_IDENTIFIER_PATTERN)
+    executor_capability_fingerprint: str | None = Field(
+        default=None, pattern=_FINGERPRINT_PATTERN
+    )
+    evidence_fingerprint: str = Field(pattern=_FINGERPRINT_PATTERN)
+    evidence_reference: str = Field(pattern=_IDENTIFIER_PATTERN)
+    layers: tuple[VerificationLayerSummary, ...] = Field(default_factory=tuple, max_length=3)
+
+
+class DraftVerificationResult(BaseModel):
+    """Bounded side-effect-free draft verification result."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    draft_id: str = Field(pattern=_IDENTIFIER_PATTERN)
+    draft_revision: int = Field(ge=0)
+    verification: VerificationEvidenceReference
+
+
 class AssertionDecisionCommand(DraftRevisionCommand):
     """Approve, reject, or edit one assertion."""
 
@@ -381,6 +448,9 @@ class PublishAssemblyResult(BaseModel):
     model_version: str = Field(pattern=_IDENTIFIER_PATTERN)
     fingerprint: str | None = Field(default=None, pattern=_FINGERPRINT_PATTERN)
     audit_reference: str | None = Field(default=None, max_length=512)
+    verification_evidence_reference: str | None = Field(
+        default=None, pattern=_IDENTIFIER_PATTERN
+    )
     superseded_fingerprint: str | None = Field(default=None, pattern=_FINGERPRINT_PATTERN)
     idempotency_status: str | None = Field(default=None, max_length=32)
     issues: tuple[ErrorDetail, ...] = Field(default_factory=tuple, max_length=64)
@@ -401,6 +471,7 @@ class PublishAuditSummary(BaseModel):
     deployment_binding_count: int = Field(ge=0, le=64)
     deployment_reference_schemes: tuple[str, ...] = Field(default_factory=tuple, max_length=3)
     waiver_applied: bool
+    verification: VerificationEvidenceReference | None = None
 
 
 class PublishedVersionItem(BaseModel):
@@ -415,6 +486,9 @@ class PublishedVersionItem(BaseModel):
     predecessor_fingerprint: str | None = Field(default=None, pattern=_FINGERPRINT_PATTERN)
     successor_fingerprint: str | None = Field(default=None, pattern=_FINGERPRINT_PATTERN)
     audit_reference: str | None = Field(default=None, pattern=_IDENTIFIER_PATTERN)
+    verification_evidence_reference: str | None = Field(
+        default=None, pattern=_IDENTIFIER_PATTERN
+    )
 
 
 class VersionListResult(BaseModel):

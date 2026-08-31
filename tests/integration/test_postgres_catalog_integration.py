@@ -39,6 +39,7 @@ from nl2data_core.bundles import (
     SemanticModelBundle,
     SemanticSourceReference,
 )
+from nl2data_core.canonical import sha256_fingerprint
 from nl2data_core.fixtures import PostgresFixtureProfile
 from nl2data_core.fixtures.models import FixtureUnavailableError
 from nl2data_core.metadata import (
@@ -54,6 +55,8 @@ from nl2data_core.metadata import (
 )
 from nl2data_core.metadata.inference import infer_proposals
 from nl2data_core.metadata.production import SnapshotLifecycleState
+from nl2data_core.verification import COMPATIBILITY_POLICY, VerificationLayerEvidence
+from nl2data_core.verification.suite import compatibility_suite_evidence
 from nl2data_core.views import (
     SemanticDescriptor,
     SemanticEntityDescriptor,
@@ -221,6 +224,43 @@ def make_audit(bundle: SemanticModelBundle) -> PublishAuditRecord:
     )
 
 
+def make_verified_publication(
+    draft: AssemblyDraft,
+    bundle: SemanticModelBundle,
+    manifest: AcceptedAssertionManifest,
+):
+    evidence = compatibility_suite_evidence(
+        structural_evidence=VerificationLayerEvidence(
+            layer="layer_1", status="passed"
+        ),
+        draft_id=draft.draft_id,
+        draft_revision=draft.draft_revision,
+        bundle_fingerprint=bundle.fingerprint,
+        manifest_fingerprint=sha256_fingerprint(manifest.canonical_payload()),
+        tenant_scope_fingerprint=TENANT_A,
+        source_scope_fingerprint=sha256_fingerprint({"source_id": draft.source_id}),
+    )
+    reference = f"verification-{evidence.fingerprint.removeprefix('sha256:')[:24]}"
+    verification = PublishVerificationSummary(
+        structural_valid=True,
+        manifest_equivalent=True,
+        host_callback_count=1,
+        suite_version=evidence.suite_version,
+        policy_profile=COMPATIBILITY_POLICY.policy_id,
+        policy_version=COMPATIBILITY_POLICY.policy_version,
+        policy_fingerprint=COMPATIBILITY_POLICY.fingerprint,
+        runner_id=evidence.runner_id,
+        runner_version=evidence.runner_version,
+        layer_statuses=tuple(layer.status.value for layer in evidence.layers),
+        layer_case_counts=tuple(len(layer.cases) for layer in evidence.layers),
+        evidence_fingerprint=evidence.fingerprint,
+        evidence_reference=reference,
+    )
+    return evidence, make_audit(bundle).model_copy(
+        update={"verification": verification}
+    )
+
+
 def _maintenance_profile(dsn: str) -> PostgresFixtureProfile:
     """A fixture profile used only for infrastructure connections."""
     return PostgresFixtureProfile(dsn=dsn)
@@ -374,7 +414,7 @@ class TestRestartReload:
         manifest = AcceptedAssertionManifest.from_draft(
             draft, bundle_fingerprint=bundle.fingerprint
         )
-        audit = make_audit(bundle)
+        evidence, audit = make_verified_publication(draft, bundle, manifest)
         catalog_a = PostgreSQLSemanticCatalog(
             dsn=postgres_dsn,
             config=SemanticCatalogConfig(namespace=catalog_namespace),
@@ -384,6 +424,7 @@ class TestRestartReload:
             outcome = catalog_a.publish(
                 bundle,
                 accepted_assertion_manifest=manifest,
+                verification_evidence=evidence,
                 audit=audit,
                 draft=draft,
                 expected_revision=draft.draft_revision,
@@ -419,6 +460,16 @@ class TestRestartReload:
             )
             assert loaded_audit is not None
             assert loaded_audit.audit_id == audit.audit_id
+            assert catalog_b.verification_evidence(
+                bundle.bundle_id,
+                bundle.fingerprint,
+                tenant_scope_fingerprint=TENANT_A,
+            ) == evidence
+            assert catalog_b.verification_evidence(
+                bundle.bundle_id,
+                bundle.fingerprint,
+                tenant_scope_fingerprint="sha256:" + "b" * 64,
+            ) is None
         finally:
             catalog_b.close()
 

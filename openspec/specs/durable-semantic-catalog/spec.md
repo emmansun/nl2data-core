@@ -2,9 +2,7 @@
 
 ## Purpose
 Define the optional durable PostgreSQL catalog for safe metadata snapshots, reviewed proposal sets, immutable Semantic Model Bundles, active pointers, and rollback history.
-
 ## Requirements
-
 ### Requirement: PostgreSQL semantic catalog persists safe lifecycle artifacts
 The PostgreSQL semantic catalog SHALL persist versioned safe representations of authorized MetadataSnapshots, SemanticProposalSets, AssemblyDrafts, assertion review state, immutable Semantic Model Bundle publications, immutable accepted-assertion manifests linked by semantic fingerprint, publish audit records, supersession chains, deployment binding references, active pointers, and rollback history. It SHALL keep semantic catalog data separate from workflow state tables and SHALL never persist resolved credentials or raw source data.
 
@@ -43,27 +41,27 @@ Every scoped snapshot, proposal set, publication, active pointer, and lifecycle 
 - **THEN** activation is rejected and the current active pointer is unchanged
 
 ### Requirement: Publish and activate are atomic and idempotent
-The catalog SHALL publish only verified approved semantic content, compute or verify the semantic fingerprint at the publish boundary, atomically persist the immutable artifact, linked accepted-assertion manifest, publish audit record, and supersession-chain update, and atomically activate one complete compatible version per catalog scope. Repeated publish of identical semantic content SHALL be idempotent by fingerprint. Concurrent activation SHALL serialize without exposing partial content.
+The catalog SHALL publish only verified approved semantic content, compute or verify the semantic fingerprint at the publish boundary, validate that passing Verification Suite evidence is bound to the exact approved draft revision, plan fingerprint, manifest fingerprint, candidate Bundle fingerprint, tenant/source scope, policy profile, runner identity, and executor identities, and atomically persist the immutable artifact, linked accepted-assertion manifest, bounded verification evidence summary/reference, publish audit record, and supersession-chain update. It SHALL atomically activate one complete compatible version per catalog scope. Repeated publish of identical semantic content with equivalent bound passing evidence SHALL be idempotent by fingerprint. Concurrent publication and activation SHALL serialize without exposing partial content or mismatched evidence.
 
 #### Scenario: Concurrent activation leaves one complete active version
 - **WHEN** multiple workers activate compatible candidate versions concurrently
-- **THEN** each completed operation observes a complete published version and the catalog exposes exactly one final active pointer
+- **THEN** each completed operation observes a complete verified published version and the catalog exposes exactly one final active pointer
 
 #### Scenario: Failed activation preserves the active version
-- **WHEN** validation, dependency, freshness, drift, scope, or database checks fail during activation
+- **WHEN** validation, dependency, freshness, drift, scope, database, or required verification-evidence checks fail during activation
 - **THEN** no active pointer changes and the failure is safe and retry-classified where appropriate
 
 #### Scenario: Failed publish leaves no partial lifecycle records
-- **WHEN** validation, verification, fingerprinting, audit persistence, supersession update, or database commit fails during publish
-- **THEN** no published bundle, accepted-assertion manifest, audit record, or supersession edge becomes externally visible
+- **WHEN** validation, any required verification layer, evidence-binding validation, fingerprinting, manifest/verification/audit persistence, supersession update, or database commit fails
+- **THEN** no published bundle, accepted-assertion manifest, verification evidence record, audit record, or supersession edge becomes externally visible
 
 #### Scenario: Published manifest is retrieved by fingerprint
 - **WHEN** incremental rediscovery selects a published Bundle fingerprint as its baseline
 - **THEN** the catalog returns exactly one immutable accepted-assertion manifest linked to that fingerprint or fails closed when the manifest is missing or mismatched
 
 #### Scenario: Identical publish is idempotent
-- **WHEN** a caller retries publish for semantic content whose fingerprint already exists in the scoped catalog
-- **THEN** the catalog returns the existing publication and audit reference without creating a duplicate artifact
+- **WHEN** a caller retries publish for semantic content whose fingerprint already exists in the scoped catalog with an equivalent plan and passing evidence binding
+- **THEN** the catalog returns the existing publication, verification evidence reference, and audit reference without creating duplicate records
 
 ### Requirement: Rollback and reload preserve immutable history
 The catalog SHALL support lookup of published versions by name, business version metadata, and semantic fingerprint; atomic rollback to a previously valid compatible version; startup reload of active pointers; and supersession-chain traversal. It SHALL never mutate or delete an artifact that is active, superseded, audit-referenced, or required by an active artifact.
@@ -104,3 +102,15 @@ The catalog SHALL provide explicit retention and bounded cleanup for inactive ar
 #### Scenario: Database outage is safe
 - **WHEN** PostgreSQL is unavailable or a catalog operation times out
 - **THEN** the package returns a normalized retryable catalog error and does not report an uncommitted publication or activation as successful
+
+### Requirement: Durable verification evidence is safe and reloadable
+The durable catalog SHALL persist a versioned bounded Verification Suite evidence envelope or immutable reference atomically with publication. Reload SHALL validate envelope version, fingerprints, policy profile, runner/executor identities, layer/case statuses, and publication binding before returning it. The envelope SHALL contain no raw rows, scalar values, SQL/MQL, prompts, physical names, deployment references, credentials, native values, or backend exception text.
+
+#### Scenario: Verification evidence survives restart
+- **WHEN** a verified Bundle is published and a new catalog worker starts
+- **THEN** the worker can retrieve the same bounded suite evidence identity and layer summary linked to the publication fingerprint
+
+#### Scenario: Tampered evidence fails closed
+- **WHEN** persisted verification evidence has an unsupported version or mismatched plan, runner, executor, manifest, draft, tenant/source, or Bundle fingerprint
+- **THEN** reload and activation reject the record without exposing partial evidence or changing the active pointer
+

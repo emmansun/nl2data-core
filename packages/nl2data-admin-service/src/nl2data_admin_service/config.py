@@ -26,6 +26,9 @@ class AdminServiceConfig(BaseModel):
     max_concurrent_jobs: int = Field(default=10, ge=1, le=10_000)
     allowed_hosts: tuple[str, ...] = Field(default_factory=tuple, max_length=256)
     require_authentication: bool = True
+    default_verification_policy_profile: str = Field(
+        default="compatibility-v1", pattern=_IDENTIFIER_PATTERN
+    )
 
 
 class AdminServiceProfile(BaseModel):

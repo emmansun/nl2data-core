@@ -45,6 +45,15 @@ rather than query `ErrorCode` members:
 | `bundle_emission_failed` / `verification_failed` | Depends on host | Safe publish callback failure; no partial publication is committed |
 | `manifest_mismatch` / `audit_mismatch` | No | Manifest or audit reference does not match the emitted Bundle fingerprint |
 | `version_exists` | No | Business version is already assigned to different semantic content |
+| `verification_plan_binding_mismatch` / `verification_policy_mismatch` | No | Approved plan or selected policy differs from the frozen publication input |
+| `verification_evidence_required` / `verification_evidence_mismatch` | No | Required evidence is absent, failed, stale, forged, or bound to different identities |
+
+Verification case/layer statuses are `passed`, `failed`, `skipped`,
+`unavailable`, `timed_out`, and `not_run`; only `passed` satisfies a required
+item. Bounded issue codes such as `capability_mismatch`, `candidate_drift`,
+`assertion_mismatch`, `semantic_contract_mismatch`, and
+`layer_deadline_exhausted` are verification evidence metadata, not public query
+`ErrorCode` members. See [Verification Suite operations](../operations/verification-suite.md).
 
 Publish issue codes are returned in `PublishAssemblyResult.issues`. A successful
 identical-content retry reports `reused`, not an error. Unknown backend failures

@@ -27,6 +27,7 @@ class Permission(StrEnum):
     ASSEMBLY_WRITE = "assembly:write"
     ASSEMBLY_REVIEW = "assembly:review"
     ASSEMBLY_APPROVE = "assembly:approve"
+    ASSEMBLY_VERIFY = "assembly:verify"
     ASSEMBLY_AUDIT = "assembly:audit"
     DRIFT_READ = "drift:read"
     JOB_READ = "job:read"

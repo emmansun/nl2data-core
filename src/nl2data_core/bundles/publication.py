@@ -57,6 +57,17 @@ class PublishVerificationSummary(BaseModel):
     manifest_equivalent: bool
     host_callback_count: int = Field(default=0, ge=0, le=64)
     issue_codes: tuple[str, ...] = Field(default_factory=tuple, max_length=_MAX_ISSUE_CODES)
+    suite_version: int | None = Field(default=None, ge=1, le=1_000)
+    policy_profile: str | None = Field(default=None, pattern=_IDENTIFIER_PATTERN)
+    policy_version: int | None = Field(default=None, ge=1, le=1_000)
+    policy_fingerprint: str | None = Field(default=None, pattern=_FINGERPRINT_PATTERN)
+    plan_fingerprint: str | None = Field(default=None, pattern=_FINGERPRINT_PATTERN)
+    runner_id: str | None = Field(default=None, pattern=_IDENTIFIER_PATTERN)
+    runner_version: int | None = Field(default=None, ge=1, le=1_000)
+    layer_statuses: tuple[str, ...] = Field(default_factory=tuple, max_length=3)
+    layer_case_counts: tuple[int, ...] = Field(default_factory=tuple, max_length=3)
+    evidence_fingerprint: str | None = Field(default=None, pattern=_FINGERPRINT_PATTERN)
+    evidence_reference: str | None = Field(default=None, pattern=_IDENTIFIER_PATTERN)
 
     @field_validator("issue_codes")
     @classmethod
@@ -64,6 +75,40 @@ class PublishVerificationSummary(BaseModel):
         if any(not code or len(code) > 64 for code in value):
             raise ValueError("verification issue codes must be bounded")
         return value
+
+    @model_validator(mode="after")
+    def _suite_fields_are_complete(self) -> PublishVerificationSummary:
+        required = (
+            self.suite_version,
+            self.policy_profile,
+            self.policy_version,
+            self.policy_fingerprint,
+            self.runner_id,
+            self.runner_version,
+            self.evidence_fingerprint,
+            self.evidence_reference,
+        )
+        if any(value is not None for value in required) and not all(
+            value is not None for value in required
+        ):
+            raise ValueError("suite verification summary identities must be complete")
+        if self.suite_version is None and (self.layer_statuses or self.layer_case_counts):
+            raise ValueError("legacy verification summaries cannot claim suite layers")
+        if len(self.layer_statuses) != len(self.layer_case_counts):
+            raise ValueError("verification layer statuses and counts must align")
+        allowed_statuses = {
+            "passed",
+            "failed",
+            "skipped",
+            "unavailable",
+            "timed_out",
+            "not_run",
+        }
+        if not set(self.layer_statuses).issubset(allowed_statuses):
+            raise ValueError("verification layer summary contains an unknown status")
+        if any(count < 0 or count > 1_000 for count in self.layer_case_counts):
+            raise ValueError("verification layer case counts must be bounded")
+        return self
 
 
 class DeploymentBindingRedactionSummary(BaseModel):

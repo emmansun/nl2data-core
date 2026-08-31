@@ -112,5 +112,7 @@ python -m pytest -rs packages/nl2data-workflow-postgres/tests/test_workflow_post
 
 ## 下一步
 
+- [验证套件运维](verification-suite.zh-CN.md)说明夹具/部署密钥的临时解析与证据脱敏。
+
 - [故障排查](troubleshooting.md)
 - [English source](secrets.md) — 英文原文（规范）。

@@ -2,9 +2,7 @@
 
 ## Purpose
 Define the governed Draft -> Review -> Approved -> Published semantic assembly lifecycle, including stable assertion identity, review invalidation, optimistic concurrency, publish-time semantic fingerprints, auditability, authorization, deployment binding safety, and immutable version rollback.
-
 ## Requirements
-
 ### Requirement: Assembly drafts capture editable semantic lifecycle state
 The system SHALL represent pre-publication semantic assembly as an `AssemblyDraft` artifact with explicit lifecycle state, file `apiVersion`, bundle identity metadata, deterministic semantic assertions, safe provenance, review state, deployment bindings, and a monotonic `draft_revision`. Draft, review, and approved assembly artifacts SHALL NOT expose a semantic bundle fingerprint.
 
@@ -66,19 +64,19 @@ The system SHALL require draft edit, assertion review, approval, and publish req
 - **THEN** the returned draft has a strictly greater `draft_revision`
 
 ### Requirement: Publish makes fingerprint authoritative atomically
-The system SHALL make a semantic bundle fingerprint externally authoritative only during publish. A candidate Bundle MAY precompute the same deterministic fingerprint for validation, but it SHALL NOT be treated as published authority before the atomic catalog operation succeeds. Publish SHALL freeze the approved draft, run the required verification suite, compute canonical semantic bytes, derive an immutable accepted-assertion manifest, verify that the manifest and emitted Bundle represent the same accepted semantic content, perform duplicate-content detection, persist the immutable published bundle and linked manifest, persist the publish audit record, and update supersession metadata atomically.
+The system SHALL make a semantic bundle fingerprint externally authoritative only during publish. A candidate Bundle MAY precompute the same deterministic fingerprint for validation, but it SHALL NOT be treated as published authority before the atomic catalog operation succeeds. Publish SHALL freeze the approved draft and its approved verification plan, run the verification policy required for the target profile, require every mandatory layer and case to pass, compute canonical semantic bytes, derive an immutable accepted-assertion manifest, verify that the manifest and emitted Bundle represent the same accepted semantic content, perform duplicate-content detection, persist the immutable published bundle and linked manifest, persist the publish audit and verification evidence summary, and update supersession metadata atomically. Plan content and verification evidence SHALL remain outside the Bundle semantic fingerprint domain but SHALL be bound to the approved revision and publication audit.
 
 #### Scenario: Publish creates immutable semantic artifact
-- **WHEN** an approved draft passes verification and is published
+- **WHEN** an approved draft and plan pass every layer required by the selected verification policy and are published
 - **THEN** the resulting published bundle has a `sha256:` semantic fingerprint and the draft remains distinct from the immutable published artifact
 
 #### Scenario: Publish failure leaves no partial artifact
-- **WHEN** verification, fingerprint computation, catalog persistence, audit persistence, or supersession update fails during publish
+- **WHEN** required verification fails, is skipped/unavailable/timed out/not run, or fingerprint computation, catalog persistence, audit persistence, or supersession update fails
 - **THEN** no externally visible partial publication exists and the draft remains approved for retry
 
-#### Scenario: Same content publish is idempotent
-- **WHEN** the same approved semantic payload is published more than once
-- **THEN** the system returns the existing published bundle fingerprint and audit reference without creating duplicate immutable artifacts
+#### Scenario: Same content and verification publish is idempotent
+- **WHEN** the same approved semantic payload and bound verification plan are published more than once after equivalent passing verification
+- **THEN** the system returns the existing published bundle fingerprint, verification evidence reference, and audit reference without creating duplicate immutable artifacts
 
 #### Scenario: Published baseline retains assertion alignment
 - **WHEN** an approved draft is published successfully
@@ -86,7 +84,7 @@ The system SHALL make a semantic bundle fingerprint externally authoritative onl
 
 #### Scenario: Manifest mismatch blocks publication
 - **WHEN** the accepted-assertion manifest and emitted Bundle do not represent the same frozen approved semantic content
-- **THEN** publish fails closed and persists no Bundle, manifest, audit record, or supersession edge
+- **THEN** Layer 1 and publish fail closed and persist no Bundle, manifest, verification evidence, audit record, or supersession edge
 
 ### Requirement: Canonical semantic fingerprint excludes lifecycle metadata
 Published bundle fingerprints SHALL be derived from deterministic canonical bytes of semantic payload only. The semantic fingerprint domain SHALL exclude provenance, review state, review bindings, reviewer identity, approval chains, rejected assertions, deployment bindings, file-format metadata, audit records, activation state, and supersession metadata.
@@ -161,4 +159,15 @@ A semantic assembly authoring document SHALL enter the lifecycle only through a 
 #### Scenario: Import uses tenant-scoped create semantics
 - **WHEN** two authorized tenants import documents using the same draft ID
 - **THEN** each tenant receives an isolated draft, while a duplicate ID within one tenant follows the existing create conflict behavior
+
+### Requirement: Verification plan changes invalidate assembly approval
+A verification plan attached to an assembly draft SHALL be immutable, bounded, and included in the lifecycle approval binding while remaining excluded from semantic Bundle fingerprints. Adding, removing, enabling, disabling, or editing a case, assertion, deadline, fixture/deployment profile, or policy profile SHALL advance the draft revision and invalidate prior assembly approval. Publish SHALL verify the plan frozen with the exact approved revision.
+
+#### Scenario: Approved plan edit requires reapproval
+- **WHEN** any verification-plan content changes after draft approval
+- **THEN** the draft returns to review or otherwise loses publish eligibility until the new plan and semantic content are approved and verified
+
+#### Scenario: Verification does not mutate approved content
+- **WHEN** a suite runs against an approved draft
+- **THEN** only external verification evidence is produced; the draft, assertions, plan, and candidate Bundle remain immutable
 

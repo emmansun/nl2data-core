@@ -54,11 +54,13 @@ and security warnings, and they always link to the canonical English page.
 | [ADR-045: calculated-field operator whitelist](architecture/adr-calculated-field-operator-whitelist.md) | [ADR-045：计算字段操作符白名单 (简体中文)](architecture/adr-calculated-field-operator-whitelist.zh-CN.md) — 完整翻译 |
 | [ADR registry](architecture/adr-registry.md) | English-first（暂无中文翻译，请阅读英文原文） |
 | [Evidence and fingerprints](architecture/evidence-and-fingerprints.md) | [证据与指纹 (简体中文)](architecture/evidence-and-fingerprints.zh-CN.md) — 完整翻译 |
+| [Verification Suite](architecture/verification-suite.md) | [验证套件 (简体中文)](architecture/verification-suite.zh-CN.md) — 完整翻译 |
 | [Local development](development/local-development.md) | English-first（暂无中文翻译，请阅读英文原文） |
 | [Adding an adapter or provider](development/adding-adapter-or-provider.md) | English-first（暂无中文翻译，请阅读英文原文） |
 | [Service configuration](operations/services.md) | English-first（暂无中文翻译，请阅读英文原文） |
 | [Secrets and live testing](operations/secrets.md) | [密钥与实时测试 (简体中文)](operations/secrets.zh-CN.md) — 完整翻译 |
 | [Troubleshooting](operations/troubleshooting.md) | English-first（暂无中文翻译，请阅读英文原文） |
+| [Verification Suite operations](operations/verification-suite.md) | [验证套件运维 (简体中文)](operations/verification-suite.zh-CN.md) — 完整翻译 |
 | [Configuration reference](reference/configuration.md) | [配置参考 (简体中文)](reference/configuration.zh-CN.md) — 完整翻译 |
 | [CompositionProfile reference](reference/composition-profile.md) | [CompositionProfile 参考 (简体中文)](reference/composition-profile.zh-CN.md) — 完整翻译 |
 | [Error codes](reference/error-codes.md) | English-first（暂无中文翻译，请阅读英文原文） |

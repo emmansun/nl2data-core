@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, cast
 
 from pydantic import (
     BaseModel,
@@ -15,6 +15,12 @@ from pydantic import (
 
 from nl2data_core.bundles.models import BundleCompatibility
 from nl2data_core.planning.models import AggregationKind
+from nl2data_core.verification.models import (
+    SemanticContractCase,
+    SmokeQueryCase,
+    VerificationDeadlines,
+    VerificationPlan,
+)
 from nl2data_core.views.models import (
     CalculatedOutputType,
     ExprNode,
@@ -202,6 +208,117 @@ class AuthoringDeploymentBinding(_AuthoringModel):
     connection_reference: str = Field(min_length=1, max_length=256)
 
 
+_VERIFICATION_ALIASES = {
+    "verificationVersion": "verification_version",
+    "policyProfile": "policy_profile",
+    "policyVersion": "policy_version",
+    "caseMs": "case_ms",
+    "layerMs": "layer_ms",
+    "suiteMs": "suite_ms",
+    "smokeCases": "smoke_cases",
+    "semanticCases": "semantic_cases",
+    "caseId": "case_id",
+    "fixtureProfileId": "fixture_profile_id",
+    "deadlineMs": "deadline_ms",
+    "capabilityRequirements": "capability_requirements",
+    "requiredCapabilities": "required_capabilities",
+    "assertionId": "assertion_id",
+    "selectionId": "selection_id",
+    "selectionIds": "selection_ids",
+    "rowIndex": "row_index",
+    "expectedCode": "expected_code",
+    "expectedFingerprint": "expected_fingerprint",
+    "expectedNull": "expected_null",
+    "irVersion": "ir_version",
+    "irId": "ir_id",
+    "sourceId": "source_id",
+    "rootEntityId": "root_entity_id",
+    "fieldId": "field_id",
+    "filterId": "filter_id",
+    "groupingId": "grouping_id",
+    "orderingId": "ordering_id",
+    "timeContext": "time_context",
+    "contextId": "context_id",
+    "resultShape": "result_shape",
+    "catalogFingerprint": "catalog_fingerprint",
+    "policyViewFingerprint": "policy_view_fingerprint",
+    "extensionId": "extension_id",
+}
+_FORBIDDEN_VERIFICATION_KEYS = frozenset(
+    {
+        "fingerprint",
+        "evidence",
+        "status",
+        "runnerId",
+        "runnerVersion",
+        "executorId",
+        "executorCapabilityFingerprint",
+        "approvedVerificationPlanFingerprint",
+    }
+)
+
+
+def _normalize_verification_payload(value: Any) -> Any:
+    if isinstance(value, dict):
+        if _FORBIDDEN_VERIFICATION_KEYS.intersection(value):
+            raise ValueError("verification authoring cannot contain lifecycle evidence")
+        return {
+            _VERIFICATION_ALIASES.get(str(key), str(key)): _normalize_verification_payload(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_normalize_verification_payload(item) for item in value]
+    return value
+
+
+class AuthoringVerificationPlan(_AuthoringModel):
+    """Fingerprint-free authoring representation of a core verification plan."""
+
+    verification_version: Literal[1] = 1
+    policy_profile: Identifier
+    policy_version: int = Field(default=1, ge=1, le=1_000)
+    deadlines: VerificationDeadlines = Field(default_factory=VerificationDeadlines)
+    smoke_cases: tuple[SmokeQueryCase, ...] = Field(default_factory=tuple, max_length=1_000)
+    semantic_cases: tuple[SemanticContractCase, ...] = Field(
+        default_factory=tuple, max_length=1_000
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_nested_aliases(cls, value: Any) -> Any:
+        return _normalize_verification_payload(value)
+
+    def to_plan(self) -> VerificationPlan:
+        return VerificationPlan(
+            verification_version=self.verification_version,
+            policy_profile=self.policy_profile,
+            policy_version=self.policy_version,
+            deadlines=self.deadlines,
+            smoke_cases=self.smoke_cases,
+            semantic_cases=self.semantic_cases,
+        )
+
+    def authoring_payload(self) -> dict[str, Any]:
+        payload = self.to_plan().canonical_payload()
+        authoring = cast(dict[str, Any], _camelize_verification_payload(payload))
+        for case in (*authoring["smokeCases"], *authoring["semanticCases"]):
+            capabilities = case.pop("requiredCapabilities", [])
+            case["capabilityRequirements"] = {"capabilities": capabilities}
+        return authoring
+
+
+def _camelize_verification_payload(value: Any) -> Any:
+    reverse_aliases = {normalized: alias for alias, normalized in _VERIFICATION_ALIASES.items()}
+    if isinstance(value, dict):
+        return {
+            reverse_aliases.get(str(key), str(key)): _camelize_verification_payload(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_camelize_verification_payload(item) for item in value]
+    return value
+
+
 class AuthoringSpec(_AuthoringModel):
     source: AuthoringSource
     entities: tuple[AuthoringEntity, ...] = Field(
@@ -225,6 +342,7 @@ class AuthoringSpec(_AuthoringModel):
         default_factory=tuple,
         max_length=MAX_AUTHORING_DEPLOYMENT_BINDINGS,
     )
+    verification_plan: AuthoringVerificationPlan | None = None
 
 
 class SemanticAssemblyAuthoring(_AuthoringModel):
@@ -274,6 +392,18 @@ class SemanticAssemblyAuthoring(_AuthoringModel):
         collisions = field_ids.intersection(calculated_names)
         if collisions:
             raise ValueError("calculated field names must not collide with field ids")
+        if self.spec.verification_plan is not None:
+            entity_ids = {entity.entity_id for entity in entities}
+            for case in (
+                *self.spec.verification_plan.smoke_cases,
+                *self.spec.verification_plan.semantic_cases,
+            ):
+                if case.query.source_id != self.spec.source.source_id:
+                    raise ValueError("verification queries must match the document source")
+                if case.query.root_entity_id not in entity_ids:
+                    raise ValueError("verification queries must reference a declared entity")
+                if not case.query.field_ids().issubset(field_ids | set(calculated_names)):
+                    raise ValueError("verification queries must reference declared semantic fields")
         self._require_unique("measure", [measure.measure_id for measure in self.spec.measures])
         self._require_unique("grain", [grain.grain_id for grain in self.spec.grains])
         self._require_unique(
@@ -302,4 +432,9 @@ class SemanticAssemblyAuthoring(_AuthoringModel):
             raise ValueError(f"authoring {kind} must contain at most {maximum} items")
 
     def authoring_payload(self) -> dict[str, Any]:
-        return self.model_dump(mode="json", by_alias=True, exclude_none=True)
+        payload = self.model_dump(mode="json", by_alias=True, exclude_none=True)
+        if self.spec.verification_plan is not None:
+            payload["spec"]["verificationPlan"] = (
+                self.spec.verification_plan.authoring_payload()
+            )
+        return payload

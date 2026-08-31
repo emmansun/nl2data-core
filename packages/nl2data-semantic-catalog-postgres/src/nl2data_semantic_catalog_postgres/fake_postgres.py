@@ -119,6 +119,7 @@ class FakePostgresPool:
         self.assembly_drafts: dict[tuple[str, str], dict[str, Any]] = {}
         self.publications: dict[tuple[str, str, str], dict[str, Any]] = {}
         self.accepted_manifests: dict[tuple[str, str, str], dict[str, Any]] = {}
+        self.verification_evidence: dict[tuple[str, str, str], dict[str, Any]] = {}
         self.publish_audits: dict[tuple[str, str, str], dict[str, Any]] = {}
         self.published_versions: dict[tuple[str, str, str], dict[str, Any]] = {}
         self.supersession_edges: dict[tuple[str, str, str], dict[str, Any]] = {}
@@ -333,6 +334,7 @@ _TABLE_ATTRS: dict[str, str] = {
     "assembly_drafts": "assembly_drafts",
     "publications": "publications",
     "accepted_manifests": "accepted_manifests",
+    "verification_evidence": "verification_evidence",
     "publish_audits": "publish_audits",
     "published_versions": "published_versions",
     "supersession_edges": "supersession_edges",
@@ -368,6 +370,12 @@ def _manifest_key(
     namespace: str, bundle_id: str, fingerprint: str
 ) -> tuple[Any, ...]:
     return ("accepted_manifests", namespace, bundle_id, fingerprint)
+
+
+def _verification_evidence_key(
+    namespace: str, bundle_id: str, fingerprint: str
+) -> tuple[Any, ...]:
+    return ("verification_evidence", namespace, bundle_id, fingerprint)
 
 
 def _audit_key(
@@ -814,6 +822,50 @@ def _h_read_accepted_manifest(
     if row is None:
         return ([], 0)
     return ([{"envelope": row["envelope"], "schema_version": row["schema_version"]}], 0)
+
+
+def _h_insert_verification_evidence(
+    pool: FakePostgresPool, conn: _FakeConnection, params: tuple[Any, ...], timeout: float
+) -> tuple[list[dict[str, Any]], int]:
+    key = _verification_evidence_key(params[0], params[1], params[2])
+    _lock_or_fail(pool, conn, key, timeout)
+    if key[1:] in pool.verification_evidence:
+        raise UniqueViolation("verification evidence already exists")
+    if any(
+        row["scope_namespace"] == params[0]
+        and row["evidence_fingerprint"] == params[3]
+        for row in pool.verification_evidence.values()
+    ):
+        raise UniqueViolation("verification evidence fingerprint already exists")
+    conn._touch(key)
+    pool.verification_evidence[key[1:]] = {
+        "scope_namespace": params[0],
+        "bundle_id": params[1],
+        "bundle_fingerprint": params[2],
+        "evidence_fingerprint": params[3],
+        "schema_version": params[4],
+        "envelope": params[5],
+        "created_at": _as_dt(params[6]),
+    }
+    return ([], 1)
+
+
+def _h_read_verification_evidence(
+    pool: FakePostgresPool, conn: _FakeConnection, params: tuple[Any, ...], timeout: float
+) -> tuple[list[dict[str, Any]], int]:
+    row = pool.verification_evidence.get(params)
+    if row is None:
+        return ([], 0)
+    return (
+        [
+            {
+                "evidence_fingerprint": row["evidence_fingerprint"],
+                "envelope": row["envelope"],
+                "schema_version": row["schema_version"],
+            }
+        ],
+        0,
+    )
 
 
 def _h_insert_publish_audit(
@@ -1377,6 +1429,8 @@ _HANDLERS: dict[str, Callable[..., tuple[list[dict[str, Any]], int]]] = {
     "list_publications": _h_list_publications,
     "insert_accepted_manifest": _h_insert_accepted_manifest,
     "read_accepted_manifest": _h_read_accepted_manifest,
+    "insert_verification_evidence": _h_insert_verification_evidence,
+    "read_verification_evidence": _h_read_verification_evidence,
     "insert_publish_audit": _h_insert_publish_audit,
     "read_publish_audit": _h_read_publish_audit,
     "read_publish_by_idempotency_key": _h_read_publish_by_idempotency_key,

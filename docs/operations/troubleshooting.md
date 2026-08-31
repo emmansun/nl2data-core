@@ -26,6 +26,7 @@
 | `version_exists` | Business version already names different semantic content | Choose a new business version; identical semantic content is reused by fingerprint and needs no duplicate publication |
 | `pending_assertions` / `draft_not_approved` | Publish attempted before assertion review and draft approval completed | Review every pending/invalidated assertion, approve the current revision, then publish that revision |
 | `manifest_mismatch` / `audit_mismatch` | Publish artifacts do not bind to the emitted Bundle fingerprint | Treat as an atomic publish rejection; inspect emitter/verifier integration and retry only after correction |
+| `verification_evidence_required` / `verification_evidence_mismatch` | Production evidence is absent, non-passing, stale, or bound to different plan/runner/executor/scope identities | Follow the [Verification Suite runbook](verification-suite.md), rerun the exact approved inputs, and never downgrade silently |
 
 ## Semantic authoring errors
 

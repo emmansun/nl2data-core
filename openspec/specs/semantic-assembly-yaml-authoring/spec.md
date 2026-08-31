@@ -1,22 +1,18 @@
 # semantic-assembly-yaml-authoring Specification
 
 ## Purpose
-TBD - created by archiving change semantic-assembly-yaml-authoring. Update Purpose after archive.
+Define a safe, bounded, deterministic YAML authoring format for semantic assembly content that lowers into lifecycle-controlled drafts without granting review, approval, publication, or evidence authority.
 ## Requirements
 ### Requirement: Authoring documents use a versioned semantic-only schema
-The system SHALL accept semantic assembly authoring documents only when they declare the supported `apiVersion` and `kind: SemanticAssembly`. The authoring schema SHALL contain bounded bundle metadata, source identity, semantic entities, fields, relationships, calculated fields, measures, grains, source references, compatibility settings, and safe deployment binding references. It SHALL NOT accept assertion IDs, provenance responsibility, review state, review bindings, draft revision, approver/publisher identity, publish audit, activation state, supersession state, semantic fingerprints, executable query text, or resolved credentials.
+The authoring schema SHALL optionally express a bounded `verificationPlan` containing policy identity, deadlines, canonical semantic IR, fixture profile references, capability requirements, smoke assertions, and semantic contracts. It SHALL NOT accept computed plan/query fingerprints, approval bindings, runner/executor identity, statuses, observations, evidence, SQL/MQL, physical names, credentials, or native values.
 
-#### Scenario: Minimal authoring document is accepted
-- **WHEN** an author submits a supported document containing required metadata, source identity, and bounded semantic content
-- **THEN** the document validates as authoring input without requiring any lifecycle-owned field
+#### Scenario: Verification plan lowers without lifecycle evidence
+- **WHEN** valid authoring YAML contains a verification plan
+- **THEN** lowering attaches the equivalent core `VerificationPlan` to the revision-zero draft without accepting or exporting fingerprints, statuses, or evidence
 
-#### Scenario: Lifecycle authority in YAML is rejected
-- **WHEN** an authoring document includes `review_state`, `review_binding`, `draft_revision`, `approved_by`, a caller-supplied assertion ID, or another lifecycle-owned field
-- **THEN** validation fails with a bounded diagnostic and no draft is created
-
-#### Scenario: Unsupported authoring version fails closed
-- **WHEN** a document omits `apiVersion` or `kind`, or declares an unsupported value
-- **THEN** parsing returns an incompatible-schema diagnostic and performs no lowering or persistence
+#### Scenario: Verification lifecycle authority is rejected
+- **WHEN** verification authoring contains computed fingerprints, runner/executor identity, statuses, observations, evidence, backend syntax, or credentials
+- **THEN** parsing or model validation fails before draft creation and no unsafe value is echoed
 
 ### Requirement: YAML parsing is bounded and non-executable
 The authoring parser SHALL use a non-executable YAML path and SHALL accept only mappings, sequences, strings, null, booleans, integers, and finite floats according to an explicit JSON-compatible scalar profile. It SHALL reject custom tags, object construction, merge keys, duplicate mapping keys, cyclic aliases, non-string mapping keys, non-finite numbers, and unsupported implicit timestamp or YAML 1.1 boolean coercions. Input bytes, node count, nesting depth, scalar length, collection length, and alias expansion SHALL be bounded before model construction.

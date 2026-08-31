@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from nl2data_core.bundles.models import BundleCompatibility, SemanticSourceReference
 from nl2data_core.canonical import canonical_json, sha256_fingerprint
+from nl2data_core.verification.models import VerificationPlan
 from nl2data_core.views.models import validate_safe_description
 
 ASSEMBLY_API_VERSION: Literal["nl2data.io/semantic-assembly/v1alpha1"] = (
@@ -440,6 +441,10 @@ class AssemblyDraft(BaseModel):
         min_length=1,
         max_length=_MAX_REFERENCE_CHARS,
     )
+    verification_plan: VerificationPlan | None = None
+    approved_verification_plan_fingerprint: str | None = Field(
+        default=None, pattern=_FINGERPRINT_PATTERN
+    )
     source_snapshot_fingerprint: str | None = Field(
         default=None, pattern=_FINGERPRINT_PATTERN
     )
@@ -489,6 +494,15 @@ class AssemblyDraft(BaseModel):
             raise ValueError(
                 "published semantic content must be represented as a SemanticModelBundle"
             )
+        expected_plan_fingerprint = (
+            self.verification_plan.fingerprint
+            if self.state is AssemblyState.APPROVED and self.verification_plan is not None
+            else None
+        )
+        if self.approved_verification_plan_fingerprint != expected_plan_fingerprint:
+            raise ValueError(
+                "approved verification plan binding must match the approved draft plan"
+            )
         return self
 
     def file_payload(self) -> dict[str, Any]:
@@ -520,7 +534,15 @@ class AssemblyDraft(BaseModel):
     ) -> AssemblyDraft:
         """Apply one validated immutable mutation and advance the revision."""
         self.require_revision(expected_revision)
-        if self.state is AssemblyState.APPROVED and changes:
+        plan_changed = (
+            "verification_plan" in changes
+            and changes["verification_plan"] != self.verification_plan
+        )
+        if set(changes) == {"verification_plan"} and not plan_changed:
+            return self
+        if self.state is AssemblyState.APPROVED and changes and not (
+            plan_changed and set(changes) == {"verification_plan"}
+        ):
             raise ValueError(
                 "approved draft content is frozen; return it to review before editing"
             )
@@ -530,6 +552,8 @@ class AssemblyDraft(BaseModel):
             "draft_id",
             "draft_revision",
             "state",
+            "approved_by",
+            "approved_verification_plan_fingerprint",
         }
         attempted = protected.intersection(changes)
         if attempted:
@@ -537,13 +561,24 @@ class AssemblyDraft(BaseModel):
                 "draft mutation cannot replace protected fields: "
                 + ", ".join(sorted(attempted))
             )
-        return AssemblyDraft.model_validate(
-            {
-                **self.model_dump(mode="python", by_alias=True),
-                **changes,
-                "draft_revision": self.draft_revision + 1,
-            }
-        )
+        payload = {
+            **self.model_dump(mode="python", by_alias=True),
+            **changes,
+            "draft_revision": self.draft_revision + 1,
+        }
+        if plan_changed:
+            payload.update(
+                {
+                    "state": (
+                        AssemblyState.REVIEW
+                        if self.state is AssemblyState.APPROVED
+                        else self.state
+                    ),
+                    "approved_by": None,
+                    "approved_verification_plan_fingerprint": None,
+                }
+            )
+        return AssemblyDraft.model_validate(payload)
 
     def transition(
         self,
@@ -578,5 +613,14 @@ class AssemblyDraft(BaseModel):
                 **self.model_dump(mode="python", by_alias=True),
                 "state": state,
                 "draft_revision": self.draft_revision + 1,
+                "approved_by": (
+                    self.approved_by if state is AssemblyState.APPROVED else None
+                ),
+                "approved_verification_plan_fingerprint": (
+                    self.verification_plan.fingerprint
+                    if state is AssemblyState.APPROVED
+                    and self.verification_plan is not None
+                    else None
+                ),
             }
         )

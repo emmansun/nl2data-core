@@ -13,6 +13,7 @@ import argparse
 import asyncio
 import tempfile
 from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from nl2data import NL2Data, OutcomeStatus, QueryContext, QueryRequest
@@ -48,6 +49,7 @@ from nl2data_core.bundles import (
     InMemorySemanticBundleCatalog,
     SemanticModelBundle,
 )
+from nl2data_core.canonical import sha256_fingerprint
 from nl2data_core.compilation.contract import CompilationContext
 from nl2data_core.fixtures import SQLiteFixtureProfile
 from nl2data_core.governance.models import PolicyScope
@@ -62,6 +64,23 @@ from nl2data_core.planning.ir.models import (
 )
 from nl2data_core.planning.models import ColumnBinding, EntityBinding, PhysicalBinding
 from nl2data_core.planning.validation import AuthorizedView
+from nl2data_core.verification import (
+    PRODUCTION_POLICY,
+    AggregateTotalContract,
+    OutcomeAssertion,
+    RowCountAssertion,
+    ScalarEqualsAssertion,
+    SemanticContractCase,
+    SmokeQueryCase,
+    TaggedExpectedScalar,
+    VerificationPlan,
+)
+from nl2data_core.verification.execution import (
+    SQLiteReferenceVerificationExecutor,
+    VerificationExecutionContext,
+)
+from nl2data_core.verification.structural import CoreStructuralVerificationRunner
+from nl2data_core.verification.suite import VerificationSuiteRunner
 from nl2data_core.workflow.models import WorkflowState, WorkflowStatus
 from nl2data_core.workflow.runner import StaticPlanResolver
 from nl2data_core.workflow.sqlite_store import SQLiteStateStore
@@ -319,7 +338,63 @@ def _lifecycle_context(reference: str, role: LifecycleRole) -> LifecycleAuthoriz
     )
 
 
-def run_semantic_assembly_demo() -> str:
+def _demo_verification_plan(*, expected_total: str = "690") -> VerificationPlan:
+    query = SemanticQueryIR(
+        ir_id="verify-orders-top-three",
+        source_id="sales",
+        root_entity_id="orders",
+        selections=(
+            IRSelection(selection_id="order", field_id="order_id", alias="oid"),
+            IRSelection(selection_id="amount", field_id="amount", alias="amt"),
+        ),
+        orderings=(
+            IROrdering(
+                ordering_id="amount-desc",
+                field_id="amount",
+                direction="desc",
+            ),
+        ),
+        limit=3,
+        provenance=IRProvenance(source_id="sales", root_entity_id="orders"),
+    )
+    return VerificationPlan(
+        policy_profile="production-v1",
+        smoke_cases=(
+            SmokeQueryCase(
+                case_id="smoke-orders",
+                query=query,
+                fixture_profile_id="sqlite-demo",
+                assertions=(
+                    OutcomeAssertion(assertion_id="outcome", expected="success"),
+                    RowCountAssertion(assertion_id="rows", minimum=3, maximum=3),
+                    ScalarEqualsAssertion(
+                        assertion_id="top-order",
+                        selection_id="order",
+                        expected=TaggedExpectedScalar(kind="int", value=24),
+                    ),
+                ),
+            ),
+        ),
+        semantic_cases=(
+            SemanticContractCase(
+                case_id="semantic-orders",
+                query=query,
+                fixture_profile_id="sqlite-demo",
+                contracts=(
+                    AggregateTotalContract(
+                        assertion_id="top-three-total",
+                        selection_id="amount",
+                        expected=TaggedExpectedScalar(
+                            kind="decimal", value=expected_total
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+
+async def run_semantic_assembly_demo(*, db_dir: Path) -> str:
     """Validate, import, review, publish, and activate the authoring example."""
     authoring_path = Path(__file__).parents[1] / "authoring" / "sales-semantic-assembly.yaml"
     parsed = SemanticAssemblyAuthoringLoader().load(
@@ -334,7 +409,10 @@ def run_semantic_assembly_demo() -> str:
         author_reference="demo-author",
     )
     assert imported.draft is not None, imported.diagnostics
-    draft = imported.draft
+    draft = imported.draft.mutate(
+        expected_revision=imported.draft.draft_revision,
+        verification_plan=_demo_verification_plan(),
+    )
     print("validated authoring assertions:", len(draft.assertions))
     authorizer = _DemoLifecycleAuthorizer()
     draft = submit_for_review(
@@ -366,21 +444,78 @@ def run_semantic_assembly_demo() -> str:
         publisher_reference="demo-publisher",
     )
     catalog = InMemorySemanticBundleCatalog()
+    emitter = _DemoBundleEmitter(parsed.model)
+    candidate = emitter.emit(draft)
+    structural_runner = CoreStructuralVerificationRunner()
+    structural = structural_runner.run(
+        draft,
+        candidate,
+        expected_revision=draft.draft_revision,
+        expected_source_id="sales",
+    )
+    assert structural.valid and structural.manifest is not None, structural.issues
+    tenant_scope = "sha256:" + "d0" * 32
+    source_scope = sha256_fingerprint({"source_id": "sales"})
+    view = AuthorizedView(
+        source_id="sales",
+        root_entity_ids=frozenset({"orders"}),
+        field_ids=frozenset({"order_id", "amount"}),
+    )
+    policy_scope = PolicyScope(
+        policy_id="demo-verification-policy",
+        source_ids=frozenset({"sales"}),
+        resource_ids=frozenset({"orders"}),
+        operation_ids=frozenset({"select"}),
+        field_ids=view.field_ids,
+    )
+    executor = SQLiteReferenceVerificationExecutor(
+        fixture_profiles={
+            "sqlite-demo": SQLiteFixtureProfile(db_dir / "verification.db")
+        },
+        binding=BINDING,
+    )
+    context = VerificationExecutionContext(
+        candidate=candidate,
+        manifest=structural.manifest,
+        view=view,
+        policy=PRODUCTION_POLICY,
+        policy_scope=policy_scope,
+        tenant_scope_fingerprint=tenant_scope,
+        source_scope_fingerprint=source_scope,
+        deadline_at=datetime.now(UTC) + timedelta(seconds=30),
+    )
+    evidence = await VerificationSuiteRunner(executor=executor).run(
+        plan=draft.verification_plan,
+        policy=PRODUCTION_POLICY,
+        structural_evidence=structural.evidence,
+        context=context,
+        draft_id=draft.draft_id,
+        draft_revision=draft.draft_revision,
+    )
+    assert evidence.status.value == "passed", evidence.issue_codes
+    assert tuple(layer.status.value for layer in evidence.layers) == (
+        "passed",
+        "passed",
+        "passed",
+    )
     outcome = publish_assembly(
         draft,
         expected_revision=draft.draft_revision,
         authorization=_lifecycle_context("demo-publisher", LifecycleRole.PUBLISHER),
         authorizer=authorizer,
         separation=separation,
-        emitter=_DemoBundleEmitter(parsed.model),
+        emitter=emitter,
         verifier=_DemoManifestVerifier(),
         catalog=catalog,
+        verification_policy=PRODUCTION_POLICY,
+        verification_context=context,
+        verification_evidence=evidence,
+        verification_executor=executor,
     )
     assert outcome.success, outcome.issues
     assert outcome.bundle is not None
     assert outcome.manifest is not None
     published_fingerprint = outcome.bundle.fingerprint
-    tenant_scope = "sha256:" + "d0" * 32
     activated = catalog.activate_fingerprint(
         "sales_model",
         published_fingerprint,
@@ -390,7 +525,67 @@ def run_semantic_assembly_demo() -> str:
     assert catalog.active(
         "sales_model", tenant_scope_fingerprint=tenant_scope
     ) is outcome.bundle
+    drifted = draft.mutate(
+        expected_revision=draft.draft_revision,
+        verification_plan=_demo_verification_plan(expected_total="691"),
+    )
+    drifted = approve_draft(
+        drifted,
+        expected_revision=drifted.draft_revision,
+        authorization=_lifecycle_context("demo-approver", LifecycleRole.APPROVER),
+        authorizer=authorizer,
+    ).draft
+    drifted_candidate = emitter.emit(drifted)
+    assert drifted_candidate.fingerprint == published_fingerprint
+    drifted_structural = structural_runner.run(
+        drifted,
+        drifted_candidate,
+        expected_revision=drifted.draft_revision,
+        expected_source_id="sales",
+    )
+    assert drifted_structural.manifest is not None
+    drifted_executor = SQLiteReferenceVerificationExecutor(
+        fixture_profiles={
+            "sqlite-demo": SQLiteFixtureProfile(db_dir / "verification-drift.db")
+        },
+        binding=BINDING,
+    )
+    drifted_context = context.model_copy(
+        update={
+            "candidate": drifted_candidate,
+            "manifest": drifted_structural.manifest,
+            "deadline_at": datetime.now(UTC) + timedelta(seconds=30),
+        }
+    )
+    drifted_evidence = await VerificationSuiteRunner(executor=drifted_executor).run(
+        plan=drifted.verification_plan,
+        policy=PRODUCTION_POLICY,
+        structural_evidence=drifted_structural.evidence,
+        context=drifted_context,
+        draft_id=drifted.draft_id,
+        draft_revision=drifted.draft_revision,
+    )
+    assert drifted_evidence.status.value == "failed"
+    blocked = publish_assembly(
+        drifted,
+        expected_revision=drifted.draft_revision,
+        authorization=_lifecycle_context("demo-publisher", LifecycleRole.PUBLISHER),
+        authorizer=authorizer,
+        separation=separation,
+        emitter=emitter,
+        verifier=_DemoManifestVerifier(),
+        catalog=catalog,
+        verification_policy=PRODUCTION_POLICY,
+        verification_context=drifted_context,
+        verification_evidence=drifted_evidence,
+        verification_executor=drifted_executor,
+    )
+    assert not blocked.success
+    assert blocked.issues[0].code == "verification_evidence_mismatch"
+    assert len(catalog.versions("sales_model", tenant_scope_fingerprint=tenant_scope)) == 1
     print("published semantic Bundle fingerprint:", published_fingerprint)
+    print("verification layer statuses:", [layer.status.value for layer in evidence.layers])
+    print("blocked semantic drift:", blocked.issues[0].code)
     return published_fingerprint
 
 
@@ -526,7 +721,7 @@ async def run_join_demo(*, db_dir: Path) -> bool:
 
 async def run_demo(*, db_dir: Path) -> bool:
     """Run the deterministic demo and return whether all checkpoints passed."""
-    run_semantic_assembly_demo()
+    await run_semantic_assembly_demo(db_dir=db_dir)
     fixture = SQLiteFixtureProfile(db_path=db_dir / "source.db")
     fixture.provision()
 

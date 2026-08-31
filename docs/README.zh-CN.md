@@ -44,11 +44,13 @@ Mermaid 含义、规范性要求与安全警告，并始终链接到规范的英
 | [元数据生命周期](architecture/metadata-lifecycle.md) | English-first（暂无中文翻译，请阅读英文原文） |
 | [语义层](architecture/semantic-layer.md) | [语义层 (简体中文)](architecture/semantic-layer.zh-CN.md) — 完整翻译 |
 | [证据与指纹](architecture/evidence-and-fingerprints.md) | [证据与指纹 (简体中文)](architecture/evidence-and-fingerprints.zh-CN.md) — 完整翻译 |
+| [验证套件](architecture/verification-suite.md) | [验证套件 (简体中文)](architecture/verification-suite.zh-CN.md) — 完整翻译 |
 | [本地开发](development/local-development.md) | English-first（暂无中文翻译，请阅读英文原文） |
 | [新增适配器或提供方](development/adding-adapter-or-provider.md) | English-first（暂无中文翻译，请阅读英文原文） |
 | [服务配置](operations/services.md) | English-first（暂无中文翻译，请阅读英文原文） |
 | [密钥与实时测试](operations/secrets.md) | [密钥与实时测试 (简体中文)](operations/secrets.zh-CN.md) — 完整翻译 |
 | [故障排查](operations/troubleshooting.md) | English-first（暂无中文翻译，请阅读英文原文） |
+| [验证套件运维](operations/verification-suite.md) | [验证套件运维 (简体中文)](operations/verification-suite.zh-CN.md) — 完整翻译 |
 | [配置参考](reference/configuration.md) | [配置参考 (简体中文)](reference/configuration.zh-CN.md) — 完整翻译 |
 | [CompositionProfile 参考](reference/composition-profile.md) | [CompositionProfile 参考 (简体中文)](reference/composition-profile.zh-CN.md) — 完整翻译 |
 | [错误码](reference/error-codes.md) | English-first（暂无中文翻译，请阅读英文原文） |

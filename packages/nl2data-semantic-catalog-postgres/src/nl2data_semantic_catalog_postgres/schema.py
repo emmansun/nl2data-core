@@ -17,7 +17,7 @@ supports is rejected without modification.
 from __future__ import annotations
 
 #: The newest schema version this runtime understands.
-SUPPORTED_SCHEMA_VERSION = 2
+SUPPORTED_SCHEMA_VERSION = 3
 
 #: Migration steps keyed by the schema version they produce.  Each entry is
 #: applied inside one transaction and only when the persisted version is
@@ -230,6 +230,25 @@ MIGRATIONS: dict[int, tuple[str, ...]] = {
             created_at TIMESTAMPTZ NOT NULL,
             PRIMARY KEY (scope_namespace, bundle_id, successor_fingerprint),
             UNIQUE (scope_namespace, bundle_id, predecessor_fingerprint)
+        )
+        """,
+    ),
+    3: (
+        """
+        CREATE TABLE IF NOT EXISTS {schema}.verification_suite_evidence (
+            scope_namespace TEXT NOT NULL DEFAULT '',
+            bundle_id TEXT NOT NULL,
+            bundle_fingerprint TEXT NOT NULL,
+            evidence_fingerprint TEXT NOT NULL,
+            schema_version INTEGER NOT NULL,
+            envelope TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL,
+            PRIMARY KEY (scope_namespace, bundle_id, bundle_fingerprint),
+            UNIQUE (scope_namespace, evidence_fingerprint),
+            FOREIGN KEY (scope_namespace, bundle_id, bundle_fingerprint)
+                REFERENCES {schema}.bundle_publications
+                    (scope_namespace, bundle_id, bundle_fingerprint)
+                ON DELETE CASCADE
         )
         """,
     ),

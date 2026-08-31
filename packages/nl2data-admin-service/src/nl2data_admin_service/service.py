@@ -44,6 +44,10 @@ from nl2data_core.bundles.models import SemanticModelBundle
 from nl2data_core.bundles.validation import validate_bundle as core_validate_bundle
 from nl2data_core.metadata.models import MetadataSnapshot
 from nl2data_core.metadata.proposals import SemanticProposalSet
+from nl2data_core.verification.models import VerificationSuiteEvidence
+from nl2data_core.verification.policy import BUILTIN_POLICIES, VerificationPolicy
+from nl2data_core.verification.structural import CoreStructuralVerificationRunner
+from nl2data_core.verification.suite import VerificationSuiteRunner
 
 from .auth import AuthContext, Permission
 from .config import AdminServiceConfig
@@ -68,6 +72,7 @@ from .dtos import (
     DeploymentBindingSummary,
     DraftMutationResult,
     DraftRevisionCommand,
+    DraftVerificationResult,
     DriftStatus,
     ErrorCategory,
     ErrorDetail,
@@ -81,11 +86,16 @@ from .dtos import (
     ProposalSetDetail,
     PublishAssemblyResult,
     PublishAuditSummary,
+    PublishDraftCommand,
     PublishedVersionItem,
     ReviewAction,
     ReviewCommand,
     ReviewResult,
     SnapshotDetail,
+    VerificationCaseSummary,
+    VerificationEvidenceReference,
+    VerificationLayerSummary,
+    VerifyDraftCommand,
     VersionListResult,
 )
 from .errors import (
@@ -151,6 +161,31 @@ def _normalize_errors(method: _F) -> _F:
     def wrapper(self: AdminService, *args: Any, **kwargs: Any) -> Any:
         try:
             return method(self, *args, **kwargs)
+        except AdminServiceError:
+            raise
+        except DraftRevisionConflict as err:
+            raise ConflictError("Draft revision conflict") from err
+        except LifecycleAuthorizationError as err:
+            raise AuthorizationDeniedError("Lifecycle authorization denied") from err
+        except ValueError as err:
+            raise ValidationError((str(err) or "invalid request")[:256]) from err
+        except Exception:
+            raise AdminServiceError(
+                category=ErrorCategory.INTERNAL,
+                code="internal_service_error",
+                message="Internal service error",
+            ) from None
+
+    return cast(_F, wrapper)
+
+
+def _normalize_async_errors(method: _F) -> _F:
+    """Convert async failures into the same bounded service errors."""
+
+    @functools.wraps(method)
+    async def wrapper(self: AdminService, *args: Any, **kwargs: Any) -> Any:
+        try:
+            return await method(self, *args, **kwargs)
         except AdminServiceError:
             raise
         except DraftRevisionConflict as err:
@@ -325,6 +360,7 @@ class AdminService:
                     ),
                     Capability(name="assembly review", permission=Permission.ASSEMBLY_REVIEW),
                     Capability(name="assembly approve", permission=Permission.ASSEMBLY_APPROVE),
+                    Capability(name="assembly verify", permission=Permission.ASSEMBLY_VERIFY),
                     Capability(name="assembly audit", permission=Permission.ASSEMBLY_AUDIT),
                     Capability(name="bundle read", permission=Permission.BUNDLE_READ),
                     Capability(name="bundle validate", permission=Permission.BUNDLE_VALIDATE),
@@ -854,11 +890,124 @@ class AdminService:
         )
         return self.create_draft(draft, auth_context=auth_context)
 
+    def _resolve_verification_policy(self, profile: str | None) -> VerificationPolicy:
+        profile_id = profile or self._config.default_verification_policy_profile
+        policies = dict(BUILTIN_POLICIES)
+        policies.update(getattr(self._deps, "verification_policies", {}) or {})
+        policy = policies.get(profile_id)
+        if policy is None:
+            raise ValidationError("Unknown verification policy profile")
+        return policy
+
+    def _require_verification_executor(self) -> Any:
+        executor = getattr(self._deps, "verification_executor", None)
+        if executor is None:
+            raise ValidationError("Verification executor is not configured")
+        return executor
+
+    def _create_verification_context(
+        self,
+        draft: AssemblyDraft,
+        *,
+        policy: VerificationPolicy,
+        auth_context: AuthContext,
+    ) -> tuple[Any, Any]:
+        factory = getattr(self._deps, "verification_context_factory", None)
+        if factory is None:
+            raise ValidationError("Verification context factory is not configured")
+        candidate = self._require_bundle_emitter().emit(draft)
+        structural = CoreStructuralVerificationRunner().run(
+            draft,
+            candidate,
+            expected_revision=draft.draft_revision,
+            expected_source_id=draft.source_id,
+        )
+        if structural.manifest is None:
+            raise ValidationError("Verification manifest is unavailable")
+        context = factory.create(
+            draft=draft,
+            candidate=candidate,
+            manifest=structural.manifest,
+            policy=policy,
+            auth_context=auth_context,
+        )
+        return context, structural
+
+    @staticmethod
+    def _verification_reference(
+        evidence: VerificationSuiteEvidence,
+    ) -> VerificationEvidenceReference:
+        reference = f"verification-{evidence.fingerprint.removeprefix('sha256:')[:24]}"
+        return VerificationEvidenceReference(
+            suite_version=evidence.suite_version,
+            status=evidence.status.value,
+            policy_profile=evidence.policy_profile,
+            policy_version=evidence.policy_version,
+            plan_fingerprint=evidence.plan_fingerprint,
+            runner_id=evidence.runner_id,
+            runner_version=evidence.runner_version,
+            executor_id=evidence.executor_id,
+            executor_capability_fingerprint=evidence.executor_capability_fingerprint,
+            evidence_fingerprint=evidence.fingerprint,
+            evidence_reference=reference,
+            layers=tuple(
+                VerificationLayerSummary(
+                    layer_id=layer.layer.value,
+                    status=layer.status.value,
+                    cases=tuple(
+                        VerificationCaseSummary(
+                            case_id=case.case_id,
+                            status=case.status.value,
+                            assertion_count=case.assertion_count,
+                            passed_assertion_count=case.passed_assertion_count,
+                            issue_codes=case.issue_codes,
+                        )
+                        for case in layer.cases
+                    ),
+                )
+                for layer in evidence.layers
+            ),
+        )
+
+    @_normalize_async_errors
+    async def verify_draft(
+        self,
+        draft_id: str,
+        command: VerifyDraftCommand,
+        *,
+        auth_context: AuthContext,
+    ) -> DraftVerificationResult:
+        """Verify a frozen draft without mutating draft or catalog state."""
+        self._check_permission(auth_context, Permission.ASSEMBLY_VERIFY)
+        draft = self._get_draft(draft_id, auth_context)
+        draft.require_revision(command.expected_revision)
+        policy = self._resolve_verification_policy(command.policy_profile)
+        context, structural = self._create_verification_context(
+            draft,
+            policy=policy,
+            auth_context=auth_context,
+        )
+        evidence = await VerificationSuiteRunner(
+            executor=self._require_verification_executor()
+        ).run(
+            plan=draft.verification_plan,
+            policy=policy,
+            structural_evidence=structural.evidence,
+            context=context,
+            draft_id=draft.draft_id,
+            draft_revision=draft.draft_revision,
+        )
+        return DraftVerificationResult(
+            draft_id=draft.draft_id,
+            draft_revision=draft.draft_revision,
+            verification=self._verification_reference(evidence),
+        )
+
     @_normalize_errors
     def publish_draft(
         self,
         draft_id: str,
-        command: DraftRevisionCommand,
+        command: DraftRevisionCommand | PublishDraftCommand,
         *,
         auth_context: AuthContext,
     ) -> PublishAssemblyResult:
@@ -894,6 +1043,25 @@ class AdminService:
                 else None
             ),
         )
+        verification_policy = None
+        verification_context = None
+        verification_evidence = None
+        verification_executor = None
+        if isinstance(command, PublishDraftCommand):
+            verification_policy = self._resolve_verification_policy(
+                command.policy_profile
+            )
+            verification_context, _ = self._create_verification_context(
+                draft,
+                policy=verification_policy,
+                auth_context=auth_context,
+            )
+            verification_evidence = command.verification_evidence
+            if (
+                verification_evidence is not None
+                and verification_evidence.executor_id is not None
+            ):
+                verification_executor = self._require_verification_executor()
         outcome = publish_assembly(
             draft,
             expected_revision=command.expected_revision,
@@ -903,6 +1071,10 @@ class AdminService:
             emitter=self._require_bundle_emitter(),
             verifier=self._require_manifest_verifier(),
             catalog=self._require_lifecycle_catalog(),
+            verification_policy=verification_policy,
+            verification_context=verification_context,
+            verification_evidence=verification_evidence,
+            verification_executor=verification_executor,
         )
         return PublishAssemblyResult(
             success=outcome.success,
@@ -915,6 +1087,7 @@ class AdminService:
             ),
             fingerprint=(outcome.bundle.fingerprint if outcome.bundle is not None else None),
             audit_reference=outcome.audit_reference,
+            verification_evidence_reference=outcome.verification_evidence_reference,
             superseded_fingerprint=outcome.superseded_fingerprint,
             idempotency_status=(
                 outcome.idempotency_status.value
@@ -952,6 +1125,11 @@ class AdminService:
         )
         if audit is None:
             raise NotFoundError("publish audit")
+        evidence = catalog.verification_evidence(
+            bundle_id,
+            fingerprint,
+            tenant_scope_fingerprint=auth_context.tenant_scope_fingerprint,
+        )
         provenance = audit.assertion_provenance
         return PublishAuditSummary(
             audit_reference=audit.audit_id,
@@ -972,7 +1150,40 @@ class AdminService:
             deployment_binding_count=audit.deployment_bindings.binding_count,
             deployment_reference_schemes=audit.deployment_bindings.reference_schemes,
             waiver_applied=audit.waiver_reference is not None,
+            verification=(
+                self._verification_reference(evidence)
+                if evidence is not None
+                else None
+            ),
         )
+
+    @_normalize_errors
+    def get_verification_evidence(
+        self,
+        bundle_id: str,
+        fingerprint: str,
+        *,
+        auth_context: AuthContext,
+    ) -> VerificationEvidenceReference:
+        """Inspect bounded published verification evidence under trusted scope."""
+        self._check_permission(auth_context, Permission.ASSEMBLY_AUDIT)
+        catalog = self._require_lifecycle_catalog()
+        bundle = catalog.get_by_fingerprint(
+            bundle_id,
+            fingerprint,
+            tenant_scope_fingerprint=auth_context.tenant_scope_fingerprint,
+        )
+        if bundle is None:
+            raise NotFoundError("bundle")
+        self._check_source(auth_context, bundle.descriptor.source_id)
+        evidence = catalog.verification_evidence(
+            bundle_id,
+            fingerprint,
+            tenant_scope_fingerprint=auth_context.tenant_scope_fingerprint,
+        )
+        if evidence is None:
+            raise NotFoundError("verification evidence")
+        return self._verification_reference(evidence)
 
     @_normalize_errors
     def list_published_versions(
@@ -1000,6 +1211,11 @@ class AdminService:
                     predecessor_fingerprint=record.supersession.predecessor_fingerprint,
                     successor_fingerprint=record.supersession.successor_fingerprint,
                     audit_reference=(record.audit.audit_id if record.audit is not None else None),
+                    verification_evidence_reference=(
+                        record.audit.verification.evidence_reference
+                        if record.audit is not None
+                        else None
+                    ),
                 )
                 for record in records
             ),
