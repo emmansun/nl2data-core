@@ -1,0 +1,362 @@
+schema_version: 1
+name: semantic-control-plane
+status: enforced
+description: >-
+  Architecture conformance manifest for semantic authoring, verification,
+  publication, Admin orchestration, and durable semantic catalog persistence.
+  All budgets and dependency edges reflect the post-refactor architecture;
+  exceptions require a manifest revision with justification, not waivers.
+
+canonical_owners:
+  verification.contracts:
+    module: nl2data_core.verification.models
+    symbols:
+      - CapabilityRequirements
+      - TaggedExpectedScalar
+      - VerificationCaseEvidence
+      - VerificationDeadlines
+      - VerificationLayer
+      - VerificationLayerEvidence
+      - VerificationPlan
+      - VerificationStatus
+      - VerificationSuiteEvidence
+  verification.policies:
+    module: nl2data_core.verification.policy
+    symbols:
+      - COMPATIBILITY_POLICY
+      - PRODUCTION_POLICY
+      - VerificationPolicy
+      - validate_stricter_policy
+  assembly.lifecycle:
+    module: nl2data_core.assembly.models
+    symbols:
+      - AssemblyDraft
+      - AssemblyState
+      - SemanticAssertion
+  assembly.manifest:
+    module: nl2data_core.assembly.manifest
+    symbols:
+      - AcceptedAssertionManifest
+  bundle.contracts:
+    module: nl2data_core.bundles.models
+    symbols:
+      - SemanticModelBundle
+  bundle.publication:
+    module: nl2data_core.bundles.publication
+    symbols:
+      - PublishAuditRecord
+      - PublishVerificationSummary
+      - PublishedVersionState
+      - PublishIdempotencyStatus
+  publication.contracts:
+    module: nl2data_core.control_plane.publication.contracts
+    symbols:
+      - AssemblyPublishIssue
+      - AssemblyPublishOutcome
+      - ManifestBundleVerification
+      - FrozenReleaseBinding
+      - PublicationDraftBinding
+  publication.ports:
+    module: nl2data_core.control_plane.publication.ports
+    symbols:
+      - AssemblyPublicationCatalog
+      - ManifestBundleVerifier
+      - SemanticBundleEmitter
+      - SynchronousVerificationProvider
+
+compatibility_reexports:
+  nl2data_core.verification:
+    owner_modules:
+      - nl2data_core.verification.models
+      - nl2data_core.verification.policy
+    logic_allowed: false
+  nl2data_core.assembly.publishing:
+    canonical_target: nl2data_core.control_plane.publication.coordinator
+    logic_allowed: true
+    removal_task: "6.4"
+
+layers:
+  shared_contracts:
+    modules:
+      - nl2data_core.canonical
+      - nl2data_core.views
+      - nl2data_core.views.*
+      - nl2data_core.bundles.models
+      - nl2data_core.bundles.publication
+      - nl2data_core.verification.models
+      - nl2data_core.verification.policy
+    may_import:
+      - shared_contracts
+  assembly_lifecycle:
+    modules:
+      - nl2data_core.assembly.authorization
+      - nl2data_core.assembly.lifecycle
+      - nl2data_core.assembly.loader
+      - nl2data_core.assembly.manifest
+      - nl2data_core.assembly.models
+      - nl2data_core.assembly.separation
+      - nl2data_core.assembly.store
+    may_import:
+      - shared_contracts
+      - assembly_lifecycle
+  verification_execution:
+    modules:
+      - nl2data_core.verification.execution
+      - nl2data_core.verification.semantic
+      - nl2data_core.verification.smoke
+      - nl2data_core.verification.structural
+      - nl2data_core.verification.suite
+    may_import:
+      - shared_contracts
+      - assembly_lifecycle
+      - verification_execution
+  publication_orchestration:
+    modules:
+      - nl2data_core.assembly.publishing
+      - nl2data_core.control_plane.publication.*
+    may_import:
+      - shared_contracts
+      - assembly_lifecycle
+      - verification_execution
+      - publication_orchestration
+      # Publication gates and ports resolve published bundles through the
+      # AssemblyPublicationCatalog port backed by bundles.catalog.
+      - catalog_ports
+  catalog_ports:
+    modules:
+      - nl2data_core.bundles.catalog
+      - nl2data_core.control_plane.ports
+    may_import:
+      - shared_contracts
+      # bundles.catalog accepts the immutable AcceptedAssertionManifest
+      # value type in its publish() port signature.
+      - assembly_lifecycle
+      - verification_execution
+      - publication_orchestration
+      - catalog_ports
+  admin_adapter:
+    modules:
+      - nl2data_admin_service
+      - nl2data_admin_service.*
+    may_import:
+      - shared_contracts
+      - assembly_lifecycle
+      - verification_execution
+      - publication_orchestration
+      - catalog_ports
+      - admin_adapter
+  semantic_catalog_postgres:
+    modules:
+      - nl2data_semantic_catalog_postgres
+      - nl2data_semantic_catalog_postgres.*
+    may_import:
+      - shared_contracts
+      - publication_orchestration
+      - catalog_ports
+      # The adapter implements the durable draft_lifecycle_store port and
+      # runs production verification-evidence policy checks; both keep the
+      # inward dependency direction (adapter -> control-plane layers).
+      - assembly_lifecycle
+      - verification_execution
+      - semantic_catalog_postgres
+
+prohibited_imports:
+  domain_to_adapters:
+    from:
+      - nl2data_core.assembly.*
+      - nl2data_core.bundles.*
+      - nl2data_core.verification.*
+      - nl2data_core.control_plane.*
+    to:
+      - nl2data_admin_service
+      - nl2data_admin_service.*
+      - nl2data_semantic_catalog_postgres
+      - nl2data_semantic_catalog_postgres.*
+      - psycopg
+      - psycopg.*
+  catalog_to_mutable_drafts:
+    # Only the publication path may never touch mutable AssemblyDraft
+    # state (design D7).  The draft-store side (repositories.drafts,
+    # unit_of_work, the facade draft methods) legitimately implements
+    # the draft_lifecycle_store port and is therefore out of scope.
+    from:
+      - nl2data_core.bundles.catalog
+      - nl2data_semantic_catalog_postgres.repositories.publications
+      - nl2data_semantic_catalog_postgres.repositories.evidence
+      - nl2data_semantic_catalog_postgres.repositories.activation
+      - nl2data_semantic_catalog_postgres.maintenance
+    to:
+      - nl2data_core.assembly.models.AssemblyDraft
+      - nl2data_core.assembly.store.AssemblyDraftStore
+  optional_package_to_admin:
+    from:
+      - nl2data_semantic_catalog_postgres
+      - nl2data_semantic_catalog_postgres.*
+    to:
+      - nl2data_admin_service
+      - nl2data_admin_service.*
+  core_to_transport:
+    from:
+      - nl2data
+      - nl2data.*
+      - nl2data_core
+      - nl2data_core.*
+    to:
+      - django
+      - fastapi
+      - flask
+      - httpx
+      - requests
+      - starlette
+
+port_declarations:
+  metadata_catalog:
+    owner: nl2data_admin_service.protocols
+    required_methods:
+      - active_snapshot
+      - proposal_set
+      - register_snapshot
+      - save_proposal_set
+      - snapshot
+  metadata_discoverer:
+    owner: nl2data_admin_service.protocols
+    required_methods:
+      - discover
+      - supports_source
+  draft_lifecycle_store:
+    owner: nl2data_core.assembly.store
+    required_methods:
+      - create
+      - get
+      - replace
+  lifecycle_authorizer:
+    owner: nl2data_core.assembly.authorization
+    required_methods:
+      - authorize
+  bundle_emitter:
+    owner: nl2data_core.control_plane.publication.ports
+    required_methods:
+      - emit
+  manifest_verifier:
+    owner: nl2data_core.control_plane.publication.ports
+    required_methods:
+      - verify
+  verification_context_factory:
+    owner: nl2data_admin_service.protocols
+    required_methods:
+      - create
+  verification_executor:
+    owner: nl2data_core.verification.execution
+    required_methods:
+      - run_case
+  publication_catalog:
+    owner: nl2data_admin_service.protocols
+    required_methods:
+      - authoritative_release_binding_matches
+      - publish
+  published_lookup:
+    owner: nl2data_admin_service.protocols
+    required_methods:
+      - accepted_assertion_manifest
+      - get
+      - get_by_fingerprint
+      - publish_audit
+      - publication_records
+      - verification_evidence
+      - versions
+  activation_lifecycle:
+    owner: nl2data_admin_service.protocols
+    required_methods:
+      - activate_fingerprint
+      - active
+      - rollback_to_fingerprint
+
+hotspot_budgets:
+  # "Physical lines" follows the metrics.md methodology: non-empty source
+  # lines, so blank separators do not consume budget. The architecture
+  # test asserts this metric declaration to keep the counting explicit.
+  metric: non_empty_lines
+  physical_lines:
+    packages/nl2data-admin-service/src/nl2data_admin_service/service.py: 400
+    src/nl2data_core/assembly/publishing.py: 250
+    packages/nl2data-semantic-catalog-postgres/src/nl2data_semantic_catalog_postgres/store.py: 600
+  patterns:
+    admin_capability_service: 500
+    publication_gate_module: 300
+    postgres_repository: 700
+  # Pattern budgets are matched against these globs so every module in the
+  # family is ratcheted, not only the explicitly named hotspot files.
+  pattern_globs:
+    admin_capability_service: packages/nl2data-admin-service/src/nl2data_admin_service/*_admin.py
+    publication_gate_module: src/nl2data_core/control_plane/publication/gates_*.py
+    postgres_repository: packages/nl2data-semantic-catalog-postgres/src/nl2data_semantic_catalog_postgres/repositories/*.py
+
+cross_domain_import_budget:
+  counted_roots:
+    - src/nl2data_core/assembly
+    - src/nl2data_core/bundles
+    - src/nl2data_core/verification
+    - src/nl2data_core/control_plane
+    - packages/nl2data-admin-service/src/nl2data_admin_service
+    - packages/nl2data-semantic-catalog-postgres/src/nl2data_semantic_catalog_postgres
+  # Counted as unique (source module, imported module) pairs whose source
+  # and import resolve to different counted roots.  max_new_imports is
+  # relative to the recorded baseline; any new cross-domain edge requires
+  # a manifest revision with justification.
+  counting: unique_module_edges
+  # Baseline ratcheted from 348 after the activation repository gained its
+  # fail-closed production evidence check: activation.py now imports
+  # nl2data_core.verification.suite (production policy satisfaction) and
+  # nl2data_core.verification.models (evidence return annotation).  Both
+  # keep the inward adapter -> verification-layer direction already
+  # declared for the semantic_catalog_postgres layer.
+  # Ratcheted from 350 after full audit-summary mirroring:
+  # publication contracts import PublishVerificationSummary (shared
+  # verification_summary_mirrors_evidence helper), both catalogs import the
+  # helper, and the Admin verification context factory port is now typed
+  # with AssemblyDraft.  All four edges follow existing approved directions
+  # (bundles.publication -> already imported by contracts; contracts ->
+  # already imported by both catalogs; assembly -> already imported by the
+  # Admin protocols).
+  # Ratcheted from 354 after centralizing publication integrity:
+  # instead of per-entry-point checks, every publish/reuse/read/activate/
+  # rollback/reload path now validates through the shared publication
+  # record-set validator and lifecycle witness in nl2data_core.  The
+  # semantic_catalog_postgres repositories (evidence, publications,
+  # activation, maintenance) and store facade import
+  # control_plane.publication.contracts (PublicationRecordSet,
+  # build_publication_records, validate_publication_integrity,
+  # verification_evidence_reference) and bundles.publication
+  # (validate_lifecycle_witness, LifecycleWitnessError, witness_cause_type);
+  # the in-memory catalog imports the same shared contracts validators.
+  # Every new edge keeps the already-approved inward
+  # semantic_catalog_postgres -> nl2data_core and bundles -> control_plane
+  # directions; no new edge leaves the counted roots inward.
+  baseline: 367
+  max_new_imports: 0
+
+duplicate_detection:
+  scanned_roots:
+    - src/nl2data_core/assembly
+    - src/nl2data_core/bundles
+    - src/nl2data_core/verification
+    - src/nl2data_core/control_plane
+    - packages/nl2data-admin-service/src/nl2data_admin_service
+    - packages/nl2data-semantic-catalog-postgres/src/nl2data_semantic_catalog_postgres
+  generated_file_allowlist:
+    - src/nl2data_core.egg-info/*
+    - packages/*/src/*.egg-info/*
+  exact_duplicate_allowlist: []
+
+generated_files:
+  allowlist:
+    - src/nl2data_core.egg-info/*
+    - packages/*/src/*.egg-info/*
+
+optional_package_direction:
+  inward_only:
+    - nl2data_admin_service
+    - nl2data_semantic_catalog_postgres
+  forbidden_core_imports:
+    - nl2data_admin_service
+    - nl2data_semantic_catalog_postgres

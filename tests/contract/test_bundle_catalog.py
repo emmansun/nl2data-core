@@ -33,6 +33,8 @@ from nl2data_core.bundles import (
     SemanticModelBundle,
     SemanticSourceReference,
 )
+from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.control_plane.publication.contracts import PublicationDraftBinding
 from nl2data_core.views import (
     SemanticDescriptor,
     SemanticEntityDescriptor,
@@ -43,6 +45,21 @@ from nl2data_core.views import (
 def fp(byte: str) -> str:
     """A valid ``sha256:<hex>`` fingerprint filled with one repeated byte."""
     return "sha256:" + byte * 32
+
+
+def publication_binding(draft: AssemblyDraft, tenant: str) -> PublicationDraftBinding:
+    return PublicationDraftBinding(
+        draft_id=draft.draft_id,
+        draft_revision=draft.draft_revision,
+        draft_payload_fingerprint=sha256_fingerprint(draft.file_payload()),
+        approved_plan_fingerprint=(
+            draft.verification_plan.fingerprint
+            if draft.verification_plan is not None
+            else None
+        ),
+        tenant_scope_fingerprint=tenant,
+        source_scope_fingerprint=sha256_fingerprint({"source_id": draft.source_id}),
+    )
 
 
 def make_field(field_id: str = "amount", **overrides) -> SemanticFieldDescriptor:
@@ -293,8 +310,7 @@ class TestPublish:
         catalog = InMemorySemanticBundleCatalog(draft_store=store)
         outcome = catalog.publish(
             bundle,
-            draft=draft,
-            expected_revision=0,
+            publication_binding=publication_binding(draft, tenant),
             tenant_scope_fingerprint=tenant,
         )
         assert outcome.kind == "conflict"

@@ -60,13 +60,37 @@ python -m pytest -rs             # show every skip reason (real-service profiles
 ## Lint and type checking
 
 ```bash
-python -m ruff check src tests packages/nl2data-openai/src packages/nl2data-semantic-catalog-postgres/src
-python -m mypy src packages/nl2data-openai/src packages/nl2data-semantic-catalog-postgres/src
+python -m ruff check src tests packages/nl2data-openai/src packages/nl2data-semantic-catalog-postgres/src packages/nl2data-admin-service/src packages/nl2data-memory-redis/src packages/nl2data-mongodb/src packages/nl2data-postgres/src packages/nl2data-workflow-postgres/src
+python -m mypy src packages/nl2data-openai/src packages/nl2data-semantic-catalog-postgres/src packages/nl2data-admin-service/src packages/nl2data-memory-redis/src packages/nl2data-mongodb/src packages/nl2data-postgres/src packages/nl2data-workflow-postgres/src
 ```
 
 Ruff and mypy configuration live in `pyproject.toml` (line length 100,
 Python 3.11 target; mypy enforces typed definitions and no implicit
 optionals). Keep both clean before pushing.
+
+## Architecture checks
+
+The semantic control-plane dependency graph, canonical contract owners,
+compatibility re-exports, exact-duplicate detection, and hotspot line
+budgets are pinned in
+[`docs/architecture/semantic-control-plane-manifest.yaml`](../architecture/semantic-control-plane-manifest.yaml)
+and enforced by:
+
+```bash
+python -m pytest tests/contract/test_semantic_control_plane_architecture.py
+```
+
+See [Package boundaries](../architecture/package-boundaries.md#semantic-control-plane-layers)
+for the approved layer DAG. Common failures and their fixes:
+
+| Failure | Fix |
+| --- | --- |
+| `test_manifest_layer_imports_are_approved` reports `A -> B` | Module in layer `A`'s set imports a module in a layer not listed in `A`'s `may_import`. Either remove the import or, if the edge is a genuine inward dependency, add the layer to `may_import` in the manifest with a justifying comment. |
+| `test_manifest_prohibited_imports_are_absent` reports a rule violation | An import matched a `prohibited_imports` rule (e.g. the publication path touching mutable `AssemblyDraft`). Remove the import; do not weaken the rule without an ADR. |
+| `test_manifest_physical_line_budgets_are_met` fails | A hotspot exceeded its budget. Split the module along its existing seams (repositories, capability services, gates) rather than raising the budget. Budget exceptions require a manifest revision with justification. |
+| `test_manifest_exact_duplicate_modules_are_absent` fails | Two scanned files are byte-identical after newline normalization. Keep one canonical owner and make the other a re-export listed in `compatibility_reexports` — or delete the copy. |
+| `test_manifest_import_graph_has_no_cycles` fails | A dependency cycle exists between scanned modules. Break it at the weakest edge, usually by moving a shared value type into a lower layer. |
+| `test_canonical_owner_symbols_resolve` / `test_manifest_port_declarations_resolve_to_methods` fail | A symbol or method declared in the manifest no longer exists. Restore it or update the manifest in the same change. |
 
 ## Build packages
 

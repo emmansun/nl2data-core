@@ -1,0 +1,6 @@
+# The repository stores the majority of its text files with CRLF line
+# endings and core.autocrlf is disabled, so `git diff --check` would
+# otherwise report the CR of every added line as trailing whitespace.
+# cr-at-eol makes the check CR-tolerant while blank-at-eol keeps catching
+# real trailing spaces and tabs.
+* whitespace=blank-at-eol,cr-at-eol

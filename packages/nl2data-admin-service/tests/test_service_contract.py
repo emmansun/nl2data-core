@@ -26,7 +26,23 @@ from nl2data_admin_service.errors import (
     AuthorizationDeniedError,
 )
 from nl2data_admin_service.errors import ValidationError as AdminValidationError
+from nl2data_admin_service.protocols import (
+    ActivationLifecyclePort,
+    AdminServiceDependencies,
+    MetadataCatalogPort,
+    PublicationStoragePort,
+    PublishedLookupPort,
+)
 from nl2data_admin_service.service import AdminService
+
+
+def test_admin_dependency_fakes_satisfy_runtime_ports() -> None:
+    deps = _FakeDependencies()
+    assert isinstance(deps, AdminServiceDependencies)
+    assert isinstance(deps.catalog, MetadataCatalogPort)
+    assert isinstance(deps.lifecycle_catalog, PublicationStoragePort)
+    assert isinstance(deps.lifecycle_catalog, PublishedLookupPort)
+    assert isinstance(deps.lifecycle_catalog, ActivationLifecyclePort)
 
 
 def test_unauthenticated_request_fails_closed() -> None:

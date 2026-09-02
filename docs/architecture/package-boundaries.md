@@ -104,6 +104,70 @@ time.
 | Optional packages import their SDK lazily — never at package import | `tests/security/test_import_boundary.py` |
 | No driver/SDK type enters the public API or framework-neutral contracts | import-boundary suite |
 
+## Semantic control-plane layers
+
+The authoring → verification → publication → catalog path is organized
+into acyclic layers pinned in
+[`semantic-control-plane-manifest.yaml`](semantic-control-plane-manifest.yaml)
+and enforced by
+`tests/contract/test_semantic_control_plane_architecture.py`:
+
+```text
+shared_contracts (canonical, views, bundles.models, bundles.publication,
+                  verification.models, verification.policy)
+         ↓
+assembly_lifecycle (assembly models, manifest, store, lifecycle, …)
+         ↓
+verification_execution (structural, semantic, smoke, suite, …)
+         ↓
+publication_orchestration (control_plane.publication.*,
+                           assembly.publishing compatibility facade)
+         ↓
+catalog_ports (bundles.catalog, control_plane.ports)
+         ↓
+admin_adapter  /  semantic_catalog_postgres   (optional adapters)
+```
+
+Edges may only point downward. Two adapter-side exceptions keep the
+direction inward: the PostgreSQL catalog implements the durable
+`draft_lifecycle_store` port (so it imports `assembly_lifecycle`) and
+runs production verification-evidence policy checks (so it imports
+`verification_execution`). The publication path never touches mutable
+draft state: catalog implementations receive the immutable
+`PublicationAggregate` — `FrozenReleaseBinding` + Bundle + accepted
+manifest + verification evidence + audit, cross-validated once before
+persistence — and never an `AssemblyDraft`.
+
+### UnitOfWork and repository ownership (PostgreSQL catalog)
+
+`nl2data_semantic_catalog_postgres` splits persistence behind its
+unchanged `PostgreSQLSemanticCatalog` facade:
+
+| Module | Owns |
+| --- | --- |
+| `sql.py` | Categorized immutable SQL templates |
+| `unit_of_work.py` | Transaction, timeout, cursor execution, envelope/error infrastructure |
+| `repositories/snapshots.py`, `drafts.py`, `evidence.py`, `publications.py`, `activation.py` | Single-domain reads/writes over a passed connection or their own transaction |
+| `maintenance.py` | Cleanup and active-pointer reload functions |
+| `store.py` | Protocol-compatible facade; owns cross-repository atomic operations (`publish`, `activate`, `rollback`) |
+
+Repositories never open or commit transactions for atomic cross-domain
+operations — the facade-level `CatalogUnitOfWork` owns those. Line
+budgets are pinned in the manifest hotspot budgets (store facade
+<= 600, each repository <= 700).
+
+### Compatibility facades
+
+| Facade | Canonical target | Logic allowed |
+| --- | --- | --- |
+| `nl2data_core.assembly.publishing` | `nl2data_core.control_plane.publication.coordinator` | Delegating only |
+| `nl2data_core.verification` package re-exports | `verification.models`, `verification.policy` | None |
+| `nl2data` public facade | `nl2data_core` internals via composition | Delegating only |
+
+A compatibility facade must not accumulate logic; the architecture
+manifest's `compatibility_reexports` section records the canonical
+owner of every re-exported symbol.
+
 ## Optional dependency loading
 
 Constructing a facade imports no optional modules. The loading points

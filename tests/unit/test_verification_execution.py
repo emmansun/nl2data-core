@@ -352,11 +352,26 @@ class StubVerificationExecutor:
         return self.observation
 
 
+class CapturingVerificationExecutor(StubVerificationExecutor):
+    def __init__(self, observation: VerificationObservation) -> None:
+        super().__init__(observation)
+        self.contexts: list[VerificationExecutionContext] = []
+
+    async def run_case(self, ir, *, fixture_profile_id, context):
+        self.contexts.append(context)
+        return await super().run_case(
+            ir,
+            fixture_profile_id=fixture_profile_id,
+            context=context,
+        )
+
+
 def _observation(
     *,
     status: str = "succeeded",
     rows: tuple[tuple[object, ...], ...] = ((18, 180.0, None),),
     error_code: str | None = None,
+    cleanup_issue_code: str | None = None,
 ) -> VerificationObservation:
     return VerificationObservation(
         status=status,
@@ -369,6 +384,7 @@ def _observation(
         rows=rows,
         result_fingerprint=_SCOPE if status == "succeeded" else None,
         error_code=error_code,
+        cleanup_issue_code=cleanup_issue_code,
     )
 
 
@@ -642,6 +658,125 @@ async def test_smoke_and_semantic_contracts_share_execution_but_not_evaluation()
     assert semantic_evidence.status.value == "failed"
     assert executor.calls == 1
     cache.release()
+
+
+@pytest.mark.asyncio
+async def test_layer_two_three_fingerprints_and_shared_cache_are_pinned() -> None:
+    executor = StubVerificationExecutor(_observation())
+    cache = VerificationExecutionCache()
+    context = _context()
+    smoke = SmokeVerificationEvaluator(executor=executor, cache=cache)
+    semantic = SemanticContractEvaluator(executor=executor, cache=cache)
+
+    smoke_evidence = await smoke.evaluate_case(
+        _smoke_case(OutcomeAssertion(assertion_id="outcome", expected="success")),
+        context,
+    )
+    semantic_evidence = await semantic.evaluate_case(
+        _semantic_case(RowCountEqualityContract(assertion_id="rows", expected=1)),
+        context,
+    )
+
+    assert smoke_evidence.fingerprint == (
+        "sha256:19ac35595896867e304a1875ef006729df1614146a407f068f4fe510bb5ab45d"
+    )
+    assert semantic_evidence.fingerprint == (
+        "sha256:53a0492f80a8d0c0de714d1755ea0c2fd41ab0bcf37b2d0ec2dd50f519092a5d"
+    )
+    assert executor.calls == 1
+    cache.release()
+
+
+@pytest.mark.asyncio
+async def test_layer_two_three_cleanup_issue_ordering_is_pinned() -> None:
+    observation = _observation(rows=(), cleanup_issue_code="fixture_reset_failed")
+    smoke_evidence = await SmokeVerificationEvaluator(
+        executor=StubVerificationExecutor(observation)
+    ).evaluate_case(
+        _smoke_case(RowCountAssertion(assertion_id="rows", minimum=1, maximum=1)),
+        _context(),
+    )
+    semantic_evidence = await SemanticContractEvaluator(
+        executor=StubVerificationExecutor(observation)
+    ).evaluate_case(
+        _semantic_case(RowCountEqualityContract(assertion_id="rows", expected=1)),
+        _context(),
+    )
+
+    assert smoke_evidence.issue_codes == (
+        "assertion_mismatch",
+        "fixture_reset_failed",
+    )
+    assert semantic_evidence.issue_codes == (
+        "semantic_contract_mismatch",
+        "fixture_reset_failed",
+    )
+
+
+@pytest.mark.asyncio
+async def test_layer_two_three_deadline_context_is_case_bounded() -> None:
+    suite_deadline = datetime.now(UTC) + timedelta(days=1)
+    smoke_executor = CapturingVerificationExecutor(_observation())
+    semantic_executor = CapturingVerificationExecutor(_observation())
+
+    await SmokeVerificationEvaluator(executor=smoke_executor).evaluate_case(
+        SmokeQueryCase(
+            case_id="smoke-deadline",
+            query=_ir(),
+            fixture_profile_id="sqlite-v1",
+            deadline_ms=1_000,
+            assertions=(OutcomeAssertion(assertion_id="outcome", expected="success"),),
+        ),
+        _context(deadline_at=suite_deadline),
+    )
+    await SemanticContractEvaluator(executor=semantic_executor).evaluate_case(
+        SemanticContractCase(
+            case_id="semantic-deadline",
+            query=_ir(),
+            fixture_profile_id="sqlite-v1",
+            deadline_ms=1_000,
+            contracts=(RowCountEqualityContract(assertion_id="rows", expected=1),),
+        ),
+        _context(deadline_at=suite_deadline),
+    )
+
+    assert smoke_executor.contexts[0].deadline_at < suite_deadline
+    assert semantic_executor.contexts[0].deadline_at < suite_deadline
+    assert smoke_executor.contexts[0].remaining_seconds() <= 1.0
+    assert semantic_executor.contexts[0].remaining_seconds() <= 1.0
+
+
+@pytest.mark.asyncio
+async def test_layer_two_three_preflight_issue_precedence_is_pinned() -> None:
+    smoke_executor = StubVerificationExecutor(_observation())
+    semantic_executor = StubVerificationExecutor(_observation())
+
+    smoke_evidence = await SmokeVerificationEvaluator(
+        executor=smoke_executor
+    ).evaluate_case(
+        _smoke_case(
+            OutcomeAssertion(assertion_id="outcome", expected="success"),
+            query=_ir(limit=None, source_id="other"),
+        ),
+        _context(),
+    )
+    semantic_evidence = await SemanticContractEvaluator(
+        executor=semantic_executor
+    ).evaluate_case(
+        _semantic_case(
+            ScalarEqualityContract(
+                assertion_id="unknown",
+                selection_id="physical_column",
+                expected=TaggedExpectedScalar(kind="int", value=1),
+            )
+        ).model_copy(update={"query": _ir(limit=None, source_id="other")}),
+        _context(),
+    )
+
+    assert smoke_evidence.issue_codes == ("unbounded_query_limit",)
+    assert semantic_evidence.issue_codes == ("unbounded_query_limit",)
+    assert smoke_executor.calls == 0
+    assert semantic_executor.calls == 0
 
 
 def _production_plan() -> VerificationPlan:

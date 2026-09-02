@@ -75,3 +75,7 @@ src = ["src", "tests", "demo", "packages/nl2data-openai/src", "packages/nl2data-
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+# Golden Admin signature strings are pinned verbatim, one per line.
+"tests/contract/test_semantic_control_plane_characterization.py" = ["E501"]

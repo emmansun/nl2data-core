@@ -7,9 +7,11 @@ from typing import Any
 
 import pytest
 from nl2data_core.assembly import (
+    AssemblyDraftStore,
     InMemoryAssemblyDraftStore,
     LifecycleAuthorizationDecision,
     LifecycleAuthorizationRequest,
+    LifecycleAuthorizer,
     LifecycleRole,
     SeparationOfDutiesMode,
 )
@@ -33,11 +35,23 @@ from nl2data_core.metadata.models import (
     MetadataSnapshot,
     MetadataSourceReference,
 )
-from nl2data_core.metadata.proposals import SemanticProposal, SemanticProposalSet
+from nl2data_core.metadata.proposals import (
+    SemanticProposal,
+    SemanticProposalKind,
+    SemanticProposalSet,
+)
 from nl2data_core.views import SemanticEntityDescriptor
 
 from nl2data_admin_service.auth import AuthContext, Permission
 from nl2data_admin_service.config import AdminServiceConfig
+from nl2data_admin_service.protocols import (
+    LifecycleCatalogPort,
+    ManifestBundleVerifier,
+    MetadataCatalogPort,
+    MetadataDiscoverer,
+    SemanticBundleEmitter,
+    VerificationExecutionContextFactory,
+)
 from nl2data_admin_service.service import AdminService
 
 _FINGERPRINT = "sha256:" + "0" * 64
@@ -170,16 +184,19 @@ class _FakeCatalog(SemanticSnapshotCatalog):
 
 class _FakeDependencies:
     def __init__(self) -> None:
-        self.catalog: _FakeCatalog = _FakeCatalog()
-        self.discoverer: Any = None
-        self.job_runner: Any = None
-        self.draft_store = InMemoryAssemblyDraftStore()
-        self.lifecycle_authorizer = _AllowLifecycleAuthorizer()
-        self.lifecycle_catalog = InMemorySemanticBundleCatalog(
+        self.catalog: MetadataCatalogPort | None = _FakeCatalog()
+        self.discoverer: MetadataDiscoverer | None = None
+        self.job_runner: Any | None = None
+        self.draft_store: AssemblyDraftStore | None = InMemoryAssemblyDraftStore()
+        self.lifecycle_authorizer: LifecycleAuthorizer | None = _AllowLifecycleAuthorizer()
+        self.lifecycle_catalog: LifecycleCatalogPort | None = InMemorySemanticBundleCatalog(
             draft_store=self.draft_store
         )
-        self.bundle_emitter = _FakeBundleEmitter()
-        self.manifest_verifier = _AllowManifestVerifier()
+        self.bundle_emitter: SemanticBundleEmitter | None = _FakeBundleEmitter()
+        self.manifest_verifier: ManifestBundleVerifier | None = _AllowManifestVerifier()
+        self.verification_executor: Any = None
+        self.verification_context_factory: VerificationExecutionContextFactory | None = None
+        self.verification_policies: dict[str, Any] = {}
         self.separation_mode = SeparationOfDutiesMode.SOLO_WITH_WAIVER
 
     @property
@@ -274,7 +291,7 @@ def _make_snapshot() -> MetadataSnapshot:
 def _make_proposal_set(snapshot: MetadataSnapshot) -> SemanticProposalSet:
     proposal = SemanticProposal(
         proposal_id="p-1",
-        kind="entity",
+        kind=SemanticProposalKind.ENTITY,
         target_id="obj-1",
         method="test",
         confidence=MetadataConfidence(value=0.9, method="test"),

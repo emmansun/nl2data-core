@@ -13,6 +13,7 @@ workflow tables and lifecycle operations never touch workflow records.
 
 from __future__ import annotations
 
+import json
 import threading
 
 import pytest
@@ -33,12 +34,19 @@ from nl2data_core.bundles import (
     DeploymentBindingRedactionSummary,
     InMemorySemanticBundleCatalog,
     PublishAuditRecord,
+    PublishedVersionState,
     PublishIdempotencyStatus,
     PublishVerificationSummary,
     SemanticModelBundle,
     SemanticSourceReference,
 )
 from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.control_plane.publication.contracts import (
+    FrozenReleaseBinding,
+    PublicationAggregate,
+    PublicationDraftBinding,
+    build_publication_records,
+)
 from nl2data_core.metadata import (
     MetadataEvidence,
     MetadataField,
@@ -51,10 +59,20 @@ from nl2data_core.metadata import (
     MetadataTrustLevel,
 )
 from nl2data_core.metadata.inference import infer_proposals
+from nl2data_core.metadata.policy import (
+    ProductionActivationContext,
+    SnapshotActivationPolicy,
+)
 from nl2data_core.metadata.production import SnapshotLifecycleState
 from nl2data_core.verification import (
     COMPATIBILITY_POLICY,
+    PRODUCTION_POLICY,
+    VerificationCaseEvidence,
+    VerificationLayer,
     VerificationLayerEvidence,
+    VerificationPlan,
+    VerificationStatus,
+    VerificationSuiteEvidence,
 )
 from nl2data_core.verification.suite import compatibility_suite_evidence
 from nl2data_core.views import (
@@ -63,6 +81,7 @@ from nl2data_core.views import (
     SemanticFieldDescriptor,
 )
 from nl2data_core.workflow.models import WorkflowState, WorkflowStatus
+from nl2data_semantic_catalog_postgres.envelope import ArtifactKind, encode_envelope
 from nl2data_semantic_catalog_postgres.errors import (
     SemanticCatalogError,
     SemanticCatalogErrorCode,
@@ -71,11 +90,18 @@ from nl2data_semantic_catalog_postgres.fake_postgres import (
     FakePostgresPool,
     OperationalError,
 )
+from nl2data_semantic_catalog_postgres.repositories import (
+    ActivationRepository,
+    DraftRepository,
+    EvidenceRepository,
+    PublicationRepository,
+)
 from nl2data_semantic_catalog_postgres.store import (
     MIGRATIONS,
     SQL_TEMPLATES,
     PostgreSQLSemanticCatalog,
 )
+from nl2data_semantic_catalog_postgres.unit_of_work import _namespace
 from nl2data_workflow_postgres import PostgreSQLStateStore
 from nl2data_workflow_postgres.fake_postgres import FakePostgresPool as WorkflowFakePool
 
@@ -268,24 +294,130 @@ def make_verification_evidence(
     )
 
 
-def make_verified_audit(bundle: SemanticModelBundle, evidence) -> PublishAuditRecord:
+def make_verified_audit(
+    bundle: SemanticModelBundle,
+    evidence,
+    policy=COMPATIBILITY_POLICY,
+) -> PublishAuditRecord:
     reference = f"verification-{evidence.fingerprint.removeprefix('sha256:')[:24]}"
+    binding = FrozenReleaseBinding.from_evidence(evidence)
     verification = PublishVerificationSummary(
         structural_valid=True,
         manifest_equivalent=True,
         host_callback_count=1,
         suite_version=evidence.suite_version,
-        policy_profile=COMPATIBILITY_POLICY.policy_id,
-        policy_version=COMPATIBILITY_POLICY.policy_version,
-        policy_fingerprint=COMPATIBILITY_POLICY.fingerprint,
+        policy_profile=policy.policy_id,
+        policy_version=policy.policy_version,
+        policy_fingerprint=policy.fingerprint,
+        plan_fingerprint=evidence.plan_fingerprint,
         runner_id=evidence.runner_id,
         runner_version=evidence.runner_version,
         layer_statuses=tuple(layer.status.value for layer in evidence.layers),
         layer_case_counts=tuple(len(layer.cases) for layer in evidence.layers),
         evidence_fingerprint=evidence.fingerprint,
         evidence_reference=reference,
+        release_binding_fingerprint=binding.fingerprint,
     )
     return make_audit(bundle, verification=verification)
+
+
+def make_production_evidence(
+    draft: AssemblyDraft,
+    bundle: SemanticModelBundle,
+    manifest: AcceptedAssertionManifest,
+) -> VerificationSuiteEvidence:
+    """Production-policy evidence with every required layer passed."""
+
+    def passed_case(
+        case_id: str, layer: VerificationLayer
+    ) -> VerificationCaseEvidence:
+        return VerificationCaseEvidence(
+            case_id=case_id,
+            layer=layer,
+            status=VerificationStatus.PASSED,
+            assertion_count=1,
+            passed_assertion_count=1,
+        )
+
+    return VerificationSuiteEvidence(
+        status=VerificationStatus.PASSED,
+        policy_profile=PRODUCTION_POLICY.policy_id,
+        policy_version=PRODUCTION_POLICY.policy_version,
+        policy_fingerprint=PRODUCTION_POLICY.fingerprint,
+        plan_fingerprint=(
+            draft.verification_plan.fingerprint
+            if draft.verification_plan is not None
+            else None
+        ),
+        runner_id="suite-runner",
+        runner_version=1,
+        draft_id=draft.draft_id,
+        draft_revision=draft.draft_revision,
+        bundle_fingerprint=bundle.fingerprint,
+        manifest_fingerprint=sha256_fingerprint(manifest.canonical_payload()),
+        tenant_scope_fingerprint=TENANT_A,
+        source_scope_fingerprint=sha256_fingerprint({"source_id": draft.source_id}),
+        layers=(
+            VerificationLayerEvidence(layer="layer_1", status="passed"),
+            VerificationLayerEvidence(
+                layer="layer_2",
+                status="passed",
+                cases=(passed_case("smoke-1", VerificationLayer.SMOKE),),
+            ),
+            VerificationLayerEvidence(
+                layer="layer_3",
+                status="passed",
+                cases=(passed_case("semantic-1", VerificationLayer.SEMANTIC),),
+            ),
+        ),
+        issue_codes=(),
+    )
+
+
+def make_production_fixture(version: int = 1):
+    """A snapshot-bound bundle plus an allowed production activation context."""
+    snapshot = make_snapshot()
+    overrides: dict[str, object] = {
+        "descriptor": make_descriptor(
+            version=version, catalog_fingerprint=snapshot.fingerprint
+        ),
+    }
+    if version != 1:
+        overrides["model_version"] = f"{version}.0.0"
+    bundle = make_bundle(**overrides)
+    policy = SnapshotActivationPolicy(
+        max_age_seconds=None,
+        allow_partial=False,
+        compatible_catalog_fingerprints=frozenset(
+            {snapshot.source.catalog_fingerprint}
+        ),
+        tenant_scope_fingerprint=TENANT_A,
+        source_id=snapshot.source.source_id,
+    )
+    production = ProductionActivationContext(
+        snapshot_policy=policy,
+        active_snapshot=snapshot,
+        tenant_scope_fingerprint=TENANT_A,
+    )
+    return bundle, production
+
+
+def make_publication_binding(
+    draft: AssemblyDraft,
+    tenant_scope_fingerprint: str,
+) -> PublicationDraftBinding:
+    return PublicationDraftBinding(
+        draft_id=draft.draft_id,
+        draft_revision=draft.draft_revision,
+        draft_payload_fingerprint=sha256_fingerprint(draft.file_payload()),
+        approved_plan_fingerprint=(
+            draft.verification_plan.fingerprint
+            if draft.verification_plan is not None
+            else None
+        ),
+        tenant_scope_fingerprint=tenant_scope_fingerprint,
+        source_scope_fingerprint=sha256_fingerprint({"source_id": draft.source_id}),
+    )
 
 
 class TestDurableAssemblyDrafts:
@@ -343,8 +475,7 @@ class TestDurableAssemblyPublication:
             bundle,
             accepted_assertion_manifest=manifest,
             audit=audit,
-            draft=draft,
-            expected_revision=draft.draft_revision,
+            publication_binding=make_publication_binding(draft, TENANT_A),
             idempotency_key=idempotency_key,
             tenant_scope_fingerprint=TENANT_A,
         )
@@ -366,8 +497,7 @@ class TestDurableAssemblyPublication:
             accepted_assertion_manifest=manifest,
             verification_evidence=evidence,
             audit=make_verified_audit(bundle, evidence),
-            draft=draft,
-            expected_revision=draft.draft_revision,
+            publication_binding=make_publication_binding(draft, TENANT_A),
             idempotency_key=idempotency_key,
             tenant_scope_fingerprint=TENANT_A,
         )
@@ -392,6 +522,15 @@ class TestDurableAssemblyPublication:
         assert outcome.verification_evidence_reference == (
             f"verification-{evidence.fingerprint.removeprefix('sha256:')[:24]}"
         )
+        audit = restarted.publish_audit(
+            bundle.bundle_id,
+            bundle.fingerprint,
+            tenant_scope_fingerprint=TENANT_A,
+        )
+        assert audit is not None
+        assert audit.verification.release_binding_fingerprint == (
+            FrozenReleaseBinding.from_evidence(evidence).fingerprint
+        )
         assert restarted.verification_evidence(
             bundle.bundle_id,
             bundle.fingerprint,
@@ -400,6 +539,47 @@ class TestDurableAssemblyPublication:
         assert pool.statement_journal.index("insert_accepted_manifest") < (
             pool.statement_journal.index("insert_verification_evidence")
         ) < pool.statement_journal.index("insert_publish_audit")
+
+    def test_verification_evidence_survives_restart_after_draft_evolves(self) -> None:
+        pool = FakePostgresPool()
+        first = PostgreSQLSemanticCatalog(pool=pool, now=pool.clock.now)
+        draft = make_approved_draft()
+        bundle = make_bundle()
+        first.create(draft, tenant_scope_fingerprint=TENANT_A)
+        outcome = self._publish_verified(first, draft, bundle)
+        assert outcome.kind == "published"
+
+        reopened = draft.transition(
+            expected_revision=draft.draft_revision,
+            state=AssemblyState.REVIEW,
+        )
+        first.replace(
+            reopened,
+            expected_revision=draft.draft_revision,
+            tenant_scope_fingerprint=TENANT_A,
+        )
+
+        restarted = PostgreSQLSemanticCatalog(pool=pool, now=pool.clock.now)
+        evidence = restarted.verification_evidence(
+            bundle.bundle_id,
+            bundle.fingerprint,
+            tenant_scope_fingerprint=TENANT_A,
+        )
+        assert evidence is not None
+        assert outcome.verification_evidence_reference == (
+            f"verification-{evidence.fingerprint.removeprefix('sha256:')[:24]}"
+        )
+        assert evidence.draft_id == draft.draft_id
+        assert evidence.draft_revision == draft.draft_revision
+        audit = restarted.publish_audit(
+            bundle.bundle_id,
+            bundle.fingerprint,
+            tenant_scope_fingerprint=TENANT_A,
+        )
+        assert audit is not None
+        assert audit.verification.release_binding_fingerprint == (
+            FrozenReleaseBinding.from_evidence(evidence).fingerprint
+        )
 
     def test_verified_reuse_returns_original_evidence_and_audit_references(self) -> None:
         catalog, _ = make_postgres_catalog()
@@ -430,6 +610,849 @@ class TestDurableAssemblyPublication:
                 tenant_scope_fingerprint=TENANT_A,
             )
         assert rejected.value.code is SemanticCatalogErrorCode.ENVELOPE_REJECTED
+
+    def test_legacy_verification_evidence_without_binding_is_classified(self) -> None:
+        catalog, pool = make_postgres_catalog()
+        draft = make_approved_draft()
+        bundle = make_bundle()
+        catalog.create(draft, tenant_scope_fingerprint=TENANT_A)
+        self._publish_verified(catalog, draft, bundle)
+
+        evidence = catalog.verification_evidence(
+            bundle.bundle_id,
+            bundle.fingerprint,
+            tenant_scope_fingerprint=TENANT_A,
+        )
+        assert evidence is not None
+        evidence_row = next(iter(pool.verification_evidence.values()))
+        evidence_payload = evidence.model_dump(mode="json")
+        evidence_row["envelope"] = encode_envelope(
+            ArtifactKind.VERIFICATION_SUITE_EVIDENCE,
+            evidence_payload,
+            sha256_fingerprint(evidence_payload),
+            max_envelope_bytes=catalog._config.max_envelope_bytes,  # noqa: SLF001
+            max_payload_bytes=catalog._config.max_payload_bytes,  # noqa: SLF001
+        )
+
+        audit_row = next(iter(pool.publish_audits.values()))
+        audit = catalog.publish_audit(
+            bundle.bundle_id,
+            bundle.fingerprint,
+            tenant_scope_fingerprint=TENANT_A,
+        )
+        assert audit is not None
+        legacy_audit = audit.model_copy(
+            update={
+                "verification": audit.verification.model_copy(
+                    update={"release_binding_fingerprint": None}
+                )
+            }
+        )
+        audit_payload = legacy_audit.safe_payload()
+        audit_row["envelope"] = encode_envelope(
+            ArtifactKind.PUBLISH_AUDIT,
+            audit_payload,
+            sha256_fingerprint(audit_payload),
+            max_envelope_bytes=catalog._config.max_envelope_bytes,  # noqa: SLF001
+            max_payload_bytes=catalog._config.max_payload_bytes,  # noqa: SLF001
+        )
+        pool.statement_journal.clear()
+
+        with pytest.raises(SemanticCatalogError) as rejected:
+            catalog.verification_evidence(
+                bundle.bundle_id,
+                bundle.fingerprint,
+                tenant_scope_fingerprint=TENANT_A,
+            )
+        assert rejected.value.code is SemanticCatalogErrorCode.ENVELOPE_REJECTED
+        assert rejected.value.details == {
+            "classification": "legacy_unverified",
+            "cause_type": "LegacyVerificationEvidenceMissingFrozenBinding",
+        }
+        assert "read_assembly_draft" not in pool.statement_journal
+
+    def test_tampered_frozen_release_binding_fails_closed(self) -> None:
+        catalog, pool = make_postgres_catalog()
+        draft = make_approved_draft()
+        bundle = make_bundle()
+        catalog.create(draft, tenant_scope_fingerprint=TENANT_A)
+        self._publish_verified(catalog, draft, bundle)
+
+        row = next(iter(pool.verification_evidence.values()))
+        envelope = json.loads(row["envelope"])
+        payload = envelope["payload"]
+        payload["frozen_release_binding"]["approved_draft_revision"] = 999
+        row["envelope"] = encode_envelope(
+            ArtifactKind.VERIFICATION_SUITE_EVIDENCE,
+            payload,
+            sha256_fingerprint(payload),
+            max_envelope_bytes=catalog._config.max_envelope_bytes,  # noqa: SLF001
+            max_payload_bytes=catalog._config.max_payload_bytes,  # noqa: SLF001
+        )
+
+        with pytest.raises(SemanticCatalogError) as rejected:
+            catalog.verification_evidence(
+                bundle.bundle_id,
+                bundle.fingerprint,
+                tenant_scope_fingerprint=TENANT_A,
+            )
+        assert rejected.value.code is SemanticCatalogErrorCode.ENVELOPE_REJECTED
+        assert rejected.value.details == {
+            "cause_type": "FrozenReleaseBindingFingerprintMismatch"
+        }
+
+    def test_idempotent_reuse_revalidates_persisted_evidence(self) -> None:
+        """A corrupted stored evidence record is never returned as reused."""
+        catalog, pool = make_postgres_catalog()
+        draft = make_approved_draft()
+        bundle = make_bundle()
+        catalog.create(draft, tenant_scope_fingerprint=TENANT_A)
+        assert self._publish_verified(catalog, draft, bundle).kind == "published"
+
+        row = next(iter(pool.verification_evidence.values()))
+        envelope = json.loads(row["envelope"])
+        payload = envelope["payload"]
+        payload.pop("frozen_release_binding")
+        payload.pop("frozen_release_binding_fingerprint")
+        row["envelope"] = encode_envelope(
+            ArtifactKind.VERIFICATION_SUITE_EVIDENCE,
+            payload,
+            sha256_fingerprint(payload),
+            max_envelope_bytes=catalog._config.max_envelope_bytes,  # noqa: SLF001
+            max_payload_bytes=catalog._config.max_payload_bytes,  # noqa: SLF001
+        )
+
+        reused = self._publish_verified(catalog, draft, bundle)
+        assert reused.kind == "conflict"
+        assert reused.issue_codes() == ["verification_evidence_mismatch"]
+
+    def test_persisted_audit_tamper_fails_closed_on_lookup_reuse_and_records(self) -> None:
+        """A tampered persisted audit never validates for lookup, reuse, or records."""
+        catalog, pool = make_postgres_catalog()
+        draft = make_approved_draft()
+        bundle = make_bundle()
+        catalog.create(draft, tenant_scope_fingerprint=TENANT_A)
+        assert self._publish_verified(catalog, draft, bundle).kind == "published"
+
+        audit = catalog.publish_audit(
+            bundle.bundle_id, bundle.fingerprint, tenant_scope_fingerprint=TENANT_A
+        )
+        tampered = audit.model_copy(
+            update={
+                "verification": audit.verification.model_copy(
+                    update={
+                        "suite_version": 999,
+                        "layer_statuses": ("failed", "failed", "failed"),
+                        "layer_case_counts": (0, 0, 0),
+                        "structural_valid": False,
+                        "manifest_equivalent": False,
+                    }
+                )
+            }
+        )
+        payload = tampered.safe_payload()
+        row = next(iter(pool.publish_audits.values()))
+        row["envelope"] = encode_envelope(
+            ArtifactKind.PUBLISH_AUDIT,
+            payload,
+            sha256_fingerprint(payload),
+            max_envelope_bytes=catalog._config.max_envelope_bytes,  # noqa: SLF001
+            max_payload_bytes=catalog._config.max_payload_bytes,  # noqa: SLF001
+        )
+
+        with pytest.raises(SemanticCatalogError):
+            catalog.verification_evidence(
+                bundle.bundle_id, bundle.fingerprint, tenant_scope_fingerprint=TENANT_A
+            )
+        with pytest.raises(SemanticCatalogError):
+            catalog.publication_records(
+                bundle.bundle_id, tenant_scope_fingerprint=TENANT_A
+            )
+        reused = self._publish_verified(catalog, draft, bundle)
+        assert reused.kind == "conflict"
+        assert reused.issue_codes() == ["verification_evidence_mismatch"]
+
+    def test_reuse_and_records_fail_closed_when_evidence_row_missing(self) -> None:
+        """A deleted evidence row is corruption, never a legacy publication."""
+        catalog, pool = make_postgres_catalog()
+        draft = make_approved_draft()
+        bundle = make_bundle()
+        catalog.create(draft, tenant_scope_fingerprint=TENANT_A)
+        assert self._publish_verified(catalog, draft, bundle).kind == "published"
+
+        pool.verification_evidence.clear()
+        reused = self._publish_verified(catalog, draft, bundle)
+        assert reused.kind == "conflict"
+        assert reused.issue_codes() == ["verification_evidence_mismatch"]
+        with pytest.raises(SemanticCatalogError):
+            catalog.publication_records(
+                bundle.bundle_id, tenant_scope_fingerprint=TENANT_A
+            )
+
+    def test_persisted_audit_reference_tamper_fails_closed(self) -> None:
+        """A tampered audit evidence reference never validates on durable reads."""
+        catalog, pool = make_postgres_catalog()
+        draft = make_approved_draft()
+        bundle = make_bundle()
+        catalog.create(draft, tenant_scope_fingerprint=TENANT_A)
+        assert self._publish_verified(catalog, draft, bundle).kind == "published"
+
+        audit = catalog.publish_audit(
+            bundle.bundle_id, bundle.fingerprint, tenant_scope_fingerprint=TENANT_A
+        )
+        tampered = audit.model_copy(
+            update={
+                "verification": audit.verification.model_copy(
+                    update={"evidence_reference": "verification-tampered"}
+                )
+            }
+        )
+        payload = tampered.safe_payload()
+        row = next(iter(pool.publish_audits.values()))
+        row["envelope"] = encode_envelope(
+            ArtifactKind.PUBLISH_AUDIT,
+            payload,
+            sha256_fingerprint(payload),
+            max_envelope_bytes=catalog._config.max_envelope_bytes,  # noqa: SLF001
+            max_payload_bytes=catalog._config.max_payload_bytes,  # noqa: SLF001
+        )
+
+        with pytest.raises(SemanticCatalogError):
+            catalog.verification_evidence(
+                bundle.bundle_id, bundle.fingerprint, tenant_scope_fingerprint=TENANT_A
+            )
+        reused = self._publish_verified(catalog, draft, bundle)
+        assert reused.kind == "conflict"
+        assert reused.issue_codes() == ["verification_evidence_mismatch"]
+
+    def test_reuse_fails_closed_when_version_record_missing(self) -> None:
+        """Reuse without a durable version record never reports success."""
+        catalog, pool = make_postgres_catalog()
+        draft = make_approved_draft()
+        bundle = make_bundle()
+        catalog.create(draft, tenant_scope_fingerprint=TENANT_A)
+        assert self._publish_verified(catalog, draft, bundle).kind == "published"
+
+        pool.published_versions.clear()
+        reused = self._publish_verified(catalog, draft, bundle)
+        assert reused.kind == "conflict"
+        assert reused.issue_codes() == ["publication_version_missing"]
+
+    def test_reuse_fails_closed_when_audit_and_evidence_rows_deleted(self) -> None:
+        """The version-row audit_id is a witness against deleted publication rows."""
+        catalog, pool = make_postgres_catalog()
+        draft = make_approved_draft()
+        bundle = make_bundle()
+        catalog.create(draft, tenant_scope_fingerprint=TENANT_A)
+        assert self._publish_verified(catalog, draft, bundle).kind == "published"
+
+        pool.verification_evidence.clear()
+        pool.publish_audits.clear()
+        reused = self._publish_verified(catalog, draft, bundle)
+        assert reused.kind == "conflict"
+        assert reused.issue_codes() == ["verification_audit_missing"]
+        with pytest.raises(SemanticCatalogError):
+            catalog.publication_records(
+                bundle.bundle_id, tenant_scope_fingerprint=TENANT_A
+            )
+
+    def test_compatibility_publish_rejects_cross_tenant_evidence(self) -> None:
+        """Compatibility kwargs cannot publish another tenant's evidence."""
+        catalog, _ = make_postgres_catalog()
+        draft = make_approved_draft()
+        bundle = make_bundle()
+        manifest = AcceptedAssertionManifest.from_draft(
+            draft, bundle_fingerprint=bundle.fingerprint
+        )
+        evidence = make_verification_evidence(draft, bundle, manifest)
+        outcome = catalog.publish(
+            bundle,
+            accepted_assertion_manifest=manifest,
+            verification_evidence=evidence,
+            audit=make_verified_audit(bundle, evidence),
+            tenant_scope_fingerprint=TENANT_B,
+        )
+        assert outcome.kind == "rejected"
+        assert outcome.issue_codes() == ["verification_evidence_mismatch"]
+
+    def test_aggregate_publish_rejects_evidence_free_existing_record(self) -> None:
+        """A verified aggregate never silently reuses an evidence-free record."""
+        catalog, _ = make_postgres_catalog()
+        draft = make_approved_draft()
+        bundle = make_bundle()
+        assert catalog.publish(bundle, tenant_scope_fingerprint=TENANT_A).kind == (
+            "published"
+        )
+        manifest = AcceptedAssertionManifest.from_draft(
+            draft, bundle_fingerprint=bundle.fingerprint
+        )
+        evidence = make_verification_evidence(draft, bundle, manifest)
+        aggregate = PublicationAggregate(
+            bundle=bundle,
+            accepted_assertion_manifest=manifest,
+            verification_evidence=evidence,
+            audit=make_verified_audit(bundle, evidence),
+            frozen_release_binding=FrozenReleaseBinding.from_evidence(evidence),
+        )
+        outcome = catalog.publish(
+            bundle,
+            publication_aggregate=aggregate,
+            tenant_scope_fingerprint=TENANT_A,
+        )
+        assert outcome.kind == "conflict"
+        assert outcome.issue_codes() == ["publication_state_conflict"]
+
+    def test_activate_rejects_retired_version(self) -> None:
+        """Retired versions cannot be reactivated (PostgreSQL parity)."""
+        catalog, _ = make_postgres_catalog()
+        bundle = make_bundle()
+        assert catalog.publish(bundle, tenant_scope_fingerprint=TENANT_A).kind == (
+            "published"
+        )
+        assert (
+            catalog.set_version_state(
+                bundle.bundle_id,
+                bundle.fingerprint,
+                PublishedVersionState.RETIRED,
+                tenant_scope_fingerprint=TENANT_A,
+            ).kind
+            == "retired"
+        )
+        outcome = catalog.activate(
+            bundle.bundle_id, bundle.model_version, tenant_scope_fingerprint=TENANT_A
+        )
+        assert outcome.kind == "rejected"
+        assert outcome.issue_codes() == ["bundle_retired"]
+
+    def test_active_and_reload_reject_corrupted_pointer_fingerprint(self) -> None:
+        """The pointer fingerprint is a witness against pointer/publication drift."""
+        catalog, pool = make_postgres_catalog()
+        bundle = make_bundle()
+        assert catalog.publish(bundle, tenant_scope_fingerprint=TENANT_A).kind == (
+            "published"
+        )
+        assert (
+            catalog.activate(
+                bundle.bundle_id,
+                bundle.model_version,
+                tenant_scope_fingerprint=TENANT_A,
+            ).kind
+            == "activated"
+        )
+        row = next(iter(pool.bundle_pointers.values()))
+        row["bundle_fingerprint"] = "sha256:" + "9" * 64
+
+        with pytest.raises(SemanticCatalogError):
+            catalog.active(bundle.bundle_id, tenant_scope_fingerprint=TENANT_A)
+        report = catalog.reload_active()
+        assert report.active_bundles_revalidated == 0
+        assert [issue.member_id for issue in report.rejected] == [bundle.bundle_id]
+
+    def test_activate_fails_closed_when_version_record_missing(self) -> None:
+        """A publication without its lifecycle row is corruption, not legacy."""
+        catalog, pool = make_postgres_catalog()
+        bundle = make_bundle()
+        assert catalog.publish(bundle, tenant_scope_fingerprint=TENANT_A).kind == (
+            "published"
+        )
+        pool.published_versions.clear()
+        outcome = catalog.activate(
+            bundle.bundle_id, bundle.model_version, tenant_scope_fingerprint=TENANT_A
+        )
+        assert outcome.kind == "conflict"
+        assert outcome.issue_codes() == ["publication_version_missing"]
+
+    def test_compatibility_publish_rejects_scoped_evidence_without_tenant_scope(
+        self,
+    ) -> None:
+        """Tenant-scoped evidence never enters the unscoped namespace."""
+        catalog, _ = make_postgres_catalog()
+        draft = make_approved_draft()
+        bundle = make_bundle()
+        manifest = AcceptedAssertionManifest.from_draft(
+            draft, bundle_fingerprint=bundle.fingerprint
+        )
+        evidence = make_verification_evidence(draft, bundle, manifest)
+        outcome = catalog.publish(
+            bundle,
+            accepted_assertion_manifest=manifest,
+            verification_evidence=evidence,
+            audit=make_verified_audit(bundle, evidence),
+        )
+        assert outcome.kind == "rejected"
+        assert outcome.issue_codes() == ["verification_evidence_mismatch"]
+
+    def test_publish_rejects_audit_referencing_missing_evidence(self) -> None:
+        """An audit that claims evidence must be published with that evidence."""
+        catalog, _ = make_postgres_catalog()
+        draft = make_approved_draft()
+        bundle = make_bundle()
+        manifest = AcceptedAssertionManifest.from_draft(
+            draft, bundle_fingerprint=bundle.fingerprint
+        )
+        evidence = make_verification_evidence(draft, bundle, manifest)
+        outcome = catalog.publish(
+            bundle,
+            accepted_assertion_manifest=manifest,
+            audit=make_verified_audit(bundle, evidence),
+            tenant_scope_fingerprint=TENANT_A,
+        )
+        assert outcome.kind == "rejected"
+        assert outcome.issue_codes() == ["verification_audit_mismatch"]
+
+    def test_rollback_rejects_retired_target(self) -> None:
+        """Plain rollback must not resurrect retired versions (PG parity)."""
+        catalog, _ = make_postgres_catalog()
+        v1 = make_bundle()
+        v2 = make_bundle_v2()
+        assert catalog.publish(v1, tenant_scope_fingerprint=TENANT_A).kind == "published"
+        assert catalog.publish(v2, tenant_scope_fingerprint=TENANT_A).kind == "published"
+        assert (
+            catalog.activate(
+                v1.bundle_id, v1.model_version, tenant_scope_fingerprint=TENANT_A
+            ).kind
+            == "activated"
+        )
+        assert (
+            catalog.activate(
+                v2.bundle_id, v2.model_version, tenant_scope_fingerprint=TENANT_A
+            ).kind
+            == "activated"
+        )
+        assert (
+            catalog.set_version_state(
+                v1.bundle_id,
+                v1.fingerprint,
+                PublishedVersionState.RETIRED,
+                tenant_scope_fingerprint=TENANT_A,
+            ).kind
+            == "retired"
+        )
+        outcome = catalog.rollback(v1.bundle_id, tenant_scope_fingerprint=TENANT_A)
+        assert outcome.kind == "rejected"
+        assert outcome.issue_codes() == ["bundle_retired"]
+        assert catalog.active(v1.bundle_id, tenant_scope_fingerprint=TENANT_A) == v2
+
+    def test_rollback_rejects_corrupted_history_fingerprint(self) -> None:
+        """The history fingerprint is a witness against history/publication drift."""
+        catalog, pool = make_postgres_catalog()
+        v1 = make_bundle()
+        v2 = make_bundle_v2()
+        assert catalog.publish(v1, tenant_scope_fingerprint=TENANT_A).kind == "published"
+        assert catalog.publish(v2, tenant_scope_fingerprint=TENANT_A).kind == "published"
+        assert (
+            catalog.activate(
+                v1.bundle_id, v1.model_version, tenant_scope_fingerprint=TENANT_A
+            ).kind
+            == "activated"
+        )
+        assert (
+            catalog.activate(
+                v2.bundle_id, v2.model_version, tenant_scope_fingerprint=TENANT_A
+            ).kind
+            == "activated"
+        )
+        history = next(iter(pool.bundle_history.values()))
+        history[max(history)]["bundle_fingerprint"] = "sha256:" + "9" * 64
+        outcome = catalog.rollback(v1.bundle_id, tenant_scope_fingerprint=TENANT_A)
+        assert outcome.kind == "rejected"
+        assert outcome.issue_codes() == ["history_fingerprint_mismatch"]
+        assert catalog.active(v1.bundle_id, tenant_scope_fingerprint=TENANT_A) == v2
+
+    def test_rollback_rejects_cleared_history_when_sequence_proves_it(self) -> None:
+        """An empty history beside a sequence >= 1 is deleted state."""
+        catalog, pool = make_postgres_catalog()
+        v1 = make_bundle()
+        v2 = make_bundle_v2()
+        assert catalog.publish(v1, tenant_scope_fingerprint=TENANT_A).kind == "published"
+        assert catalog.publish(v2, tenant_scope_fingerprint=TENANT_A).kind == "published"
+        assert (
+            catalog.activate(
+                v1.bundle_id, v1.model_version, tenant_scope_fingerprint=TENANT_A
+            ).kind
+            == "activated"
+        )
+        assert (
+            catalog.activate(
+                v2.bundle_id, v2.model_version, tenant_scope_fingerprint=TENANT_A
+            ).kind
+            == "activated"
+        )
+        pointer = next(iter(pool.bundle_pointers.values()))
+        assert pointer["activation_sequence"] == 1
+        next(iter(pool.bundle_history.values())).clear()
+        outcome = catalog.rollback(v2.bundle_id, tenant_scope_fingerprint=TENANT_A)
+        assert outcome.kind == "rejected"
+        assert outcome.issue_codes() == ["history_discontinuity"]
+        assert catalog.active(v2.bundle_id, tenant_scope_fingerprint=TENANT_A) == v2
+
+    def test_first_activation_rollback_remains_no_history(self) -> None:
+        """A first-ever activation sits at sequence 0 with no history."""
+        catalog, pool = make_postgres_catalog()
+        v1 = make_bundle()
+        assert catalog.publish(v1, tenant_scope_fingerprint=TENANT_A).kind == "published"
+        assert (
+            catalog.activate(
+                v1.bundle_id, v1.model_version, tenant_scope_fingerprint=TENANT_A
+            ).kind
+            == "activated"
+        )
+        assert next(iter(pool.bundle_pointers.values()))["activation_sequence"] == 0
+        outcome = catalog.rollback(v1.bundle_id, tenant_scope_fingerprint=TENANT_A)
+        assert outcome.kind == "no_history"
+        assert outcome.issue_codes() == ["no_rollback_history"]
+
+    # -- parameterized persistence failure matrix --------------------------------
+    #
+    # Each persisted artifact (Bundle, manifest, audit, evidence, frozen
+    # binding, version row, pointer, history) is deleted or tampered one
+    # at a time, and every entry point that reads that artifact must fail
+    # closed with its stable outcome: a raised error, a bounded rejection
+    # outcome, or a reload issue.  The fixture keeps two activated versions
+    # so the active publication and the rollback target are corrupted
+    # independently; probes are omitted only where the entry point does
+    # not read the artifact (a plain rollback, for instance, safely
+    # recovers to an intact predecessor when only the active records are
+    # corrupted).
+
+    _RAISE = "raise"
+    _RELOAD = "reload"
+    _NONE = "none"
+
+    _ACTIVE_FAULTS = (
+        "bundle-envelope-tampered",
+        "manifest-deleted",
+        "manifest-metadata-tampered",
+        "audit-deleted",
+        "audit-summary-tampered",
+        "evidence-deleted",
+        "evidence-fingerprint-tampered",
+        "binding-stripped",
+        "binding-tampered",
+        "version-row-deleted",
+        "pointer-fingerprint-tampered",
+        "pointer-deleted",
+    )
+
+    _TARGET_FAULTS = (
+        "bundle-envelope-tampered",
+        "manifest-deleted",
+        "manifest-metadata-tampered",
+        "audit-deleted",
+        "audit-summary-tampered",
+        "evidence-deleted",
+        "evidence-fingerprint-tampered",
+        "binding-stripped",
+        "binding-tampered",
+        "version-row-deleted",
+        "history-fingerprint-tampered",
+        "history-deleted",
+        "history-cleared",
+    )
+
+    def _publish_matrix_fixture(self):
+        """Three verified activated versions: v1/v2 history, v3 active."""
+        catalog, pool = make_postgres_catalog()
+        draft = make_approved_draft()
+        v1 = make_bundle()
+        v2 = make_bundle_v2()
+        v3 = make_bundle_v2(
+            model_version="3.0.0", descriptor=make_descriptor(version=3)
+        )
+        catalog.create(draft, tenant_scope_fingerprint=TENANT_A)
+        for bundle, key in (
+            (v1, "publish-matrix-v1"),
+            (v2, "publish-matrix-v2"),
+            (v3, "publish-matrix-v3"),
+        ):
+            manifest = AcceptedAssertionManifest.from_draft(
+                draft, bundle_fingerprint=bundle.fingerprint
+            )
+            evidence = make_verification_evidence(draft, bundle, manifest)
+            assert catalog.publish(
+                bundle,
+                accepted_assertion_manifest=manifest,
+                verification_evidence=evidence,
+                audit=make_verified_audit(bundle, evidence),
+                publication_binding=make_publication_binding(draft, TENANT_A),
+                idempotency_key=key,
+                tenant_scope_fingerprint=TENANT_A,
+            ).kind == "published"
+            assert catalog.activate(
+                bundle.bundle_id,
+                bundle.model_version,
+                tenant_scope_fingerprint=TENANT_A,
+            ).kind == "activated"
+        return catalog, pool, draft, v1, v2, v3
+
+    def _republish(self, catalog, draft, bundle, key):
+        """Re-run one verified publish; the existing record yields reuse."""
+        manifest = AcceptedAssertionManifest.from_draft(
+            draft, bundle_fingerprint=bundle.fingerprint
+        )
+        evidence = make_verification_evidence(draft, bundle, manifest)
+        return catalog.publish(
+            bundle,
+            accepted_assertion_manifest=manifest,
+            verification_evidence=evidence,
+            audit=make_verified_audit(bundle, evidence),
+            publication_binding=make_publication_binding(draft, TENANT_A),
+            idempotency_key=key,
+            tenant_scope_fingerprint=TENANT_A,
+        )
+
+    def _corrupt(self, catalog, pool, bundle, fault):
+        """Apply one artifact deletion or tamper to ``bundle``'s rows."""
+        namespace = _namespace(TENANT_A)
+        key = (namespace, bundle.bundle_id, bundle.fingerprint)
+
+        def reencode(row, kind, payload):
+            row["envelope"] = encode_envelope(
+                kind,
+                payload,
+                sha256_fingerprint(payload),
+                max_envelope_bytes=catalog._config.max_envelope_bytes,  # noqa: SLF001
+                max_payload_bytes=catalog._config.max_payload_bytes,  # noqa: SLF001
+            )
+
+        def pop(table):
+            assert table.pop(key, None) is not None
+
+        if fault == "bundle-envelope-tampered":
+            row = pool.publications[
+                (namespace, bundle.bundle_id, bundle.model_version)
+            ]
+            envelope = json.loads(row["envelope"])
+            envelope["payload"]["model_version"] = "9.9.9"
+            row["envelope"] = json.dumps(envelope)
+        elif fault == "manifest-deleted":
+            pop(pool.accepted_manifests)
+        elif fault == "manifest-metadata-tampered":
+            row = pool.accepted_manifests[key]
+            envelope = json.loads(row["envelope"])
+            envelope["payload"]["bundle_fingerprint"] = fp("e")
+            reencode(
+                row, ArtifactKind.ACCEPTED_ASSERTION_MANIFEST, envelope["payload"]
+            )
+        elif fault == "audit-deleted":
+            pop(pool.publish_audits)
+        elif fault == "audit-summary-tampered":
+            row = pool.publish_audits[key]
+            envelope = json.loads(row["envelope"])
+            envelope["payload"]["verification"]["suite_version"] = 999
+            reencode(row, ArtifactKind.PUBLISH_AUDIT, envelope["payload"])
+        elif fault == "evidence-deleted":
+            pop(pool.verification_evidence)
+        elif fault == "evidence-fingerprint-tampered":
+            row = pool.verification_evidence[key]
+            row["evidence_fingerprint"] = fp("9")
+        elif fault == "binding-stripped":
+            row = pool.verification_evidence[key]
+            envelope = json.loads(row["envelope"])
+            envelope["payload"].pop("frozen_release_binding")
+            envelope["payload"].pop("frozen_release_binding_fingerprint")
+            reencode(
+                row,
+                ArtifactKind.VERIFICATION_SUITE_EVIDENCE,
+                envelope["payload"],
+            )
+        elif fault == "binding-tampered":
+            row = pool.verification_evidence[key]
+            envelope = json.loads(row["envelope"])
+            envelope["payload"]["frozen_release_binding"][
+                "approved_draft_revision"
+            ] = 999
+            reencode(
+                row,
+                ArtifactKind.VERIFICATION_SUITE_EVIDENCE,
+                envelope["payload"],
+            )
+        elif fault == "version-row-deleted":
+            pop(pool.published_versions)
+        elif fault == "pointer-fingerprint-tampered":
+            pointer = pool.bundle_pointers[(namespace, bundle.bundle_id)]
+            pointer["bundle_fingerprint"] = "sha256:" + "9" * 64
+        elif fault == "pointer-deleted":
+            assert (
+                pool.bundle_pointers.pop((namespace, bundle.bundle_id), None)
+                is not None
+            )
+        elif fault == "history-fingerprint-tampered":
+            history = pool.bundle_history[(namespace, bundle.bundle_id)]
+            history[max(history)]["bundle_fingerprint"] = "sha256:" + "9" * 64
+        elif fault == "history-deleted":
+            history = pool.bundle_history[(namespace, bundle.bundle_id)]
+            assert history.pop(max(history)) is not None
+        elif fault == "history-cleared":
+            history = pool.bundle_history[(namespace, bundle.bundle_id)]
+            history.clear()
+        else:
+            raise AssertionError(f"unknown fault {fault}")
+
+    def _active_expectation(self, fault):
+        """Fault on the ACTIVE publication -> probe -> expected outcome."""
+        raise_all = {
+            "reuse": ("conflict", "verification_evidence_mismatch"),
+            "records": self._RAISE,
+            "evidence": self._RAISE,
+            "active": self._RAISE,
+            "activate": self._RAISE,
+            "reload": self._RELOAD,
+        }
+        if fault == "bundle-envelope-tampered":
+            return {
+                "reuse": self._RAISE,
+                "records": self._RAISE,
+                "active": self._RAISE,
+                "activate": self._RAISE,
+                "reload": self._RELOAD,
+            }
+        if fault == "audit-deleted":
+            return {
+                "reuse": ("conflict", "verification_audit_missing"),
+                "records": self._RAISE,
+                "evidence": self._RAISE,
+                "active": self._RAISE,
+                "activate": self._RAISE,
+                "reload": self._RELOAD,
+            }
+        if fault == "version-row-deleted":
+            return {
+                "reuse": ("conflict", "publication_version_missing"),
+                "active": self._RAISE,
+                "activate": ("conflict", "publication_version_missing"),
+                "reload": self._RELOAD,
+            }
+        if fault == "pointer-fingerprint-tampered":
+            return {"active": self._RAISE, "reload": self._RELOAD}
+        if fault == "pointer-deleted":
+            # Without the pointer the read paths see "never activated";
+            # re-activation must refuse to mint a second ACTIVE row and
+            # the reload orphan sweep must surface the orphaned row.
+            return {
+                "active": self._NONE,
+                "activate": ("conflict", "orphan_active_version"),
+                "reload": self._RELOAD,
+            }
+        assert fault in self._ACTIVE_FAULTS
+        return raise_all
+
+    def _target_expectation(self, fault):
+        """Fault on the ROLLBACK TARGET -> expected rollback outcome."""
+        if fault == "version-row-deleted":
+            return ("conflict", "publication_version_missing")
+        if fault == "history-fingerprint-tampered":
+            return ("rejected", "history_fingerprint_mismatch")
+        if fault == "history-deleted":
+            # A deleted newest history row must not let rollback skip the
+            # version it recorded; the top row no longer sits at the
+            # pointer's activation sequence, which is a discontinuity.
+            return ("rejected", "history_discontinuity")
+        if fault == "history-cleared":
+            # A cleared history beside a sequence >= 1 is deleted state,
+            # never a legitimate "no history" shape.
+            return ("rejected", "history_discontinuity")
+        return self._RAISE
+
+    @pytest.mark.parametrize("fault", _ACTIVE_FAULTS)
+    def test_fault_matrix_active_publication_fails_closed(self, fault: str) -> None:
+        catalog, pool, draft, _v1, _v2, v3 = self._publish_matrix_fixture()
+        self._corrupt(catalog, pool, v3, fault)
+
+        probes = {
+            "reuse": lambda: self._republish(
+                catalog, draft, v3, "publish-matrix-v3"
+            ),
+            "records": lambda: catalog.publication_records(
+                v3.bundle_id, tenant_scope_fingerprint=TENANT_A
+            ),
+            "evidence": lambda: catalog.verification_evidence(
+                v3.bundle_id, v3.fingerprint, tenant_scope_fingerprint=TENANT_A
+            ),
+            "active": lambda: catalog.active(
+                v3.bundle_id, tenant_scope_fingerprint=TENANT_A
+            ),
+            "activate": lambda: catalog.activate(
+                v3.bundle_id, v3.model_version, tenant_scope_fingerprint=TENANT_A
+            ),
+            "reload": lambda: catalog.reload_active(),
+        }
+        for probe, expectation in self._active_expectation(fault).items():
+            if expectation is self._RAISE:
+                with pytest.raises(SemanticCatalogError):
+                    probes[probe]()
+            elif expectation is self._RELOAD:
+                report = probes[probe]()
+                assert report.active_bundles_revalidated == 0, probe
+                assert [issue.member_id for issue in report.rejected] == [
+                    v3.bundle_id
+                ], probe
+            elif expectation is self._NONE:
+                assert probes[probe]() is None, probe
+            else:
+                kind, code = expectation
+                outcome = probes[probe]()
+                assert outcome.kind == kind, probe
+                assert outcome.issue_codes() == [code], probe
+
+    @pytest.mark.parametrize("fault", _TARGET_FAULTS)
+    def test_fault_matrix_rollback_target_fails_closed(self, fault: str) -> None:
+        catalog, pool, _, _v1, v2, v3 = self._publish_matrix_fixture()
+        # The rollback target is the top history row's version (v2), one
+        # activation behind the active version (v3).
+        self._corrupt(catalog, pool, v2, fault)
+
+        expectation = self._target_expectation(fault)
+        if expectation is self._RAISE:
+            with pytest.raises(SemanticCatalogError):
+                catalog.rollback(v3.bundle_id, tenant_scope_fingerprint=TENANT_A)
+        else:
+            kind, code = expectation
+            outcome = catalog.rollback(
+                v3.bundle_id, tenant_scope_fingerprint=TENANT_A
+            )
+            assert outcome.kind == kind
+            assert outcome.issue_codes() == [code]
+        # A rejected rollback never moves the pointer off the active version.
+        assert catalog.active(
+            v3.bundle_id, tenant_scope_fingerprint=TENANT_A
+        ) == v3
+
+    def test_rollback_chain_maintains_history_continuity(self) -> None:
+        """Consecutive rollbacks stay continuous and re-enable rollback."""
+        catalog, _pool, _, _v1, _v2, v3 = self._publish_matrix_fixture()
+        outcome = catalog.rollback(v3.bundle_id, tenant_scope_fingerprint=TENANT_A)
+        assert outcome.kind == "rolled_back"
+        assert outcome.bundle.model_version == "2.0.0"
+        outcome = catalog.rollback(v3.bundle_id, tenant_scope_fingerprint=TENANT_A)
+        assert outcome.kind == "rolled_back"
+        assert outcome.bundle.model_version == "1.0.0"
+        assert (
+            catalog.rollback(v3.bundle_id, tenant_scope_fingerprint=TENANT_A).kind
+            == "no_history"
+        )
+        # A fresh activation rebuilds the continuity invariant so rollback
+        # works again after the history was fully consumed.
+        v4 = make_bundle_v2(
+            model_version="4.0.0", descriptor=make_descriptor(version=4)
+        )
+        assert (
+            catalog.publish(
+                v4,
+                idempotency_key="publish-matrix-v4",
+                tenant_scope_fingerprint=TENANT_A,
+            ).kind
+            == "published"
+        )
+        assert (
+            catalog.activate(
+                v4.bundle_id, v4.model_version, tenant_scope_fingerprint=TENANT_A
+            ).kind
+            == "activated"
+        )
+        outcome = catalog.rollback(v4.bundle_id, tenant_scope_fingerprint=TENANT_A)
+        assert outcome.kind == "rolled_back"
+        assert outcome.bundle.model_version == "1.0.0"
 
     def test_failure_after_evidence_insert_rolls_back_all_publication_rows(self) -> None:
         catalog, pool = make_postgres_catalog()
@@ -626,8 +1649,7 @@ class TestDurableAssemblyPublication:
             bundle,
             accepted_assertion_manifest=manifest,
             audit=audit,
-            draft=draft,
-            expected_revision=draft.draft_revision,
+            publication_binding=make_publication_binding(draft, TENANT_A),
             tenant_scope_fingerprint=TENANT_A,
         )
         persisted = str(
@@ -665,6 +1687,860 @@ def exercise_bundle_lifecycle(catalog: object) -> None:
     assert catalog.rollback("sales_model").kind == "rolled_back"  # type: ignore[attr-defined]
     assert catalog.active("sales_model") == v1  # type: ignore[attr-defined]
     assert catalog.versions("sales_model") == (v1, v2)  # type: ignore[attr-defined]
+
+
+class TestProductionActivationIntegrity:
+    """Production activation/rollback must revalidate immutable evidence."""
+
+    def _publish_production_verified(
+        self,
+        catalog: PostgreSQLSemanticCatalog,
+        draft: AssemblyDraft,
+        bundle: SemanticModelBundle,
+        *,
+        idempotency_key: str = "publish-production-v1",
+    ):
+        manifest = AcceptedAssertionManifest.from_draft(
+            draft, bundle_fingerprint=bundle.fingerprint
+        )
+        evidence = make_production_evidence(draft, bundle, manifest)
+        return catalog.publish(
+            bundle,
+            accepted_assertion_manifest=manifest,
+            verification_evidence=evidence,
+            audit=make_verified_audit(bundle, evidence, PRODUCTION_POLICY),
+            publication_binding=make_publication_binding(draft, TENANT_A),
+            idempotency_key=idempotency_key,
+            tenant_scope_fingerprint=TENANT_A,
+        )
+
+    @staticmethod
+    def _planned_draft() -> AssemblyDraft:
+        """An approved draft locked to a production verification plan."""
+        plan = VerificationPlan(policy_profile="production-v1")
+        return make_approved_draft(
+            verification_plan=plan,
+            approved_verification_plan_fingerprint=plan.fingerprint,
+        )
+
+    def test_production_activation_and_rollback_succeed_with_valid_evidence(
+        self,
+    ) -> None:
+        catalog, _ = make_postgres_catalog()
+        draft = self._planned_draft()
+        v1, production = make_production_fixture(version=1)
+        v2, _ = make_production_fixture(version=2)
+        catalog.create(draft, tenant_scope_fingerprint=TENANT_A)
+        assert self._publish_production_verified(catalog, draft, v1).kind == "published"
+        assert self._publish_production_verified(
+            catalog, draft, v2, idempotency_key="publish-production-v2"
+        ).kind == "published"
+
+        assert (
+            catalog.activate(
+                v1.bundle_id,
+                v1.model_version,
+                production=production,
+                tenant_scope_fingerprint=TENANT_A,
+            ).kind
+            == "activated"
+        )
+        assert (
+            catalog.activate(
+                v2.bundle_id,
+                v2.model_version,
+                production=production,
+                tenant_scope_fingerprint=TENANT_A,
+            ).kind
+            == "activated"
+        )
+        rolled = catalog.rollback(
+            v2.bundle_id,
+            production=production,
+            tenant_scope_fingerprint=TENANT_A,
+        )
+        assert rolled.kind == "rolled_back"
+        assert catalog.active(
+            v2.bundle_id, tenant_scope_fingerprint=TENANT_A
+        ) == v1
+
+    def test_production_activation_rejects_legacy_evidence_missing_frozen_binding(
+        self,
+    ) -> None:
+        catalog, pool = make_postgres_catalog()
+        draft = self._planned_draft()
+        bundle, production = make_production_fixture()
+        catalog.create(draft, tenant_scope_fingerprint=TENANT_A)
+        assert self._publish_production_verified(catalog, draft, bundle).kind == (
+            "published"
+        )
+
+        evidence = catalog.verification_evidence(
+            bundle.bundle_id, bundle.fingerprint, tenant_scope_fingerprint=TENANT_A
+        )
+        evidence_row = next(iter(pool.verification_evidence.values()))
+        evidence_payload = evidence.model_dump(mode="json")
+        evidence_row["envelope"] = encode_envelope(
+            ArtifactKind.VERIFICATION_SUITE_EVIDENCE,
+            evidence_payload,
+            sha256_fingerprint(evidence_payload),
+            max_envelope_bytes=catalog._config.max_envelope_bytes,  # noqa: SLF001
+            max_payload_bytes=catalog._config.max_payload_bytes,  # noqa: SLF001
+        )
+        audit = catalog.publish_audit(
+            bundle.bundle_id, bundle.fingerprint, tenant_scope_fingerprint=TENANT_A
+        )
+        legacy_audit = audit.model_copy(
+            update={
+                "verification": audit.verification.model_copy(
+                    update={"release_binding_fingerprint": None}
+                )
+            }
+        )
+        audit_row = next(iter(pool.publish_audits.values()))
+        audit_payload = legacy_audit.safe_payload()
+        audit_row["envelope"] = encode_envelope(
+            ArtifactKind.PUBLISH_AUDIT,
+            audit_payload,
+            sha256_fingerprint(audit_payload),
+            max_envelope_bytes=catalog._config.max_envelope_bytes,  # noqa: SLF001
+            max_payload_bytes=catalog._config.max_payload_bytes,  # noqa: SLF001
+        )
+
+        with pytest.raises(SemanticCatalogError) as rejected:
+            catalog.activate(
+                bundle.bundle_id,
+                bundle.model_version,
+                production=production,
+                tenant_scope_fingerprint=TENANT_A,
+            )
+        assert rejected.value.code is SemanticCatalogErrorCode.ENVELOPE_REJECTED
+        assert rejected.value.details["cause_type"] == (
+            "LegacyVerificationEvidenceMissingFrozenBinding"
+        )
+        assert (
+            catalog.active(bundle.bundle_id, tenant_scope_fingerprint=TENANT_A) is None
+        )
+
+    def test_production_rollback_rejects_tampered_evidence(self) -> None:
+        catalog, pool = make_postgres_catalog()
+        draft = self._planned_draft()
+        v1, production = make_production_fixture(version=1)
+        v2, _ = make_production_fixture(version=2)
+        catalog.create(draft, tenant_scope_fingerprint=TENANT_A)
+        assert self._publish_production_verified(catalog, draft, v1).kind == (
+            "published"
+        )
+        assert self._publish_production_verified(
+            catalog, draft, v2, idempotency_key="publish-production-v2"
+        ).kind == "published"
+        assert (
+            catalog.activate(
+                v1.bundle_id,
+                v1.model_version,
+                production=production,
+                tenant_scope_fingerprint=TENANT_A,
+            ).kind
+            == "activated"
+        )
+        assert (
+            catalog.activate(
+                v2.bundle_id,
+                v2.model_version,
+                production=production,
+                tenant_scope_fingerprint=TENANT_A,
+            ).kind
+            == "activated"
+        )
+
+        row = pool.verification_evidence[
+            (_namespace(TENANT_A), v1.bundle_id, v1.fingerprint)
+        ]
+        envelope = json.loads(row["envelope"])
+        payload = envelope["payload"]
+        payload["frozen_release_binding"]["approved_draft_revision"] = 999
+        row["envelope"] = encode_envelope(
+            ArtifactKind.VERIFICATION_SUITE_EVIDENCE,
+            payload,
+            sha256_fingerprint(payload),
+            max_envelope_bytes=catalog._config.max_envelope_bytes,  # noqa: SLF001
+            max_payload_bytes=catalog._config.max_payload_bytes,  # noqa: SLF001
+        )
+
+        with pytest.raises(SemanticCatalogError):
+            catalog.rollback(
+                v1.bundle_id,
+                production=production,
+                tenant_scope_fingerprint=TENANT_A,
+            )
+        assert catalog.active(
+            v1.bundle_id, tenant_scope_fingerprint=TENANT_A
+        ) == v2
+
+    def test_reload_active_rejects_active_publication_with_tampered_evidence(
+        self,
+    ) -> None:
+        catalog, pool = make_postgres_catalog()
+        draft = self._planned_draft()
+        bundle, _ = make_production_fixture()
+        catalog.create(draft, tenant_scope_fingerprint=TENANT_A)
+        assert self._publish_production_verified(catalog, draft, bundle).kind == (
+            "published"
+        )
+        assert (
+            catalog.activate(
+                bundle.bundle_id,
+                bundle.model_version,
+                tenant_scope_fingerprint=TENANT_A,
+            ).kind
+            == "activated"
+        )
+        assert catalog.reload_active().active_bundles_revalidated == 1
+
+        row = next(iter(pool.verification_evidence.values()))
+        envelope = json.loads(row["envelope"])
+        payload = envelope["payload"]
+        payload["frozen_release_binding"]["approved_draft_revision"] = 999
+        row["envelope"] = encode_envelope(
+            ArtifactKind.VERIFICATION_SUITE_EVIDENCE,
+            payload,
+            sha256_fingerprint(payload),
+            max_envelope_bytes=catalog._config.max_envelope_bytes,  # noqa: SLF001
+            max_payload_bytes=catalog._config.max_payload_bytes,  # noqa: SLF001
+        )
+
+        report = catalog.reload_active()
+        assert report.active_bundles_revalidated == 0
+        assert [issue.member_id for issue in report.rejected] == [bundle.bundle_id]
+
+    def test_publication_records_expose_frozen_release_binding(self) -> None:
+        catalog, _ = make_postgres_catalog()
+        draft = make_approved_draft()
+        bundle = make_bundle()
+        catalog.create(draft, tenant_scope_fingerprint=TENANT_A)
+        manifest = AcceptedAssertionManifest.from_draft(
+            draft, bundle_fingerprint=bundle.fingerprint
+        )
+        evidence = make_verification_evidence(draft, bundle, manifest)
+        assert catalog.publish(
+            bundle,
+            accepted_assertion_manifest=manifest,
+            verification_evidence=evidence,
+            audit=make_verified_audit(bundle, evidence),
+            publication_binding=make_publication_binding(draft, TENANT_A),
+            tenant_scope_fingerprint=TENANT_A,
+        ).kind == "published"
+
+        records = catalog.publication_records(
+            bundle.bundle_id, tenant_scope_fingerprint=TENANT_A
+        )
+        assert len(records) == 1
+        assert records[0].frozen_release_binding == (
+            FrozenReleaseBinding.from_evidence(evidence)
+        )
+
+    def test_publish_rejects_publication_aggregate_from_another_tenant_scope(
+        self,
+    ) -> None:
+        catalog, _ = make_postgres_catalog()
+        draft = make_approved_draft()
+        bundle = make_bundle()
+        manifest = AcceptedAssertionManifest.from_draft(
+            draft, bundle_fingerprint=bundle.fingerprint
+        )
+        evidence = make_verification_evidence(draft, bundle, manifest)
+        aggregate = PublicationAggregate(
+            bundle=bundle,
+            accepted_assertion_manifest=manifest,
+            audit=make_verified_audit(bundle, evidence),
+            verification_evidence=evidence,
+            frozen_release_binding=FrozenReleaseBinding.from_evidence(evidence),
+        )
+
+        outcome = catalog.publish(
+            bundle,
+            publication_aggregate=aggregate,
+            tenant_scope_fingerprint=TENANT_B,
+        )
+        assert outcome.kind == "rejected"
+        assert outcome.issue_codes() == ["publication_aggregate_mismatch"]
+        assert (
+            catalog.versions(bundle.bundle_id, tenant_scope_fingerprint=TENANT_B) == ()
+        )
+
+        assert catalog.publish(
+            bundle,
+            publication_aggregate=aggregate,
+            tenant_scope_fingerprint=TENANT_A,
+        ).kind == "published"
+
+    def test_in_memory_production_rollback_requires_evidence(self) -> None:
+        """The in-memory reference catalog keeps the same rollback guarantee."""
+        memory = InMemorySemanticBundleCatalog()
+        draft = self._planned_draft()
+        v1, production = make_production_fixture(version=1)
+        v2, _ = make_production_fixture(version=2)
+        manifest = AcceptedAssertionManifest.from_draft(
+            draft, bundle_fingerprint=v2.fingerprint
+        )
+        evidence = make_production_evidence(draft, v2, manifest)
+        assert memory.publish(
+            v1, tenant_scope_fingerprint=TENANT_A
+        ).kind == "published"
+        assert memory.publish(
+            v2,
+            accepted_assertion_manifest=manifest,
+            verification_evidence=evidence,
+            audit=make_verified_audit(v2, evidence, PRODUCTION_POLICY),
+            publication_binding=make_publication_binding(draft, TENANT_A),
+            tenant_scope_fingerprint=TENANT_A,
+        ).kind == "published"
+        assert memory.activate(
+            v1.bundle_id, v1.model_version, tenant_scope_fingerprint=TENANT_A
+        ).kind == "activated"
+        assert memory.activate(
+            v2.bundle_id,
+            v2.model_version,
+            production=production,
+            tenant_scope_fingerprint=TENANT_A,
+        ).kind == "activated"
+
+        rejected = memory.rollback(
+            v2.bundle_id,
+            production=production,
+            tenant_scope_fingerprint=TENANT_A,
+        )
+        assert rejected.kind == "rejected"
+        assert rejected.issue_codes() == ["verification_evidence_required"]
+        assert memory.active(
+            v2.bundle_id, tenant_scope_fingerprint=TENANT_A
+        ) == v2
+        # Without a production context the compatibility rollback path is
+        # preserved for publications that were never evidence-bound.
+        assert memory.rollback(
+            v2.bundle_id, tenant_scope_fingerprint=TENANT_A
+        ).kind == "rolled_back"
+
+    def test_in_memory_production_rollback_with_valid_evidence(self) -> None:
+        memory = InMemorySemanticBundleCatalog()
+        draft = self._planned_draft()
+        v1, production = make_production_fixture(version=1)
+        v2, _ = make_production_fixture(version=2)
+        for bundle in (v1, v2):
+            manifest = AcceptedAssertionManifest.from_draft(
+                draft, bundle_fingerprint=bundle.fingerprint
+            )
+            evidence = make_production_evidence(draft, bundle, manifest)
+            assert memory.publish(
+                bundle,
+                accepted_assertion_manifest=manifest,
+                verification_evidence=evidence,
+                audit=make_verified_audit(bundle, evidence, PRODUCTION_POLICY),
+                publication_binding=make_publication_binding(draft, TENANT_A),
+                tenant_scope_fingerprint=TENANT_A,
+            ).kind == "published"
+        assert memory.activate(
+            v1.bundle_id,
+            v1.model_version,
+            production=production,
+            tenant_scope_fingerprint=TENANT_A,
+        ).kind == "activated"
+        assert memory.activate(
+            v2.bundle_id,
+            v2.model_version,
+            production=production,
+            tenant_scope_fingerprint=TENANT_A,
+        ).kind == "activated"
+        assert memory.rollback(
+            v2.bundle_id,
+            production=production,
+            tenant_scope_fingerprint=TENANT_A,
+        ).kind == "rolled_back"
+        assert memory.active(
+            v2.bundle_id, tenant_scope_fingerprint=TENANT_A
+        ) == v1
+
+    def test_reload_active_rejects_active_publication_with_deleted_evidence(
+        self,
+    ) -> None:
+        catalog, pool = make_postgres_catalog()
+        draft = self._planned_draft()
+        bundle, production = make_production_fixture()
+        catalog.create(draft, tenant_scope_fingerprint=TENANT_A)
+        assert self._publish_production_verified(catalog, draft, bundle).kind == (
+            "published"
+        )
+        assert (
+            catalog.activate(
+                bundle.bundle_id,
+                bundle.model_version,
+                production=production,
+                tenant_scope_fingerprint=TENANT_A,
+            ).kind
+            == "activated"
+        )
+
+        pool.verification_evidence.clear()
+        report = catalog.reload_active()
+        assert report.active_bundles_revalidated == 0
+        assert [issue.member_id for issue in report.rejected] == [bundle.bundle_id]
+
+    def test_reload_active_rejects_active_publication_with_deleted_audit_and_evidence(
+        self,
+    ) -> None:
+        """The version row's audit_id witnesses an audit even after deletion."""
+        catalog, pool = make_postgres_catalog()
+        draft = self._planned_draft()
+        bundle, production = make_production_fixture()
+        catalog.create(draft, tenant_scope_fingerprint=TENANT_A)
+        assert self._publish_production_verified(catalog, draft, bundle).kind == (
+            "published"
+        )
+        assert (
+            catalog.activate(
+                bundle.bundle_id,
+                bundle.model_version,
+                production=production,
+                tenant_scope_fingerprint=TENANT_A,
+            ).kind
+            == "activated"
+        )
+
+        pool.publish_audits.clear()
+        pool.verification_evidence.clear()
+        report = catalog.reload_active()
+        assert report.active_bundles_revalidated == 0
+        assert [issue.member_id for issue in report.rejected] == [bundle.bundle_id]
+
+    def test_reload_active_rejects_active_publication_with_deleted_audit(
+        self,
+    ) -> None:
+        catalog, pool = make_postgres_catalog()
+        draft = self._planned_draft()
+        bundle, production = make_production_fixture()
+        catalog.create(draft, tenant_scope_fingerprint=TENANT_A)
+        assert self._publish_production_verified(catalog, draft, bundle).kind == (
+            "published"
+        )
+        assert (
+            catalog.activate(
+                bundle.bundle_id,
+                bundle.model_version,
+                production=production,
+                tenant_scope_fingerprint=TENANT_A,
+            ).kind
+            == "activated"
+        )
+
+        pool.publish_audits.clear()
+        report = catalog.reload_active()
+        assert report.active_bundles_revalidated == 0
+        assert [issue.member_id for issue in report.rejected] == [bundle.bundle_id]
+
+    def test_in_memory_publish_rejects_audit_with_mismatched_policy_fields(
+        self,
+    ) -> None:
+        """The in-memory catalog mirrors the PostgreSQL audit cross-links."""
+        memory = InMemorySemanticBundleCatalog()
+        draft = self._planned_draft()
+        bundle, _ = make_production_fixture()
+        manifest = AcceptedAssertionManifest.from_draft(
+            draft, bundle_fingerprint=bundle.fingerprint
+        )
+        evidence = make_production_evidence(draft, bundle, manifest)
+        base_audit = make_verified_audit(bundle, evidence, PRODUCTION_POLICY)
+        for field in (
+            "policy_version",
+            "policy_fingerprint",
+            "plan_fingerprint",
+            "runner_id",
+            "runner_version",
+        ):
+            verification = base_audit.verification.model_copy(
+                update={field: "tampered"}
+            )
+            audit = base_audit.model_copy(update={"verification": verification})
+            result = memory.publish(
+                bundle,
+                accepted_assertion_manifest=manifest,
+                verification_evidence=evidence,
+                audit=audit,
+                tenant_scope_fingerprint=TENANT_A,
+            )
+            assert result.kind == "rejected", field
+            assert result.issue_codes() == ["verification_audit_mismatch"], field
+
+    def test_in_memory_publish_rejects_evidence_without_matching_manifest(
+        self,
+    ) -> None:
+        memory = InMemorySemanticBundleCatalog()
+        draft = self._planned_draft()
+        bundle, _ = make_production_fixture()
+        manifest = AcceptedAssertionManifest.from_draft(
+            draft, bundle_fingerprint=bundle.fingerprint
+        )
+        evidence = make_production_evidence(draft, bundle, manifest)
+        tampered = evidence.model_copy(
+            update={"manifest_fingerprint": "sha256:" + "0" * 64}
+        )
+        result = memory.publish(
+            bundle,
+            accepted_assertion_manifest=manifest,
+            verification_evidence=tampered,
+            audit=make_verified_audit(bundle, tampered, PRODUCTION_POLICY),
+            tenant_scope_fingerprint=TENANT_A,
+        )
+        assert result.kind == "rejected"
+        assert result.issue_codes() == ["verification_manifest_mismatch"]
+        # Evidence without an accepted manifest is rejected just like on
+        # the PostgreSQL adapter.
+        result = memory.publish(
+            bundle,
+            verification_evidence=evidence,
+            audit=make_verified_audit(bundle, evidence, PRODUCTION_POLICY),
+            tenant_scope_fingerprint=TENANT_A,
+        )
+        assert result.kind == "rejected"
+        assert result.issue_codes() == ["verification_manifest_mismatch"]
+
+    def test_in_memory_publish_rejects_cross_tenant_evidence(self) -> None:
+        """Compatibility kwargs cannot publish another tenant's evidence."""
+        memory = InMemorySemanticBundleCatalog()
+        draft = make_approved_draft()
+        bundle = make_bundle()
+        manifest = AcceptedAssertionManifest.from_draft(
+            draft, bundle_fingerprint=bundle.fingerprint
+        )
+        evidence = make_verification_evidence(draft, bundle, manifest)
+        result = memory.publish(
+            bundle,
+            accepted_assertion_manifest=manifest,
+            verification_evidence=evidence,
+            audit=make_verified_audit(bundle, evidence),
+            tenant_scope_fingerprint=TENANT_B,
+        )
+        assert result.kind == "rejected"
+        assert result.issue_codes() == ["verification_evidence_mismatch"]
+
+    def test_in_memory_aggregate_publish_rejects_evidence_free_record(self) -> None:
+        """A verified aggregate never silently reuses an evidence-free record."""
+        memory = InMemorySemanticBundleCatalog()
+        draft = make_approved_draft()
+        bundle = make_bundle()
+        assert memory.publish(bundle, tenant_scope_fingerprint=TENANT_A).kind == (
+            "published"
+        )
+        manifest = AcceptedAssertionManifest.from_draft(
+            draft, bundle_fingerprint=bundle.fingerprint
+        )
+        evidence = make_verification_evidence(draft, bundle, manifest)
+        aggregate = PublicationAggregate(
+            bundle=bundle,
+            accepted_assertion_manifest=manifest,
+            verification_evidence=evidence,
+            audit=make_verified_audit(bundle, evidence),
+            frozen_release_binding=FrozenReleaseBinding.from_evidence(evidence),
+        )
+        result = memory.publish(
+            bundle,
+            publication_aggregate=aggregate,
+            tenant_scope_fingerprint=TENANT_A,
+        )
+        assert result.kind == "conflict"
+        assert result.issue_codes() == ["publication_state_conflict"]
+
+    def test_in_memory_publish_rejects_scoped_evidence_without_tenant_scope(
+        self,
+    ) -> None:
+        """Tenant-scoped evidence never enters the unscoped namespace."""
+        memory = InMemorySemanticBundleCatalog()
+        draft = make_approved_draft()
+        bundle = make_bundle()
+        manifest = AcceptedAssertionManifest.from_draft(
+            draft, bundle_fingerprint=bundle.fingerprint
+        )
+        evidence = make_verification_evidence(draft, bundle, manifest)
+        result = memory.publish(
+            bundle,
+            accepted_assertion_manifest=manifest,
+            verification_evidence=evidence,
+            audit=make_verified_audit(bundle, evidence),
+        )
+        assert result.kind == "rejected"
+        assert result.issue_codes() == ["verification_evidence_mismatch"]
+
+    def test_in_memory_rollback_rejects_retired_target(self) -> None:
+        """Plain rollback must not resurrect retired versions."""
+        memory = InMemorySemanticBundleCatalog()
+        v1 = make_bundle()
+        v2 = make_bundle_v2()
+        assert memory.publish(v1, tenant_scope_fingerprint=TENANT_A).kind == "published"
+        assert memory.publish(v2, tenant_scope_fingerprint=TENANT_A).kind == "published"
+        assert (
+            memory.activate(
+                v1.bundle_id, v1.model_version, tenant_scope_fingerprint=TENANT_A
+            ).kind
+            == "activated"
+        )
+        assert (
+            memory.activate(
+                v2.bundle_id, v2.model_version, tenant_scope_fingerprint=TENANT_A
+            ).kind
+            == "activated"
+        )
+        assert (
+            memory.set_version_state(
+                v1.bundle_id,
+                v1.fingerprint,
+                PublishedVersionState.RETIRED,
+                tenant_scope_fingerprint=TENANT_A,
+            ).kind
+            == "retired"
+        )
+        outcome = memory.rollback(v1.bundle_id, tenant_scope_fingerprint=TENANT_A)
+        assert outcome.kind == "rejected"
+        assert outcome.issue_codes() == ["bundle_retired"]
+        assert memory.active(v1.bundle_id, tenant_scope_fingerprint=TENANT_A) == v2
+
+    def test_in_memory_publish_rejects_contradictory_suite_summary(self) -> None:
+        """The audit summary must mirror the evidence, not contradict it."""
+        memory = InMemorySemanticBundleCatalog()
+        draft = self._planned_draft()
+        bundle, _ = make_production_fixture()
+        manifest = AcceptedAssertionManifest.from_draft(
+            draft, bundle_fingerprint=bundle.fingerprint
+        )
+        evidence = make_production_evidence(draft, bundle, manifest)
+        base_audit = make_verified_audit(bundle, evidence, PRODUCTION_POLICY)
+        for update in (
+            {"suite_version": 999},
+            {"layer_statuses": ("failed", "failed", "failed")},
+            {"layer_case_counts": (0, 0, 0)},
+            {"structural_valid": False},
+            {"manifest_equivalent": False},
+        ):
+            audit = base_audit.model_copy(
+                update={
+                    "verification": base_audit.verification.model_copy(update=update)
+                }
+            )
+            result = memory.publish(
+                bundle,
+                accepted_assertion_manifest=manifest,
+                verification_evidence=evidence,
+                audit=audit,
+                tenant_scope_fingerprint=TENANT_A,
+            )
+            assert result.kind == "rejected", update
+            assert result.issue_codes() == ["verification_audit_mismatch"], update
+
+    def test_production_publish_rejects_contradictory_suite_summary(self) -> None:
+        catalog, _ = make_postgres_catalog()
+        draft = self._planned_draft()
+        bundle, _ = make_production_fixture()
+        manifest = AcceptedAssertionManifest.from_draft(
+            draft, bundle_fingerprint=bundle.fingerprint
+        )
+        evidence = make_production_evidence(draft, bundle, manifest)
+        base_audit = make_verified_audit(bundle, evidence, PRODUCTION_POLICY)
+        catalog.create(draft, tenant_scope_fingerprint=TENANT_A)
+        for index, update in enumerate(
+            (
+                {"suite_version": 999},
+                {"layer_statuses": ("failed", "failed", "failed")},
+                {"layer_case_counts": (0, 0, 0)},
+                {"structural_valid": False},
+                {"manifest_equivalent": False},
+            )
+        ):
+            audit = base_audit.model_copy(
+                update={
+                    "verification": base_audit.verification.model_copy(update=update)
+                }
+            )
+            result = catalog.publish(
+                bundle,
+                accepted_assertion_manifest=manifest,
+                verification_evidence=evidence,
+                audit=audit,
+                publication_binding=make_publication_binding(draft, TENANT_A),
+                idempotency_key=f"publish-tampered-{index}",
+                tenant_scope_fingerprint=TENANT_A,
+            )
+            assert result.kind == "rejected", update
+            assert result.issue_codes() == ["verification_audit_mismatch"], update
+
+
+class TestRepositoryStateContracts:
+    """Repository-level state and atomicity contracts.
+
+    Exercises the extracted repositories directly over the catalog's
+    shared unit of work: conn-taking writes participate in an externally
+    owned transaction and roll back with it, rejected mutations never
+    change persisted state, and single-domain repositories keep exact
+    tenant scoping and revision compare-and-swap semantics.
+    """
+
+    @staticmethod
+    def _repositories(catalog: PostgreSQLSemanticCatalog):
+        uow = catalog._uow  # noqa: SLF001
+        evidence = EvidenceRepository(uow)
+        publications = PublicationRepository(uow, evidence)
+        activation = ActivationRepository(uow, evidence, publications)
+        drafts = DraftRepository(uow)
+        return uow, drafts, evidence, publications, activation
+
+    @staticmethod
+    def _verified_records(draft, bundle):
+        manifest = AcceptedAssertionManifest.from_draft(
+            draft, bundle_fingerprint=bundle.fingerprint
+        )
+        evidence = make_verification_evidence(draft, bundle, manifest)
+        return manifest, evidence, make_verified_audit(bundle, evidence)
+
+    def test_owner_transaction_rolls_back_all_repository_writes(self) -> None:
+        catalog, pool = make_postgres_catalog()
+        uow, drafts, evidence, publications, activation = self._repositories(catalog)
+        draft = make_approved_draft()
+        bundle = make_bundle()
+        catalog.create(draft, tenant_scope_fingerprint=TENANT_A)
+        manifest, ev, audit = self._verified_records(draft, bundle)
+        pool.fail_next(OperationalError("repository write failed"), after=9)
+        records = build_publication_records(
+            bundle,
+            accepted_assertion_manifest=manifest,
+            verification_evidence=ev,
+            audit=audit,
+        )
+        with pytest.raises(SemanticCatalogError), uow.transaction() as conn:
+            publications.publish(
+                conn,
+                bundle,
+                namespace=_namespace(TENANT_A),
+                now=uow.now(),
+                records=records,
+                publication_binding=make_publication_binding(draft, TENANT_A),
+                idempotency_key="publish-sales-v1",
+            )
+        assert pool.publications == {}
+        assert pool.accepted_manifests == {}
+        assert pool.verification_evidence == {}
+        assert pool.publish_audits == {}
+        assert pool.published_versions == {}
+
+    def test_repository_activation_rejection_preserves_pointer(self) -> None:
+        catalog, pool = make_postgres_catalog()
+        uow, drafts, evidence, publications, activation = self._repositories(catalog)
+        draft = make_approved_draft()
+        bundle = make_bundle()
+        catalog.create(draft, tenant_scope_fingerprint=TENANT_A)
+        manifest, ev, audit = self._verified_records(draft, bundle)
+        outcome = catalog.publish(
+            bundle,
+            accepted_assertion_manifest=manifest,
+            verification_evidence=ev,
+            audit=audit,
+            publication_binding=make_publication_binding(draft, TENANT_A),
+            idempotency_key="publish-sales-v1",
+            tenant_scope_fingerprint=TENANT_A,
+        )
+        assert outcome.kind == "published"
+        with uow.transaction() as conn:
+            rejected = activation.activate(
+                conn,
+                bundle.bundle_id,
+                "9.9.9",
+                namespace=_namespace(TENANT_A),
+                now=uow.now(),
+            )
+        assert rejected.kind == "not_found"
+        assert pool.bundle_pointers == {}
+        assert activation.active(
+            bundle.bundle_id, tenant_scope_fingerprint=TENANT_A
+        ) is None
+
+    def test_repository_rollback_restores_previous_active_version(self) -> None:
+        catalog, _ = make_postgres_catalog()
+        uow, drafts, evidence, publications, activation = self._repositories(catalog)
+        first_draft = make_approved_draft()
+        first = make_bundle()
+        catalog.create(first_draft, tenant_scope_fingerprint=TENANT_A)
+        manifest, ev, audit = self._verified_records(first_draft, first)
+        assert catalog.publish(
+            first,
+            accepted_assertion_manifest=manifest,
+            verification_evidence=ev,
+            audit=audit,
+            publication_binding=make_publication_binding(first_draft, TENANT_A),
+            idempotency_key="publish-sales-v1",
+            tenant_scope_fingerprint=TENANT_A,
+        ).kind == "published"
+        second_draft = make_approved_draft(draft_id="draft-sales-2")
+        second = make_bundle_v2()
+        catalog.create(second_draft, tenant_scope_fingerprint=TENANT_A)
+        manifest2, ev2, audit2 = self._verified_records(second_draft, second)
+        assert catalog.publish(
+            second,
+            accepted_assertion_manifest=manifest2,
+            verification_evidence=ev2,
+            audit=audit2,
+            publication_binding=make_publication_binding(second_draft, TENANT_A),
+            idempotency_key="publish-sales-v2",
+            tenant_scope_fingerprint=TENANT_A,
+        ).kind == "published"
+        namespace = _namespace(TENANT_A)
+        with uow.transaction() as conn:
+            assert activation.activate(
+                conn,
+                first.bundle_id,
+                first.model_version,
+                namespace=namespace,
+                now=uow.now(),
+            ).kind == "activated"
+            assert activation.activate(
+                conn,
+                second.bundle_id,
+                second.model_version,
+                namespace=namespace,
+                now=uow.now(),
+            ).kind == "activated"
+            assert activation.rollback(
+                conn,
+                second.bundle_id,
+                namespace=namespace,
+                now=uow.now(),
+            ).kind == "rolled_back"
+        assert activation.active(
+            first.bundle_id, tenant_scope_fingerprint=TENANT_A
+        ) == first
+        assert activation.versions(
+            first.bundle_id, tenant_scope_fingerprint=TENANT_A
+        ) == (first, second)
+
+    def test_repository_draft_revision_cas_and_tenant_isolation(self) -> None:
+        catalog, _ = make_postgres_catalog()
+        uow, drafts, evidence, publications, activation = self._repositories(catalog)
+        draft = make_draft()
+        drafts.create(draft, tenant_scope_fingerprint=TENANT_A)
+        updated = draft.mutate(expected_revision=0, model_version="1.1.0")
+        drafts.replace(
+            updated,
+            expected_revision=0,
+            tenant_scope_fingerprint=TENANT_A,
+        )
+        stale = draft.mutate(expected_revision=0, model_version="1.2.0")
+        with pytest.raises(DraftRevisionConflict):
+            drafts.replace(
+                stale,
+                expected_revision=0,
+                tenant_scope_fingerprint=TENANT_A,
+            )
+        assert drafts.get_draft(
+            draft.draft_id, tenant_scope_fingerprint=TENANT_A
+        ) == updated
+        assert drafts.get_draft(
+            draft.draft_id, tenant_scope_fingerprint=TENANT_B
+        ) is None
 
 
 class TestSharedBundleBehavior:

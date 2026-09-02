@@ -559,3 +559,34 @@ def test_authoritative_draft_mismatch_stops_before_emission() -> None:
     )
     assert outcome.issues[0].code == "draft_revision_conflict"
     assert emitter.calls == 0
+
+
+def test_historical_evidence_read_does_not_consult_current_draft_store() -> None:
+    approved = draft()
+    store = InMemoryAssemblyDraftStore()
+    store.create(approved, tenant_scope_fingerprint=TENANT_SCOPE)
+    catalog = InMemorySemanticBundleCatalog(draft_store=store)
+    outcome = publish(catalog, draft_value=approved)
+    assert outcome.bundle is not None
+    original = catalog.verification_evidence(
+        approved.bundle_id,
+        outcome.bundle.fingerprint,
+        tenant_scope_fingerprint=TENANT_SCOPE,
+    )
+    assert original is not None
+
+    reopened = approved.transition(
+        expected_revision=approved.draft_revision,
+        state=AssemblyState.REVIEW,
+    )
+    store.replace(
+        reopened,
+        expected_revision=approved.draft_revision,
+        tenant_scope_fingerprint=TENANT_SCOPE,
+    )
+
+    assert catalog.verification_evidence(
+        approved.bundle_id,
+        outcome.bundle.fingerprint,
+        tenant_scope_fingerprint=TENANT_SCOPE,
+    ) == original

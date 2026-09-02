@@ -1,0 +1,1 @@
+"""Internal semantic control-plane contracts and orchestration."""

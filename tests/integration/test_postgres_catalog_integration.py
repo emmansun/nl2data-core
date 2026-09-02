@@ -40,6 +40,10 @@ from nl2data_core.bundles import (
     SemanticSourceReference,
 )
 from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.control_plane.publication.contracts import (
+    FrozenReleaseBinding,
+    PublicationDraftBinding,
+)
 from nl2data_core.fixtures import PostgresFixtureProfile
 from nl2data_core.fixtures.models import FixtureUnavailableError
 from nl2data_core.metadata import (
@@ -241,6 +245,7 @@ def make_verified_publication(
         source_scope_fingerprint=sha256_fingerprint({"source_id": draft.source_id}),
     )
     reference = f"verification-{evidence.fingerprint.removeprefix('sha256:')[:24]}"
+    binding = FrozenReleaseBinding.from_evidence(evidence)
     verification = PublishVerificationSummary(
         structural_valid=True,
         manifest_equivalent=True,
@@ -255,9 +260,25 @@ def make_verified_publication(
         layer_case_counts=tuple(len(layer.cases) for layer in evidence.layers),
         evidence_fingerprint=evidence.fingerprint,
         evidence_reference=reference,
+        release_binding_fingerprint=binding.fingerprint,
     )
     return evidence, make_audit(bundle).model_copy(
         update={"verification": verification}
+    )
+
+
+def make_publication_binding(draft: AssemblyDraft) -> PublicationDraftBinding:
+    return PublicationDraftBinding(
+        draft_id=draft.draft_id,
+        draft_revision=draft.draft_revision,
+        draft_payload_fingerprint=sha256_fingerprint(draft.file_payload()),
+        approved_plan_fingerprint=(
+            draft.verification_plan.fingerprint
+            if draft.verification_plan is not None
+            else None
+        ),
+        tenant_scope_fingerprint=TENANT_A,
+        source_scope_fingerprint=sha256_fingerprint({"source_id": draft.source_id}),
     )
 
 
@@ -426,8 +447,7 @@ class TestRestartReload:
                 accepted_assertion_manifest=manifest,
                 verification_evidence=evidence,
                 audit=audit,
-                draft=draft,
-                expected_revision=draft.draft_revision,
+                publication_binding=make_publication_binding(draft),
                 idempotency_key="publish-sales-v1",
                 tenant_scope_fingerprint=TENANT_A,
             )
@@ -460,6 +480,9 @@ class TestRestartReload:
             )
             assert loaded_audit is not None
             assert loaded_audit.audit_id == audit.audit_id
+            assert loaded_audit.verification.release_binding_fingerprint == (
+                FrozenReleaseBinding.from_evidence(evidence).fingerprint
+            )
             assert catalog_b.verification_evidence(
                 bundle.bundle_id,
                 bundle.fingerprint,

@@ -5,12 +5,12 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from tests.unit.test_verification_execution import (
+from tests.support.verification import (
     StubVerificationExecutor,
-    _context,
-    _ir,
-    _semantic_case,
-    _smoke_case,
+    semantic_case,
+    semantic_ir,
+    smoke_case,
+    verification_context,
 )
 
 from nl2data_core.adapters.sql.execution import execute_sql
@@ -38,8 +38,8 @@ def _observation(rows: tuple[tuple[object, ...], ...]) -> VerificationObservatio
         status="succeeded",
         executor_id="stub-verification",
         executor_capability_fingerprint=scope,
-        bundle_fingerprint=_context().candidate.fingerprint,
-        ir_fingerprint=_ir().fingerprint,
+        bundle_fingerprint=verification_context().candidate.fingerprint,
+        ir_fingerprint=semantic_ir().fingerprint,
         fixture_setup_fingerprint=scope,
         selection_ids=("order", "amount"),
         rows=rows,
@@ -50,7 +50,7 @@ def _observation(rows: tuple[tuple[object, ...], ...]) -> VerificationObservatio
 async def _assert_shared_contracts(rows: tuple[tuple[object, ...], ...]) -> None:
     executor = StubVerificationExecutor(_observation(rows))
     smoke = await SmokeVerificationEvaluator(executor=executor).evaluate_case(
-        _smoke_case(
+        smoke_case(
             OutcomeAssertion(assertion_id="outcome", expected="success"),
             RowCountAssertion(assertion_id="rows", minimum=3, maximum=3),
             ScalarEqualsAssertion(
@@ -59,10 +59,10 @@ async def _assert_shared_contracts(rows: tuple[tuple[object, ...], ...]) -> None
                 expected=TaggedExpectedScalar(kind="int", value=18),
             ),
         ),
-        _context(),
+        verification_context(),
     )
     semantic = await SemanticContractEvaluator(executor=executor).evaluate_case(
-        _semantic_case(
+        semantic_case(
             RowCountEqualityContract(assertion_id="rows", expected=3),
             AggregateTotalContract(
                 assertion_id="total",
@@ -70,7 +70,7 @@ async def _assert_shared_contracts(rows: tuple[tuple[object, ...], ...]) -> None
                 expected=TaggedExpectedScalar(kind="decimal", value="510"),
             ),
         ),
-        _context(),
+        verification_context(),
     )
     assert smoke.status.value == "passed"
     assert semantic.status.value == "passed"

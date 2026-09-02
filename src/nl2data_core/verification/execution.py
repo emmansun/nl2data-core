@@ -12,7 +12,13 @@ from typing import Any, Protocol
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from nl2data_core.assembly.manifest import AcceptedAssertionManifest
-from nl2data_core.bundles import SemanticModelBundle
+
+# Import from the owning module, not the bundles package facade: the
+# facade re-exports bundles.catalog, which lazily imports verification.suite
+# for production evidence checks, and a facade import here would close an
+# import cycle caught by the architecture graph once relative imports are
+# resolved.
+from nl2data_core.bundles.models import SemanticModelBundle
 from nl2data_core.canonical import sha256_fingerprint
 from nl2data_core.evaluation.models import EvaluationRunContext
 from nl2data_core.evaluation.sqlite_executor import SqliteCaseExecutor

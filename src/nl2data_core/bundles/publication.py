@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from nl2data_core.bundles.models import SemanticModelBundle
 from nl2data_core.views.models import validate_safe_description
 
 _FINGERPRINT_PATTERN = r"^sha256:[0-9a-f]{64}$"
@@ -68,6 +70,9 @@ class PublishVerificationSummary(BaseModel):
     layer_case_counts: tuple[int, ...] = Field(default_factory=tuple, max_length=3)
     evidence_fingerprint: str | None = Field(default=None, pattern=_FINGERPRINT_PATTERN)
     evidence_reference: str | None = Field(default=None, pattern=_IDENTIFIER_PATTERN)
+    release_binding_fingerprint: str | None = Field(
+        default=None, pattern=_FINGERPRINT_PATTERN
+    )
 
     @field_validator("issue_codes")
     @classmethod
@@ -191,3 +196,76 @@ class PublishAuditRecord(BaseModel):
     def safe_payload(self) -> dict[str, object]:
         """Return bounded audit metadata with no assertion or binding payloads."""
         return self.model_dump(mode="json")
+
+
+class LifecycleWitnessError(ValueError):
+    """A lifecycle witness (pointer, version row, or history) is inconsistent."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+def witness_cause_type(code: str) -> str:
+    """CamelCase persisted-record cause type for a witness issue code."""
+    return "".join(part.capitalize() for part in code.split("_"))
+
+
+def validate_lifecycle_witness(
+    bundle: SemanticModelBundle,
+    *,
+    witness: Literal["pointer", "history"],
+    witness_fingerprint: str | None = None,
+    witness_model_version: str | None = None,
+    lifecycle_state: PublishedVersionState | None = None,
+    require_state: PublishedVersionState | None = None,
+    witness_position: int | None = None,
+    expected_position: int | None = None,
+) -> None:
+    """Check a lifecycle witness against the publication it activated.
+
+    Pointers, published-version rows, and rollback history each carry the
+    identity and version they activated as redundant witnesses; instead of
+    every activation entry point re-implementing the comparison, activate,
+    rollback, active reads, and reload validate through this function so
+    tampered witnesses fail closed with a stable issue code.  When
+    ``expected_position`` is supplied, the history witness must also sit
+    exactly at the pointer's activation sequence, so a deleted or
+    renumbered history row cannot silently skip rollback versions.
+    """
+    prefix = witness
+    if witness_model_version is not None and (
+        witness_model_version != bundle.model_version
+    ):
+        raise LifecycleWitnessError(
+            f"{prefix}_version_mismatch",
+            f"{prefix} version does not match its publication",
+        )
+    if witness_fingerprint is not None and witness_fingerprint != bundle.fingerprint:
+        raise LifecycleWitnessError(
+            f"{prefix}_fingerprint_mismatch",
+            f"{prefix} fingerprint does not match its publication",
+        )
+    if lifecycle_state is PublishedVersionState.RETIRED:
+        raise LifecycleWitnessError(
+            "bundle_retired",
+            "retired bundle versions cannot be activated or restored",
+        )
+    if require_state is not None and lifecycle_state is not require_state:
+        # A witness that points at a version row in another lifecycle
+        # state (for example a pointer onto a superseded row) is state
+        # drift between the lifecycle records, not a legacy shape.
+        raise LifecycleWitnessError(
+            f"{prefix}_state_mismatch",
+            f"{prefix} points at a version record in state "
+            f"'{lifecycle_state.value if lifecycle_state is not None else None}'",
+        )
+    if expected_position is not None and witness_position != expected_position:
+        # History rows are numbered by the activation that pushed them and
+        # always end exactly at the pointer's activation sequence; a top
+        # row at any other position means a row was deleted or renumbered.
+        raise LifecycleWitnessError(
+            f"{prefix}_discontinuity",
+            f"{prefix} history is not contiguous with the active pointer",
+        )
