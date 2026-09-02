@@ -29,6 +29,8 @@ _COMMAND_DTOS: tuple[type[BaseModel], ...] = (
     dtos.DraftRevisionCommand,
     dtos.VerifyDraftCommand,
     dtos.PublishDraftCommand,
+    dtos.LintAuthoringCommand,
+    dtos.LintDraftCommand,
     dtos.ReviewCommand,
     dtos.BundleLifecycleCommand,
     dtos.PaginationParams,
@@ -67,6 +69,8 @@ _RESULT_DTOS: tuple[type[BaseModel], ...] = (
     dtos.VerificationLayerSummary,
     dtos.VerificationEvidenceReference,
     dtos.DraftVerificationResult,
+    dtos.AdminLintDiagnostic,
+    dtos.LintResultDetail,
 )
 
 

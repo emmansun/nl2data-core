@@ -44,6 +44,13 @@ class AuthoringPath(_ResultModel):
         return path
 
 
+class AuthoringSourceMarkEntry(_ResultModel):
+    """One bounded source mark keyed by its authoring document path."""
+
+    path: AuthoringPath
+    mark: AuthoringSourceMark
+
+
 class AuthoringDiagnostic(_ResultModel):
     code: AuthoringDiagnosticCode
     severity: Literal["error"] = "error"
@@ -69,6 +76,10 @@ class _DiagnosticResult(_ResultModel):
 
 class AuthoringParseResult(_DiagnosticResult):
     model: SemanticAssemblyAuthoring | None = None
+    source_marks: tuple[AuthoringSourceMarkEntry, ...] = Field(
+        default_factory=tuple,
+        max_length=32_768,
+    )
 
     @property
     def loaded(self) -> bool:

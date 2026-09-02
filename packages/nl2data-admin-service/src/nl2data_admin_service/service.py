@@ -1,11 +1,4 @@
-"""Framework-neutral admin service compatibility facade.
-
-The public ``AdminService`` constructor, method signatures, capability
-listing, generated DTO schemas, and normalized error behavior are unchanged.
-Each method delegates to a focused capability service (metadata, authoring,
-assembly lifecycle, verification/publication, published Bundle lifecycle)
-that owns the domain orchestration for its capability area.
-"""
+"""Framework-neutral admin service compatibility facade delegating to capability services."""
 
 from __future__ import annotations
 
@@ -49,6 +42,9 @@ from .dtos import (
     DriftStatus,
     ImportAuthoringCommand,
     JobInfo,
+    LintAuthoringCommand,
+    LintDraftCommand,
+    LintResultDetail,
     PaginatedResult,
     PaginationParams,
     ProposalSetDetail,
@@ -62,29 +58,25 @@ from .dtos import (
     VerifyDraftCommand,
     VersionListResult,
 )
+from .lint_admin import LintAdminCapability
 from .metadata_admin import MetadataAdminCapability
 from .protocols import AdminServiceDependencies
 from .verification_admin import VerificationPublicationAdminCapability
 
 
 class AdminService:
-    """Transport-neutral admin service compatibility facade.
-
-    The service validates authorization and scope in the capability services,
-    delegates to injected discoverer/catalog/job runner ports, and returns
-    bounded DTOs.
-    """
+    """Transport-neutral admin service compatibility facade."""
 
     def __init__(self, dependencies: AdminServiceDependencies, config: AdminServiceConfig) -> None:
         self._deps = dependencies
         self._config = config
         self._assembly = AssemblyLifecycleAdminCapability(dependencies, config)
         self._authoring = AuthoringAdminCapability(dependencies, config, self._assembly)
+        self._lint = LintAdminCapability(dependencies, config, self._assembly)
         self._metadata = MetadataAdminCapability(dependencies, config)
         self._verification = VerificationPublicationAdminCapability(dependencies, config)
         self._bundles = PublishedBundleAdminCapability(dependencies, config)
 
-    # Test/diagnostic hooks preserved for existing package tests.
     def _require_draft_store(self) -> AssemblyDraftStore:
         return self._assembly._access.draft_store()
 
@@ -103,7 +95,7 @@ class AdminService:
 
     @_normalize_errors
     def capabilities(self) -> CapabilitiesResult:
-        """Return the versioned capability listing for the admin service."""
+        input_limit = min(self._config.max_body_size_bytes, MAX_AUTHORING_BYTES)
         return CapabilitiesResult(
             version=self._config.contract_version,
             capabilities=tuple(
@@ -122,22 +114,23 @@ class AdminService:
                         name="authoring validate",
                         permission=Permission.BUNDLE_VALIDATE,
                         supported_api_versions=(AUTHORING_API_VERSION,),
-                        maximum_input_size=min(
-                            self._config.max_body_size_bytes,
-                            MAX_AUTHORING_BYTES,
-                        ),
+                        maximum_input_size=input_limit,
+                    ),
+                    Capability(
+                        name="authoring lint",
+                        permission=Permission.BUNDLE_VALIDATE,
+                        supported_api_versions=(AUTHORING_API_VERSION,),
+                        maximum_input_size=input_limit,
                     ),
                     Capability(
                         name="authoring import",
                         permission=Permission.ASSEMBLY_WRITE,
                         lifecycle_role=LifecycleRole.AUTHOR.value,
                         supported_api_versions=(AUTHORING_API_VERSION,),
-                        maximum_input_size=min(
-                            self._config.max_body_size_bytes,
-                            MAX_AUTHORING_BYTES,
-                        ),
+                        maximum_input_size=input_limit,
                     ),
                     Capability(name="assembly review", permission=Permission.ASSEMBLY_REVIEW),
+                    Capability(name="assembly lint", permission=Permission.ASSEMBLY_READ),
                     Capability(name="assembly approve", permission=Permission.ASSEMBLY_APPROVE),
                     Capability(name="assembly verify", permission=Permission.ASSEMBLY_VERIFY),
                     Capability(name="assembly audit", permission=Permission.ASSEMBLY_AUDIT),
@@ -219,6 +212,16 @@ class AdminService:
         auth_context: AuthContext,
     ) -> AuthoringImportResult:
         return self._authoring.import_authoring(command, auth_context=auth_context)
+
+    def lint_authoring(
+        self, command: LintAuthoringCommand, *, auth_context: AuthContext
+    ) -> LintResultDetail:
+        return self._lint.lint_authoring(command, auth_context=auth_context)
+
+    def lint_draft(
+        self, draft_id: str, command: LintDraftCommand, *, auth_context: AuthContext
+    ) -> LintResultDetail:
+        return self._lint.lint_draft(draft_id, command, auth_context=auth_context)
 
     def create_draft(
         self,

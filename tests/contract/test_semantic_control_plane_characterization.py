@@ -289,6 +289,8 @@ def test_admin_public_method_signatures_are_stable() -> None:
         "get_verification_evidence": "(self, bundle_id: 'str', fingerprint: 'str', *, auth_context: 'AuthContext') -> 'VerificationEvidenceReference'",
         "import_authoring": "(self, command: 'ImportAuthoringCommand', *, auth_context: 'AuthContext') -> 'AuthoringImportResult'",
         "lifecycle_command": "(self, command: 'BundleLifecycleCommand', *, auth_context: 'AuthContext') -> 'BundleLifecycleResult'",
+        "lint_authoring": "(self, command: 'LintAuthoringCommand', *, auth_context: 'AuthContext') -> 'LintResultDetail'",
+        "lint_draft": "(self, draft_id: 'str', command: 'LintDraftCommand', *, auth_context: 'AuthContext') -> 'LintResultDetail'",
         "list_bundles": "(self, bundle_id: 'str', *, auth_context: 'AuthContext', pagination: 'PaginationParams | None' = None) -> 'PaginatedResult'",
         "list_published_versions": "(self, bundle_id: 'str', *, auth_context: 'AuthContext') -> 'VersionListResult'",
         "list_snapshots": "(self, *, auth_context: 'AuthContext', pagination: 'PaginationParams | None' = None) -> 'PaginatedResult'",
@@ -312,12 +314,15 @@ def test_admin_generated_dto_schema_is_stable() -> None:
         "BundleLifecycleCommand",
         "DraftRevisionCommand",
         "ImportAuthoringCommand",
+        "LintAuthoringCommand",
+        "LintDraftCommand",
         "PaginationParams",
         "PublishDraftCommand",
         "ReviewCommand",
         "VerifyDraftCommand",
     ]
     assert sorted(schema.results) == [
+        "AdminLintDiagnostic",
         "AdminResult",
         "AssemblyAssertionSummary",
         "AssemblyDraftDetail",
@@ -337,6 +342,7 @@ def test_admin_generated_dto_schema_is_stable() -> None:
         "DriftStatus",
         "ErrorDetail",
         "JobInfo",
+        "LintResultDetail",
         "PaginatedResult",
         "ProposalListItem",
         "ProposalSetDetail",
@@ -356,7 +362,7 @@ def test_admin_generated_dto_schema_is_stable() -> None:
         for name, model in {**schema.commands, **schema.results}.items()
     }
     assert _stable_json_hash(model_schemas) == (
-        "6eb200e5edf1db4e59393c8bf62f22814d3c6d5004c6d65ea026f172d1b75611"
+        "5dc90b4cde3c10f3b233ef920703b01693b17dabd726983a3cab0acaf252e545"
     )
 
 

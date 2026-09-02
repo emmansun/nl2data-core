@@ -332,7 +332,16 @@ cross_domain_import_budget:
   # Every new edge keeps the already-approved inward
   # semantic_catalog_postgres -> nl2data_core and bundles -> control_plane
   # directions; no new edge leaves the counted roots inward.
-  baseline: 367
+  # Ratcheted from 367 after the semantic assembly lint capability:
+  # nl2data_admin_service.lint_admin now imports nl2data_core.assembly.authoring
+  # (SemanticAssemblyAuthoringLoader, validate_authoring, MAX_AUTHORING_BYTES)
+  # and nl2data_core.assembly.lint (lint_authoring, lint_draft, LintProfileId,
+  # LintResult).  All nine edges follow the inward
+  # admin_adapter -> assembly_lifecycle direction already declared for the
+  # admin_adapter layer; the audit also confirmed the recorded high-water
+  # mark had drifted five edges above the live graph, so the new baseline
+  # records the exact current count.
+  baseline: 371
   max_new_imports: 0
 
 duplicate_detection:

@@ -7,6 +7,7 @@ from .diagnostics import (
     AuthoringParseResult,
     AuthoringPath,
     AuthoringSourceMark,
+    AuthoringSourceMarkEntry,
     AuthoringSummary,
     AuthoringValidationResult,
 )
@@ -51,6 +52,7 @@ __all__ = [
     "AuthoringRelationship",
     "AuthoringSource",
     "AuthoringSourceMark",
+    "AuthoringSourceMarkEntry",
     "AuthoringSourceReference",
     "AuthoringSpec",
     "AuthoringSummary",

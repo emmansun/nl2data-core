@@ -16,6 +16,7 @@ from .diagnostics import (
     AuthoringParseResult,
     AuthoringPath,
     AuthoringSourceMark,
+    AuthoringSourceMarkEntry,
 )
 from .models import (
     AUTHORING_API_VERSION,
@@ -437,4 +438,13 @@ class SemanticAssemblyAuthoringLoader:
                 issue_count=semantic.issue_count,
                 truncated=semantic.truncated,
             )
-        return AuthoringParseResult(model=model)
+        return AuthoringParseResult(
+            model=model,
+            source_marks=tuple(
+                AuthoringSourceMarkEntry(path=_path(path_parts), mark=mark)
+                for path_parts, mark in sorted(
+                    marks.items(),
+                    key=lambda item: _path(item[0]).render(),
+                )
+            ),
+        )

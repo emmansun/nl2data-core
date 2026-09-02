@@ -67,6 +67,7 @@ and security warnings, and they always link to the canonical English page.
 | [Capabilities and support](reference/capabilities.md) | [能力与支持 (简体中文)](reference/capabilities.zh-CN.md) — 完整翻译 |
 | [Compatibility](reference/compatibility.md) | [兼容性 (简体中文)](reference/compatibility.zh-CN.md) — 完整翻译 |
 | [Production readiness](reference/production-readiness.md) | English-first（暂无中文翻译，请阅读英文原文） |
+| [Semantic assembly lint reference](reference/semantic-assembly-lint.md) | English-first（暂无中文翻译，请阅读英文原文） |
 
 ## Reader paths
 

@@ -419,6 +419,58 @@ class DraftVerificationResult(BaseModel):
     verification: VerificationEvidenceReference
 
 
+class LintProfileSelection(StrEnum):
+    """Lint profile selection exposed to Admin callers."""
+
+    COMPATIBILITY = "compatibility"
+    RECOMMENDED = "recommended"
+    PRODUCTION = "production"
+
+
+class LintAuthoringCommand(AuthoringDocumentCommand):
+    """Side-effect-free authoring lint request with a profile selection."""
+
+    profile: LintProfileSelection = LintProfileSelection.RECOMMENDED
+
+
+class LintDraftCommand(DraftRevisionCommand):
+    """Revision-guarded, side-effect-free draft lint request."""
+
+    profile: LintProfileSelection = LintProfileSelection.RECOMMENDED
+
+
+class AdminLintDiagnostic(BaseModel):
+    """Safe bounded lint diagnostic without payloads or unrestricted values."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    code: str = Field(pattern=r"^SAL\d{3}$")
+    severity: str = Field(min_length=1, max_length=16)
+    path: str = Field(min_length=1, max_length=1_024)
+    line: int | None = Field(default=None, ge=1)
+    column: int | None = Field(default=None, ge=1)
+    message: str = Field(min_length=1, max_length=_MAX_REASON_CHARS)
+
+
+class LintResultDetail(BaseModel):
+    """Bounded side-effect-free lint result with counts and blocking status."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    profile: str = Field(min_length=1, max_length=32)
+    profile_version: int = Field(ge=1, le=1_000)
+    diagnostics: tuple[AdminLintDiagnostic, ...] = Field(
+        default_factory=tuple, max_length=100
+    )
+    diagnostic_count: int = Field(default=0, ge=0)
+    error_count: int = Field(default=0, ge=0)
+    warning_count: int = Field(default=0, ge=0)
+    info_count: int = Field(default=0, ge=0)
+    has_errors: bool = False
+    blocking: bool = False
+    truncated: bool = False
+
+
 class AssertionDecisionCommand(DraftRevisionCommand):
     """Approve, reject, or edit one assertion."""
 
