@@ -34,6 +34,7 @@ _COMMAND_DTOS: tuple[type[BaseModel], ...] = (
     dtos.ReviewCommand,
     dtos.BundleLifecycleCommand,
     dtos.PaginationParams,
+    dtos.AuditTrailQuery,
 )
 
 _RESULT_DTOS: tuple[type[BaseModel], ...] = (
@@ -71,6 +72,8 @@ _RESULT_DTOS: tuple[type[BaseModel], ...] = (
     dtos.DraftVerificationResult,
     dtos.AdminLintDiagnostic,
     dtos.LintResultDetail,
+    dtos.AuditEntryView,
+    dtos.AuditTrailPage,
 )
 
 

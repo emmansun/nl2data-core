@@ -10,6 +10,7 @@ cross-domain operations such as publication, activation, or rollback.
 from __future__ import annotations
 
 from .activation import ActivationRepository
+from .audit_evidence import AuditEvidenceRepository
 from .drafts import DraftRepository
 from .evidence import EvidenceRepository
 from .publications import PublicationRepository
@@ -17,6 +18,7 @@ from .snapshots import SnapshotRepository
 
 __all__ = [
     "ActivationRepository",
+    "AuditEvidenceRepository",
     "DraftRepository",
     "EvidenceRepository",
     "PublicationRepository",

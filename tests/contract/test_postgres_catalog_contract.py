@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import threading
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -23,8 +24,14 @@ from nl2data_core.assembly import (
     AcceptedAssertionManifest,
     AssemblyDraft,
     AssemblyState,
+    AuditEventKind,
     DeploymentBinding,
     DraftRevisionConflict,
+    PublicationAuditEvidence,
+)
+from nl2data_core.assembly.audit_evidence import (
+    activation_audit_entry,
+    verification_reference_audit_entry,
 )
 from nl2data_core.bundles import (
     AssertionProvenanceSummary,
@@ -92,6 +99,7 @@ from nl2data_semantic_catalog_postgres.fake_postgres import (
 )
 from nl2data_semantic_catalog_postgres.repositories import (
     ActivationRepository,
+    AuditEvidenceRepository,
     DraftRepository,
     EvidenceRepository,
     PublicationRepository,
@@ -319,6 +327,32 @@ def make_verified_audit(
         release_binding_fingerprint=binding.fingerprint,
     )
     return make_audit(bundle, verification=verification)
+
+
+def make_audit_evidence(
+    draft: AssemblyDraft,
+    bundle: SemanticModelBundle,
+    manifest: AcceptedAssertionManifest,
+    evidence: VerificationSuiteEvidence,
+    audit: PublishAuditRecord,
+) -> PublicationAuditEvidence:
+    """Publication audit evidence cross-linked to one verified aggregate."""
+    return PublicationAuditEvidence(
+        approved_draft_id=draft.draft_id,
+        approved_draft_revision=draft.draft_revision,
+        bundle_fingerprint=bundle.fingerprint,
+        manifest_fingerprint=sha256_fingerprint(manifest.canonical_payload()),
+        verification_evidence_fingerprint=evidence.fingerprint,
+        tenant_scope_fingerprint=evidence.tenant_scope_fingerprint,
+        source_scope_fingerprint=evidence.source_scope_fingerprint,
+        policy_profile=evidence.policy_profile,
+        policy_version=evidence.policy_version,
+        policy_fingerprint=evidence.policy_fingerprint,
+        separation_mode="strict",
+        separation_allowed=True,
+        separation_reason_code="authorized",
+        publish_audit_reference=audit.audit_id,
+    )
 
 
 def make_production_evidence(
@@ -2385,8 +2419,9 @@ class TestRepositoryStateContracts:
     def _repositories(catalog: PostgreSQLSemanticCatalog):
         uow = catalog._uow  # noqa: SLF001
         evidence = EvidenceRepository(uow)
-        publications = PublicationRepository(uow, evidence)
-        activation = ActivationRepository(uow, evidence, publications)
+        audit = AuditEvidenceRepository(uow)
+        publications = PublicationRepository(uow, evidence, audit)
+        activation = ActivationRepository(uow, evidence, publications, audit)
         drafts = DraftRepository(uow)
         return uow, drafts, evidence, publications, activation
 
@@ -2874,3 +2909,413 @@ class TestWorkflowStateSeparation:
         assert len(workflow_pool.states) == 1
         assert workflow_pool.idempotency == {}
         assert workflow_pool.leases == {}
+
+
+class TestAuditEvidencePersistence:
+    """Audit-evidence persistence over both catalog implementations.
+
+    Proves the publication binding and trail entries persist with
+    publications and pointer changes, reloads revalidate every envelope
+    fingerprint, tampered rows fail closed, scoped lookups stay bounded
+    and deterministic, and retention keeps the entries that active
+    publications and predecessor links still explain.
+    """
+
+    @staticmethod
+    def _aggregate(draft: AssemblyDraft, bundle: SemanticModelBundle):
+        """A verified publication aggregate carrying audit evidence."""
+        manifest = AcceptedAssertionManifest.from_draft(
+            draft, bundle_fingerprint=bundle.fingerprint
+        )
+        evidence = make_verification_evidence(draft, bundle, manifest)
+        audit = make_verified_audit(bundle, evidence)
+        return PublicationAggregate(
+            bundle=bundle,
+            accepted_assertion_manifest=manifest,
+            verification_evidence=evidence,
+            audit=audit,
+            frozen_release_binding=FrozenReleaseBinding.from_evidence(evidence),
+            audit_evidence=make_audit_evidence(
+                draft, bundle, manifest, evidence, audit
+            ),
+        )
+
+    def test_publish_persists_binding_and_publication_entry(self) -> None:
+        """Aggregate publish persists the release-readiness binding atomically."""
+        catalog, pool = make_postgres_catalog()
+        draft = make_approved_draft()
+        bundle = make_bundle()
+        aggregate = self._aggregate(draft, bundle)
+        assert catalog.publish(
+            bundle,
+            publication_aggregate=aggregate,
+            tenant_scope_fingerprint=TENANT_A,
+        ).kind == "published"
+        namespace = _namespace(TENANT_A)
+        assert list(pool.publication_audit_evidence) == [
+            (namespace, bundle.bundle_id, bundle.fingerprint)
+        ]
+        trail = catalog.audit_entries(tenant_scope_fingerprint=TENANT_A)
+        assert [entry.event_kind for entry in trail.entries] == [
+            AuditEventKind.PUBLICATION
+        ]
+        entry = trail.entries[0]
+        binding = aggregate.audit_evidence
+        assert entry.event_id == binding.publication_event_id()
+        assert entry.lifecycle_reference == aggregate.audit.audit_id
+        assert entry.subject_reference == aggregate.audit.audit_id
+        assert entry.draft_id == draft.draft_id
+        assert entry.draft_revision == draft.draft_revision
+        assert entry.bundle_fingerprint == bundle.fingerprint
+        assert entry.payload_bindings.manifest_fingerprint == (
+            binding.manifest_fingerprint
+        )
+        # The reloaded publication records carry the persisted binding.
+        records = catalog.publication_records(
+            bundle.bundle_id, tenant_scope_fingerprint=TENANT_A
+        )
+        assert records[0].audit_evidence.fingerprint == binding.fingerprint
+
+    def test_pointer_changes_record_activation_and_rollback_entries(self) -> None:
+        """Scoped activate/rollback entries link their publication evidence."""
+        catalog, pool = make_postgres_catalog()
+        draft = make_approved_draft()
+        v1 = make_bundle()
+        v2 = make_bundle_v2()
+        for bundle in (v1, v2):
+            assert catalog.publish(
+                bundle,
+                publication_aggregate=self._aggregate(draft, bundle),
+                tenant_scope_fingerprint=TENANT_A,
+            ).kind == "published"
+            pool.clock.advance(1.0)
+        assert (
+            catalog.activate(
+                v1.bundle_id,
+                "1.0.0",
+                tenant_scope_fingerprint=TENANT_A,
+                operator_audit_reference="operator-activate-1",
+            ).kind
+            == "activated"
+        )
+        pool.clock.advance(1.0)
+        assert (
+            catalog.activate(
+                v1.bundle_id,
+                "2.0.0",
+                tenant_scope_fingerprint=TENANT_A,
+                operator_audit_reference="operator-activate-2",
+            ).kind
+            == "activated"
+        )
+        pool.clock.advance(1.0)
+        assert (
+            catalog.rollback(
+                v1.bundle_id,
+                tenant_scope_fingerprint=TENANT_A,
+                operator_audit_reference="operator-rollback-1",
+            ).kind
+            == "rolled_back"
+        )
+        trail = catalog.audit_entries(tenant_scope_fingerprint=TENANT_A)
+        assert [entry.event_kind for entry in trail.entries] == [
+            AuditEventKind.PUBLICATION,
+            AuditEventKind.PUBLICATION,
+            AuditEventKind.ACTIVATION,
+            AuditEventKind.ACTIVATION,
+            AuditEventKind.ROLLBACK,
+        ]
+        publication_v1, publication_v2, activation_1, activation_2, roll = (
+            trail.entries
+        )
+        # Each activation links the publication entry of the activated
+        # version, and the second publication supersedes the first.
+        assert activation_1.predecessor_event_ids == (publication_v1.event_id,)
+        assert activation_2.predecessor_event_ids == (publication_v2.event_id,)
+        assert publication_v2.predecessor_event_ids == (publication_v1.event_id,)
+        assert activation_1.operator_audit_reference == "operator-activate-1"
+        assert activation_1.payload_bindings.resulting_active_fingerprint == (
+            v1.fingerprint
+        )
+        assert activation_1.payload_bindings.prior_active_fingerprint is None
+        assert activation_2.payload_bindings.prior_active_fingerprint == (
+            v1.fingerprint
+        )
+        # The rollback entry explains the target version, not the superseded
+        # one, and keeps both pointer endpoints visible.
+        assert roll.bundle_fingerprint == v1.fingerprint
+        assert roll.predecessor_event_ids == (publication_v1.event_id,)
+        assert roll.payload_bindings.prior_active_fingerprint == v2.fingerprint
+        assert roll.payload_bindings.resulting_active_fingerprint == v1.fingerprint
+        assert roll.operator_audit_reference == "operator-rollback-1"
+        # Subject-scoped filters stay bounded to their own fingerprint and
+        # publication reference.
+        scoped = catalog.audit_entries(
+            tenant_scope_fingerprint=TENANT_A,
+            bundle_fingerprint=v2.fingerprint,
+        )
+        assert scoped.total_count == 2
+        scoped = catalog.audit_entries(
+            tenant_scope_fingerprint=TENANT_A,
+            lifecycle_reference=publication_v1.lifecycle_reference,
+        )
+        # The publication, activation, and rollback entries of the first
+        # version all reference its publish audit.
+        assert scoped.total_count == 3
+
+    def test_unscoped_pointer_changes_record_no_entries(self) -> None:
+        """Legacy unscoped pointer changes are never fabricated evidence."""
+        catalog, _ = make_postgres_catalog()
+        bundle = make_bundle()
+        assert catalog.publish(bundle).kind == "published"
+        assert catalog.activate(bundle.bundle_id, "1.0.0").kind == "activated"
+        assert catalog.publish(make_bundle_v2()).kind == "published"
+        assert catalog.activate(bundle.bundle_id, "2.0.0").kind == "activated"
+        assert catalog.rollback(bundle.bundle_id).kind == "rolled_back"
+        assert catalog.audit_entries().total_count == 0
+
+    def test_record_audit_entries_validates_idempotently(self) -> None:
+        """Re-recording is idempotent; tampered or cross-scope writes fail."""
+        catalog, _ = make_postgres_catalog()
+        draft = make_approved_draft()
+        bundle = make_bundle()
+        assert catalog.publish(
+            bundle,
+            publication_aggregate=self._aggregate(draft, bundle),
+            tenant_scope_fingerprint=TENANT_A,
+        ).kind == "published"
+        assert (
+            catalog.activate(
+                bundle.bundle_id,
+                "1.0.0",
+                tenant_scope_fingerprint=TENANT_A,
+            ).kind
+            == "activated"
+        )
+        entry = catalog.audit_entries(tenant_scope_fingerprint=TENANT_A).entries[-1]
+        catalog.record_audit_entries([entry], tenant_scope_fingerprint=TENANT_A)
+        assert (
+            catalog.audit_entries(tenant_scope_fingerprint=TENANT_A).total_count == 2
+        )
+        with pytest.raises(ValueError):
+            catalog.record_audit_entries([entry], tenant_scope_fingerprint=TENANT_B)
+        with pytest.raises(ValueError):
+            catalog.record_audit_entries(
+                [entry.model_copy(update={"operator_audit_reference": "tampered"})],
+                tenant_scope_fingerprint=TENANT_A,
+            )
+        fresh = activation_audit_entry(
+            tenant_scope_fingerprint=TENANT_A,
+            source_scope_fingerprint=entry.source_scope_fingerprint,
+            event_id="activate-test-recording",
+            bundle_fingerprint=entry.bundle_fingerprint,
+            lifecycle_reference=entry.lifecycle_reference,
+            resulting_active_fingerprint=bundle.fingerprint,
+            occurred_at=datetime(2026, 1, 2, tzinfo=UTC),
+        )
+        catalog.record_audit_entries([fresh], tenant_scope_fingerprint=TENANT_A)
+        trail = catalog.audit_entries(tenant_scope_fingerprint=TENANT_A)
+        assert trail.total_count == 3
+        assert trail.entries[-1].event_id == "activate-test-recording"
+
+    def test_audit_trail_pagination_filters_and_bounds(self) -> None:
+        """Trail pages are deterministic, bounded, and cursor-continuable."""
+        catalog, _ = make_postgres_catalog()
+        base = datetime(2026, 1, 1, tzinfo=UTC)
+        entries = [
+            verification_reference_audit_entry(
+                tenant_scope_fingerprint=TENANT_A,
+                source_scope_fingerprint=TENANT_A,
+                event_id=f"verification-page-{index}",
+                draft_id="draft-sales",
+                draft_revision=3,
+                evidence_fingerprint="sha256:" + f"{index:064x}",
+                occurred_at=base + timedelta(minutes=index),
+            )
+            for index in range(5)
+        ]
+        catalog.record_audit_entries(entries, tenant_scope_fingerprint=TENANT_A)
+        page = catalog.audit_entries(tenant_scope_fingerprint=TENANT_A, limit=2)
+        assert page.total_count == 5
+        assert [entry.event_id for entry in page.entries] == [
+            "verification-page-0",
+            "verification-page-1",
+        ]
+        assert page.has_more
+        assert page.next_cursor == "verification-page-1"
+        middle = catalog.audit_entries(
+            tenant_scope_fingerprint=TENANT_A, limit=2, cursor=page.next_cursor
+        )
+        assert [entry.event_id for entry in middle.entries] == [
+            "verification-page-2",
+            "verification-page-3",
+        ]
+        last = catalog.audit_entries(
+            tenant_scope_fingerprint=TENANT_A, limit=2, cursor=middle.next_cursor
+        )
+        assert [entry.event_id for entry in last.entries] == ["verification-page-4"]
+        assert not last.has_more
+        assert last.next_cursor is None
+        # Unknown or pruned cursors restart from the beginning.
+        restarted = catalog.audit_entries(
+            tenant_scope_fingerprint=TENANT_A, limit=2, cursor="verification-missing"
+        )
+        assert restarted.total_count == 5
+        # Revision bounds only match entries carrying a revision.
+        assert (
+            catalog.audit_entries(
+                tenant_scope_fingerprint=TENANT_A, draft_revision_min=3
+            ).total_count
+            == 5
+        )
+        assert (
+            catalog.audit_entries(
+                tenant_scope_fingerprint=TENANT_A, draft_revision_max=2
+            ).total_count
+            == 0
+        )
+        # Other tenants never see another tenant's trail.
+        assert catalog.audit_entries(tenant_scope_fingerprint=TENANT_B).total_count == 0
+        with pytest.raises(ValueError):
+            catalog.audit_entries(tenant_scope_fingerprint=TENANT_A, limit=0)
+        with pytest.raises(ValueError):
+            catalog.audit_entries(tenant_scope_fingerprint=TENANT_A, limit=201)
+
+    def test_tampered_audit_envelopes_fail_closed(self) -> None:
+        """Persisted envelope tampering is rejected on every read path."""
+        catalog, pool = make_postgres_catalog()
+        draft = make_approved_draft()
+        bundle = make_bundle()
+        assert catalog.publish(
+            bundle,
+            publication_aggregate=self._aggregate(draft, bundle),
+            tenant_scope_fingerprint=TENANT_A,
+        ).kind == "published"
+        assert (
+            catalog.activate(
+                bundle.bundle_id,
+                "1.0.0",
+                tenant_scope_fingerprint=TENANT_A,
+            ).kind
+            == "activated"
+        )
+        namespace = _namespace(TENANT_A)
+        # A tampered publication binding never reloads as publication records.
+        binding_row = pool.publication_audit_evidence[
+            (namespace, bundle.bundle_id, bundle.fingerprint)
+        ]
+        binding_envelope = json.loads(binding_row["envelope"])
+        binding_envelope["payload"]["publication_audit_evidence"][
+            "policy_profile"
+        ] = "tampered-policy"
+        binding_row["envelope"] = json.dumps(binding_envelope)
+        with pytest.raises(SemanticCatalogError):
+            catalog.publication_records(
+                bundle.bundle_id, tenant_scope_fingerprint=TENANT_A
+            )
+        # A tampered trail entry envelope fails the whole bounded page.
+        target = catalog.audit_entries(tenant_scope_fingerprint=TENANT_A).entries[-1]
+        entry_row = pool.audit_entries[(namespace, target.event_id)]
+        entry_envelope = json.loads(entry_row["envelope"])
+        entry_envelope["payload"]["operator_audit_reference"] = "tampered"
+        entry_row["envelope"] = json.dumps(entry_envelope)
+        with pytest.raises(SemanticCatalogError):
+            catalog.audit_entries(tenant_scope_fingerprint=TENANT_A)
+
+    def test_cleanup_protects_required_audit_entries(self) -> None:
+        """Retention prunes retired trail entries but keeps explained ones."""
+        catalog, pool = make_postgres_catalog()
+        draft = make_approved_draft()
+        v1 = make_bundle()
+        v2 = make_bundle_v2()
+        for bundle in (v1, v2):
+            assert catalog.publish(
+                bundle,
+                publication_aggregate=self._aggregate(draft, bundle),
+                tenant_scope_fingerprint=TENANT_A,
+            ).kind == "published"
+            pool.clock.advance(1.0)
+        assert (
+            catalog.activate(
+                v1.bundle_id, "1.0.0", tenant_scope_fingerprint=TENANT_A
+            ).kind
+            == "activated"
+        )
+        pool.clock.advance(1.0)
+        assert (
+            catalog.activate(
+                v1.bundle_id, "2.0.0", tenant_scope_fingerprint=TENANT_A
+            ).kind
+            == "activated"
+        )
+        pool.clock.advance(1.0)
+        assert (
+            catalog.set_version_state(
+                v1.bundle_id,
+                v1.fingerprint,
+                PublishedVersionState.RETIRED,
+                tenant_scope_fingerprint=TENANT_A,
+            ).kind
+            == "retired"
+        )
+        before = catalog.audit_entries(tenant_scope_fingerprint=TENANT_A)
+        assert before.total_count == 4
+        catalog.cleanup(now=pool.clock.now() + timedelta(seconds=605_000))
+        after = catalog.audit_entries(tenant_scope_fingerprint=TENANT_A)
+        event_ids = {entry.event_id for entry in after.entries}
+        publication_v1, _publication_v2, _activation_1, _activation_2 = before.entries
+        # The retired version's activation entry is pruned, but its
+        # publication entry survives: the retained successor publication
+        # still references it as a predecessor.
+        assert _activation_1.event_id not in event_ids
+        assert publication_v1.event_id in event_ids
+        assert len(event_ids) == 3
+
+    def test_in_memory_audit_evidence_flow(self) -> None:
+        """The in-memory reference catalog keeps the same observable trail."""
+        memory = InMemorySemanticBundleCatalog()
+        draft = make_approved_draft()
+        bundle = make_bundle()
+        aggregate = self._aggregate(draft, bundle)
+        assert memory.publish(
+            bundle,
+            publication_aggregate=aggregate,
+            tenant_scope_fingerprint=TENANT_A,
+        ).kind == "published"
+        trail = memory.audit_entries(tenant_scope_fingerprint=TENANT_A)
+        assert [entry.event_kind for entry in trail.entries] == [
+            AuditEventKind.PUBLICATION
+        ]
+        assert trail.entries[0].event_id == aggregate.audit_evidence.publication_event_id()
+        assert (
+            memory.activate(
+                bundle.bundle_id,
+                "1.0.0",
+                tenant_scope_fingerprint=TENANT_A,
+                operator_audit_reference="operator-1",
+            ).kind
+            == "activated"
+        )
+        trail = memory.audit_entries(tenant_scope_fingerprint=TENANT_A)
+        assert [entry.event_kind for entry in trail.entries] == [
+            AuditEventKind.PUBLICATION,
+            AuditEventKind.ACTIVATION,
+        ]
+        assert trail.entries[1].predecessor_event_ids == (trail.entries[0].event_id,)
+        assert trail.entries[1].operator_audit_reference == "operator-1"
+        # Unscoped legacy pointer changes stay unrecorded.
+        legacy = make_bundle_v2()
+        assert memory.publish(legacy).kind == "published"
+        assert memory.activate(legacy.bundle_id, "2.0.0").kind == "activated"
+        assert memory.audit_entries().total_count == 2
+        assert memory.audit_entries(tenant_scope_fingerprint=TENANT_B).total_count == 0
+        entry = trail.entries[0]
+        with pytest.raises(ValueError):
+            memory.record_audit_entries([entry], tenant_scope_fingerprint=TENANT_B)
+        with pytest.raises(ValueError):
+            memory.record_audit_entries(
+                [entry.model_copy(update={"operator_audit_reference": "tampered"})],
+                tenant_scope_fingerprint=TENANT_A,
+            )
+        memory.record_audit_entries([entry], tenant_scope_fingerprint=TENANT_A)
+        assert memory.audit_entries(tenant_scope_fingerprint=TENANT_A).total_count == 2

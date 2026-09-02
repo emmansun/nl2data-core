@@ -15,6 +15,10 @@ from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from typing import Any
 
+from nl2data_core.assembly.audit_evidence import (
+    AssemblyAuditEvidenceEntry,
+    PublicationAuditEvidence,
+)
 from nl2data_core.assembly.manifest import AcceptedAssertionManifest
 from nl2data_core.assembly.models import AssemblyDraft, DraftRevisionConflict
 from nl2data_core.bundles.models import BUNDLE_SCHEMA_VERSION, SemanticModelBundle
@@ -446,6 +450,88 @@ class CatalogUnitOfWork:
             "frozen_release_binding": binding.canonical_payload(),
             "frozen_release_binding_fingerprint": binding.fingerprint,
         }
+
+    def publication_audit_evidence_payload(
+        self, binding: PublicationAuditEvidence
+    ) -> dict[str, Any]:
+        """Canonical envelope payload for one publication audit-evidence row."""
+        return {
+            "publication_audit_evidence": binding.canonical_payload(),
+            "publication_audit_evidence_fingerprint": binding.fingerprint,
+        }
+
+    def publication_audit_evidence_from_envelope(
+        self, envelope: CatalogEnvelope
+    ) -> PublicationAuditEvidence:
+        try:
+            binding = PublicationAuditEvidence.model_validate(
+                envelope.payload["publication_audit_evidence"]
+            )
+        except (KeyError, ValidationError) as error:
+            raise SemanticCatalogError(
+                SemanticCatalogErrorCode.ENVELOPE_REJECTED,
+                "persisted publication audit evidence failed reconstruction",
+                details={"cause_type": "ValidationError"},
+                cause=error,
+            ) from error
+        if binding.fingerprint != envelope.payload.get(
+            "publication_audit_evidence_fingerprint"
+        ):
+            raise SemanticCatalogError(
+                SemanticCatalogErrorCode.ENVELOPE_REJECTED,
+                "persisted publication audit evidence fingerprint does not "
+                "match envelope",
+                details={"cause_type": "PublicationAuditEvidenceMismatch"},
+            )
+        return binding
+
+    def audit_entry_from_envelope(
+        self,
+        envelope: CatalogEnvelope,
+        *,
+        occurred_at: Any = None,
+        entry_fingerprint: Any = None,
+    ) -> AssemblyAuditEvidenceEntry:
+        """Reconstruct one audit-evidence entry, restoring occurred_at.
+
+        The canonical envelope payload excludes the presentation
+        ``occurred_at`` timestamp (fingerprint stability), so the row's
+        column is applied after reconstruction; the entry fingerprint is
+        recomputed by the model and must agree with the envelope witness.
+        When the row's independent ``entry_fingerprint`` column witness is
+        supplied, it must agree too: a swapped envelope would otherwise
+        verify against its own fingerprint while silently replacing the
+        recorded entry.
+        """
+        try:
+            entry = AssemblyAuditEvidenceEntry(**envelope.payload)
+        except ValidationError as error:
+            raise SemanticCatalogError(
+                SemanticCatalogErrorCode.ENVELOPE_REJECTED,
+                "persisted audit-evidence entry failed reconstruction",
+                details={"cause_type": "ValidationError"},
+                cause=error,
+            ) from error
+        if entry.fingerprint != envelope.fingerprint:
+            raise SemanticCatalogError(
+                SemanticCatalogErrorCode.FINGERPRINT_MISMATCH,
+                "persisted audit-evidence entry fingerprint does not match "
+                "its envelope",
+                details={"cause_type": "AuditEvidenceFingerprintMismatch"},
+            )
+        if (
+            entry_fingerprint is not None
+            and entry.fingerprint != entry_fingerprint
+        ):
+            raise SemanticCatalogError(
+                SemanticCatalogErrorCode.FINGERPRINT_MISMATCH,
+                "persisted audit-evidence entry fingerprint does not match "
+                "its row witness",
+                details={"cause_type": "AuditEvidenceRowWitnessMismatch"},
+            )
+        if occurred_at is not None:
+            entry = entry.model_copy(update={"occurred_at": _parse_dt(occurred_at)})
+        return entry
 
     def bundle_from_envelope(self, envelope: CatalogEnvelope) -> SemanticModelBundle:
         try:

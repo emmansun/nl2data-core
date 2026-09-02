@@ -5,8 +5,10 @@ from __future__ import annotations
 from typing import Any, Protocol, runtime_checkable
 
 from nl2data_core.assembly import (
+    MAX_TRAIL_ENTRIES,
     AssemblyDraft,
     AssemblyDraftStore,
+    AuditTrail,
     LifecycleAuthorizer,
     SeparationOfDutiesMode,
 )
@@ -221,6 +223,21 @@ class PublishedLookupPort(Protocol):
         *,
         tenant_scope_fingerprint: str | None = None,
     ) -> tuple[BundlePublication, ...]: ...
+
+    def audit_entries(
+        self,
+        *,
+        tenant_scope_fingerprint: str | None = None,
+        draft_id: str | None = None,
+        draft_revision_min: int | None = None,
+        draft_revision_max: int | None = None,
+        assertion_id: str | None = None,
+        bundle_fingerprint: str | None = None,
+        lifecycle_reference: str | None = None,
+        predecessor_event_id: str | None = None,
+        limit: int = MAX_TRAIL_ENTRIES,
+        cursor: str | None = None,
+    ) -> AuditTrail: ...
 
 
 @runtime_checkable

@@ -288,6 +288,7 @@ def test_admin_public_method_signatures_are_stable() -> None:
         "get_snapshot": "(self, snapshot_fingerprint: 'str', *, auth_context: 'AuthContext') -> 'SnapshotDetail'",
         "get_verification_evidence": "(self, bundle_id: 'str', fingerprint: 'str', *, auth_context: 'AuthContext') -> 'VerificationEvidenceReference'",
         "import_authoring": "(self, command: 'ImportAuthoringCommand', *, auth_context: 'AuthContext') -> 'AuthoringImportResult'",
+        "inspect_audit_trail": "(self, query: 'AuditTrailQuery', *, auth_context: 'AuthContext') -> 'AuditTrailPage'",
         "lifecycle_command": "(self, command: 'BundleLifecycleCommand', *, auth_context: 'AuthContext') -> 'BundleLifecycleResult'",
         "lint_authoring": "(self, command: 'LintAuthoringCommand', *, auth_context: 'AuthContext') -> 'LintResultDetail'",
         "lint_draft": "(self, draft_id: 'str', command: 'LintDraftCommand', *, auth_context: 'AuthContext') -> 'LintResultDetail'",
@@ -310,6 +311,7 @@ def test_admin_generated_dto_schema_is_stable() -> None:
     schema = build_schema("v1")
     assert sorted(schema.commands) == [
         "AssertionDecisionCommand",
+        "AuditTrailQuery",
         "AuthoringDocumentCommand",
         "BundleLifecycleCommand",
         "DraftRevisionCommand",
@@ -327,6 +329,8 @@ def test_admin_generated_dto_schema_is_stable() -> None:
         "AssemblyAssertionSummary",
         "AssemblyDraftDetail",
         "AssemblyDraftSummary",
+        "AuditEntryView",
+        "AuditTrailPage",
         "AuthoringDiagnosticDetail",
         "AuthoringImportResult",
         "AuthoringSemanticSummary",
@@ -362,7 +366,7 @@ def test_admin_generated_dto_schema_is_stable() -> None:
         for name, model in {**schema.commands, **schema.results}.items()
     }
     assert _stable_json_hash(model_schemas) == (
-        "5dc90b4cde3c10f3b233ef920703b01693b17dabd726983a3cab0acaf252e545"
+        "ff7751831f0ead7aefe3000da902419a36b7a7d049b980374486eb595a859301"
     )
 
 

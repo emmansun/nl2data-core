@@ -38,6 +38,8 @@ _TABLE_ATTRS: dict[str, str] = {
     "bundle_pointers": "bundle_pointers",
     "bundle_history": "bundle_history",
     "events": "events",
+    "publication_audit_evidence": "publication_audit_evidence",
+    "audit_entries": "audit_entries",
 }
 
 

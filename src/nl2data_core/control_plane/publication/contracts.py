@@ -6,6 +6,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, SkipValidation, model_validator
 
+from nl2data_core.assembly.audit_evidence import PublicationAuditEvidence
 from nl2data_core.assembly.authorization import LifecycleAuthorizationContext
 from nl2data_core.assembly.manifest import AcceptedAssertionManifest
 from nl2data_core.assembly.models import AssemblyDraft
@@ -216,6 +217,9 @@ class PublicationContext(BaseModel):
     verification_policy: Any | None = None
     verification_context: Any | None = None
     verification_evidence: VerificationSuiteEvidence | None = None
+    #: Optional host-supplied lint readiness reference.  Recorded as release
+    #: readiness evidence only; lint is never a publication authority.
+    lint_reference: str | None = Field(default=None, pattern=IDENTIFIER_PATTERN)
 
 
 class PublicationGateResult(BaseModel):
@@ -277,6 +281,7 @@ class PublicationRecordSet(BaseModel):
     audit: PublishAuditRecord | None = None
     verification_evidence: VerificationSuiteEvidence | None = None
     frozen_release_binding: FrozenReleaseBinding | None = None
+    audit_evidence: PublicationAuditEvidence | None = None
 
     @classmethod
     def from_aggregate(cls, aggregate: PublicationAggregate) -> PublicationRecordSet:
@@ -288,7 +293,31 @@ class PublicationRecordSet(BaseModel):
             audit=aggregate.audit,
             verification_evidence=aggregate.verification_evidence,
             frozen_release_binding=aggregate.frozen_release_binding,
+            audit_evidence=aggregate.audit_evidence,
         )
+
+
+def publication_audit_evidence_classification(
+    records: PublicationRecordSet,
+) -> str:
+    """Explicitly classify the audit-evidence completeness of publication records.
+
+    Returns ``"complete"`` when publication audit evidence is present and
+    cross-links to the verified records, ``"legacy"`` when a fully verified
+    publication predates audit-evidence bindings, and ``"incomplete"`` for
+    partial legacy records.  Missing evidence is never fabricated: callers
+    must treat non-``complete`` publications as legacy-compatible history
+    rather than production-valid release evidence.
+    """
+    if records.audit_evidence is not None:
+        return "complete"
+    if (
+        records.verification_evidence is not None
+        and records.frozen_release_binding is not None
+        and records.audit is not None
+    ):
+        return "legacy"
+    return "incomplete"
 
 
 def validate_publication_integrity(records: PublicationRecordSet) -> None:
@@ -320,6 +349,21 @@ def validate_publication_integrity(records: PublicationRecordSet) -> None:
         raise PublicationIntegrityError(
             "audit_mismatch",
             "publish audit does not match the published bundle",
+        )
+    # Publication audit evidence must agree with the audit and verification
+    # evidence it binds before any other rule runs: a record set carrying
+    # release-readiness evidence without the records it explains fails
+    # closed instead of degrading into a legacy publication.
+    audit_evidence = records.audit_evidence
+    if audit_evidence is not None and (
+        audit_evidence.bundle_fingerprint != bundle_fingerprint
+        or audit is None
+        or audit_evidence.publish_audit_reference != audit.audit_id
+        or evidence is None
+    ):
+        raise PublicationIntegrityError(
+            "publication_audit_evidence_mismatch",
+            "publication audit evidence does not match the publication records",
         )
     if evidence is None:
         # An audit that claims verification evidence without carrying it
@@ -391,6 +435,32 @@ def validate_publication_integrity(records: PublicationRecordSet) -> None:
         raise PublicationIntegrityError(
             "verification_binding_audit_mismatch",
             "publish audit does not match frozen release binding",
+        )
+    # Every immutable identity the publication audit evidence binds is
+    # re-checked here so durable reads (reuse, activation, rollback,
+    # reload) reject tampered evidence with the same stable issue code
+    # as the publication-time aggregate validation.
+    if audit_evidence is not None and (
+        manifest is None
+        or audit_evidence.manifest_fingerprint
+        != sha256_fingerprint(manifest.canonical_payload())
+        or audit_evidence.verification_evidence_fingerprint
+        != evidence.fingerprint
+        or audit_evidence.approved_draft_id != evidence.draft_id
+        or audit_evidence.approved_draft_revision != evidence.draft_revision
+        or audit_evidence.approved_plan_fingerprint
+        != audit.verification.plan_fingerprint
+        or audit_evidence.policy_profile != evidence.policy_profile
+        or audit_evidence.policy_version != evidence.policy_version
+        or audit_evidence.policy_fingerprint != evidence.policy_fingerprint
+        or audit_evidence.tenant_scope_fingerprint
+        != evidence.tenant_scope_fingerprint
+        or audit_evidence.source_scope_fingerprint
+        != evidence.source_scope_fingerprint
+    ):
+        raise PublicationIntegrityError(
+            "publication_audit_evidence_mismatch",
+            "publication audit evidence does not match the publication records",
         )
 
 
@@ -471,6 +541,7 @@ class PublicationAggregate(BaseModel):
     audit: PublishAuditRecord
     verification_evidence: VerificationSuiteEvidence
     frozen_release_binding: FrozenReleaseBinding
+    audit_evidence: PublicationAuditEvidence | None = None
 
     @model_validator(mode="after")
     def _validate_cross_links(self) -> PublicationAggregate:
@@ -508,4 +579,34 @@ class PublicationAggregate(BaseModel):
             or not self.audit.verification.manifest_equivalent
         ):
             raise ValueError("publish audit verification summary does not match aggregate")
+        if self.audit_evidence is not None:
+            # Publication audit evidence fails closed: a binding that
+            # disagrees with any immutable aggregate identity must abort
+            # publication before catalog persistence, exposing no partial
+            # Bundle, audit, evidence, or supersession record.
+            binding = self.audit_evidence
+            if (
+                binding.bundle_fingerprint != self.bundle.fingerprint
+                or binding.manifest_fingerprint != manifest_fingerprint
+                or binding.verification_evidence_fingerprint
+                != self.verification_evidence.fingerprint
+                or binding.approved_draft_id != self.frozen_release_binding.approved_draft_id
+                or binding.approved_draft_revision
+                != self.frozen_release_binding.approved_draft_revision
+                or binding.approved_plan_fingerprint
+                != self.frozen_release_binding.approved_plan_fingerprint
+                or binding.tenant_scope_fingerprint
+                != self.frozen_release_binding.tenant_scope_fingerprint
+                or binding.source_scope_fingerprint
+                != self.frozen_release_binding.source_scope_fingerprint
+                or binding.policy_profile != self.frozen_release_binding.policy_profile
+                or binding.policy_version != self.frozen_release_binding.policy_version
+                or binding.policy_fingerprint
+                != self.frozen_release_binding.policy_fingerprint
+                or binding.publish_audit_reference != self.audit.audit_id
+            ):
+                raise ValueError(
+                    "publication audit evidence does not match the publication "
+                    "aggregate"
+                )
         return self

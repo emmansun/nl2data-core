@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from nl2data_core.assembly import (
+    MAX_TRAIL_ENTRIES,
     AssemblyDraft,
     AssemblyDraftStore,
     DeploymentBinding,
@@ -19,6 +20,7 @@ from nl2data_core.verification.policy import VerificationPolicy
 from nl2data_core.verification.structural import CoreStructuralVerificationResult
 
 from .assembly_admin import AssemblyLifecycleAdminCapability
+from .audit_admin import AuditInspectionAdminCapability
 from .auth import AuthContext, Permission
 from .authoring_admin import AuthoringAdminCapability
 from .bundle_admin import PublishedBundleAdminCapability
@@ -27,6 +29,8 @@ from .config import AdminServiceConfig
 from .dtos import (
     AssemblyDraftDetail,
     AssertionDecisionCommand,
+    AuditTrailPage,
+    AuditTrailQuery,
     AuthoringDocumentCommand,
     AuthoringImportResult,
     AuthoringValidationResult,
@@ -76,6 +80,7 @@ class AdminService:
         self._metadata = MetadataAdminCapability(dependencies, config)
         self._verification = VerificationPublicationAdminCapability(dependencies, config)
         self._bundles = PublishedBundleAdminCapability(dependencies, config)
+        self._audit = AuditInspectionAdminCapability(dependencies, config)
 
     def _require_draft_store(self) -> AssemblyDraftStore:
         return self._assembly._access.draft_store()
@@ -134,6 +139,21 @@ class AdminService:
                     Capability(name="assembly approve", permission=Permission.ASSEMBLY_APPROVE),
                     Capability(name="assembly verify", permission=Permission.ASSEMBLY_VERIFY),
                     Capability(name="assembly audit", permission=Permission.ASSEMBLY_AUDIT),
+                    Capability(
+                        name="assembly audit inspect",
+                        permission=Permission.ASSEMBLY_AUDIT,
+                        subject_keys=(
+                            "draft_id",
+                            "draft_revision",
+                            "assertion_id",
+                            "bundle_fingerprint",
+                            "lifecycle_reference",
+                            "predecessor_event_id",
+                        ),
+                        maximum_result_count=MAX_TRAIL_ENTRIES,
+                        cursor_paginated=True,
+                        redacted=True,
+                    ),
                     Capability(name="bundle read", permission=Permission.BUNDLE_READ),
                     Capability(name="bundle validate", permission=Permission.BUNDLE_VALIDATE),
                     Capability(name="bundle publish", permission=Permission.BUNDLE_PUBLISH),
@@ -439,3 +459,11 @@ class AdminService:
         self, snapshot_fingerprint: str, *, auth_context: AuthContext
     ) -> DriftStatus:
         return self._metadata.get_drift_status(snapshot_fingerprint, auth_context=auth_context)
+
+    def inspect_audit_trail(
+        self,
+        query: AuditTrailQuery,
+        *,
+        auth_context: AuthContext,
+    ) -> AuditTrailPage:
+        return self._audit.inspect_audit_trail(query, auth_context=auth_context)

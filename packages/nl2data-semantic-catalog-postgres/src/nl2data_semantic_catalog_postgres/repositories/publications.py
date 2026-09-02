@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from nl2data_core.assembly.audit_evidence import publication_audit_entry
 from nl2data_core.bundles.catalog import (
     BundleCatalogOutcome,
     _expected_snapshot_fingerprint,
@@ -38,15 +39,22 @@ from nl2data_core.metadata.policy import ProductionActivationContext
 from ..envelope import ENVELOPE_SCHEMA_VERSION, ArtifactKind
 from ..errors import SemanticCatalogError
 from ..unit_of_work import CatalogUnitOfWork, _namespace
+from .audit_evidence import AuditEvidenceRepository
 from .evidence import EvidenceRepository
 
 
 class PublicationRepository:
     """Atomic Bundle publication and immutable publication reads."""
 
-    def __init__(self, uow: CatalogUnitOfWork, evidence: EvidenceRepository) -> None:
+    def __init__(
+        self,
+        uow: CatalogUnitOfWork,
+        evidence: EvidenceRepository,
+        audit: AuditEvidenceRepository,
+    ) -> None:
         self._uow = uow
         self._evidence = evidence
+        self._audit = audit
 
     def publish(
         self,
@@ -338,6 +346,39 @@ class PublicationRepository:
                     audit_envelope,
                     now,
                 ),
+            )
+        if records.audit_evidence is not None:
+            # The release-readiness binding and its publication trail entry
+            # commit atomically with the publish audit they cross-link to.
+            self._evidence.insert_publication_audit_evidence(
+                conn,
+                namespace,
+                bundle.bundle_id,
+                bundle.fingerprint,
+                records.audit_evidence,
+                now=now,
+            )
+            predecessor_entry = (
+                self._audit.find_publication_entry(
+                    conn, namespace, predecessor_fingerprint
+                )
+                if predecessor_fingerprint is not None
+                else None
+            )
+            self._audit.insert_audit_entries(
+                conn,
+                namespace,
+                [
+                    publication_audit_entry(
+                        records.audit_evidence,
+                        predecessor_event_ids=(
+                            ()
+                            if predecessor_entry is None
+                            else (predecessor_entry.event_id,)
+                        ),
+                        occurred_at=now,
+                    )
+                ],
             )
         self._uow.execute(
             conn,

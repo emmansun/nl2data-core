@@ -47,6 +47,10 @@ class FakePostgresPool:
         self.bundle_pointers: dict[tuple[str, str], dict[str, Any]] = {}
         self.bundle_history: dict[tuple[str, str], dict[int, dict[str, Any]]] = {}
         self.events: dict[tuple[str, str], dict[str, Any]] = {}
+        self.publication_audit_evidence: dict[
+            tuple[str, str, str], dict[str, Any]
+        ] = {}
+        self.audit_entries: dict[tuple[str, str], dict[str, Any]] = {}
         self.schema_metadata: dict[str, str] = {}
         self._closed = False
         self._struct_lock = threading.RLock()

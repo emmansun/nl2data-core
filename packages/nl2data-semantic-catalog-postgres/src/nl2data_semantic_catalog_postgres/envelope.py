@@ -60,6 +60,8 @@ class ArtifactKind(StrEnum):
     ACCEPTED_ASSERTION_MANIFEST = "accepted_assertion_manifest"
     PUBLISH_AUDIT = "publish_audit"
     VERIFICATION_SUITE_EVIDENCE = "verification_suite_evidence"
+    PUBLICATION_AUDIT_EVIDENCE = "publication_audit_evidence"
+    ASSEMBLY_AUDIT_EVIDENCE = "assembly_audit_evidence"
 
 
 class EnvelopeRejectedError(Exception):

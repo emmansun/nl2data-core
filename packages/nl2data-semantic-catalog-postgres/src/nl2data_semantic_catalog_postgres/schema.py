@@ -9,7 +9,9 @@ identifiers are never keys.
 Migrations are additive and versioned: version ``1`` creates the snapshot,
 proposal-set, Bundle publication, pointer, history, event, and schema-metadata
 surface. Version ``2`` adds durable assembly drafts and immutable publication
-lifecycle records. A runtime never applies a migration newer than the schema
+lifecycle records. Version ``3`` adds Verification Suite evidence. Version ``4``
+adds publication audit evidence bindings and the bounded assembly
+audit-evidence trail. A runtime never applies a migration newer than the schema
 version it supports, and a database reporting a newer schema than the runtime
 supports is rejected without modification.
 """
@@ -17,7 +19,7 @@ supports is rejected without modification.
 from __future__ import annotations
 
 #: The newest schema version this runtime understands.
-SUPPORTED_SCHEMA_VERSION = 3
+SUPPORTED_SCHEMA_VERSION = 4
 
 #: Migration steps keyed by the schema version they produce.  Each entry is
 #: applied inside one transaction and only when the persisted version is
@@ -250,6 +252,84 @@ MIGRATIONS: dict[int, tuple[str, ...]] = {
                     (scope_namespace, bundle_id, bundle_fingerprint)
                 ON DELETE CASCADE
         )
+        """,
+    ),
+    4: (
+        # The publication audit-evidence binding persists atomically with
+        # its publication and dies with it (CASCADE), exactly like the
+        # verification evidence it cross-links to.
+        """
+        CREATE TABLE IF NOT EXISTS {schema}.publication_audit_evidence (
+            scope_namespace TEXT NOT NULL DEFAULT '',
+            bundle_id TEXT NOT NULL,
+            bundle_fingerprint TEXT NOT NULL,
+            evidence_fingerprint TEXT NOT NULL,
+            schema_version INTEGER NOT NULL,
+            envelope TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL,
+            PRIMARY KEY (scope_namespace, bundle_id, bundle_fingerprint),
+            UNIQUE (scope_namespace, evidence_fingerprint),
+            FOREIGN KEY (scope_namespace, bundle_id, bundle_fingerprint)
+                REFERENCES {schema}.bundle_publications
+                    (scope_namespace, bundle_id, bundle_fingerprint)
+                ON DELETE CASCADE
+        )
+        """,
+        # One bounded envelope per audit-evidence entry, scoped by the
+        # opaque tenant namespace; the entry fingerprint column is the
+        # independent tamper witness recomputed on every read.
+        """
+        CREATE TABLE IF NOT EXISTS {schema}.assembly_audit_evidence (
+            scope_namespace TEXT NOT NULL DEFAULT '',
+            event_id TEXT NOT NULL,
+            event_kind TEXT NOT NULL,
+            subject_kind TEXT NOT NULL,
+            subject_reference TEXT NOT NULL,
+            draft_id TEXT,
+            draft_revision BIGINT,
+            assertion_id TEXT,
+            bundle_fingerprint TEXT,
+            lifecycle_reference TEXT,
+            entry_fingerprint TEXT NOT NULL,
+            schema_version INTEGER NOT NULL,
+            envelope TEXT NOT NULL,
+            occurred_at TIMESTAMPTZ NOT NULL,
+            PRIMARY KEY (scope_namespace, event_id)
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_audit_evidence_subject
+            ON {schema}.assembly_audit_evidence
+                (scope_namespace, subject_kind, subject_reference, occurred_at, event_id)
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_audit_evidence_draft
+            ON {schema}.assembly_audit_evidence
+                (scope_namespace, draft_id, occurred_at, event_id)
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_audit_evidence_assertion
+            ON {schema}.assembly_audit_evidence
+                (scope_namespace, assertion_id)
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_audit_evidence_bundle
+            ON {schema}.assembly_audit_evidence
+                (scope_namespace, bundle_fingerprint)
+        """,
+        # Predecessor links live inside the canonical envelope; the GIN
+        # index keeps predecessor-scoped lookups bounded without denormalizing
+        # the immutable payload.
+        """
+        CREATE INDEX IF NOT EXISTS idx_audit_evidence_predecessors
+            ON {schema}.assembly_audit_evidence USING gin (
+                scope_namespace,
+                (envelope::jsonb -> 'payload' -> 'predecessor_event_ids')
+            )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_audit_evidence_retention
+            ON {schema}.assembly_audit_evidence (scope_namespace, occurred_at)
         """,
     ),
 }

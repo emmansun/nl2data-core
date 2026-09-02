@@ -14,12 +14,24 @@ callers.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from threading import RLock
 from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from nl2data_core.assembly.audit_evidence import (
+    MAX_TRAIL_ENTRIES,
+    AssemblyAuditEvidenceEntry,
+    AuditEventKind,
+    AuditTrail,
+    PublicationAuditEvidence,
+    activation_audit_entry,
+    bounded_audit_trail,
+    publication_audit_entry,
+    rollback_audit_entry,
+)
 from nl2data_core.assembly.manifest import AcceptedAssertionManifest
 from nl2data_core.canonical import sha256_fingerprint
 from nl2data_core.control_plane.publication.contracts import (
@@ -54,6 +66,11 @@ _IDENTIFIER_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_\-\.]{0,127}$"
 
 #: Bounded number of issues reported by one catalog operation.
 _MAX_ISSUES = 16
+
+#: Bounded number of audit-evidence entries retained per catalog instance.
+#: Retention always protects entries required by active publications,
+#: supersession chains, and rollback targets.
+_AUDIT_STORE_LIMIT = 4096
 
 
 def _utc_now() -> datetime:
@@ -195,6 +212,7 @@ class BundlePublication(BaseModel):
     audit: PublishAuditRecord | None = None
     verification_evidence: VerificationSuiteEvidence | None = None
     frozen_release_binding: FrozenReleaseBinding | None = None
+    audit_evidence: PublicationAuditEvidence | None = None
     state: PublishedVersionState = PublishedVersionState.AVAILABLE
     supersession: SupersessionMetadata = Field(default_factory=SupersessionMetadata)
     published_at: datetime = Field(default_factory=_utc_now)
@@ -231,6 +249,16 @@ class BundlePublication(BaseModel):
             self.audit.verification.release_binding_fingerprint != binding.fingerprint
         ):
             raise ValueError("publish audit verification summary does not match binding")
+        publication_evidence = self.audit_evidence
+        if publication_evidence is not None and (
+            publication_evidence.bundle_fingerprint != self.bundle.fingerprint
+            or (
+                self.audit is not None
+                and publication_evidence.publish_audit_reference
+                != self.audit.audit_id
+            )
+        ):
+            raise ValueError("publication audit evidence does not match publication")
         return self
 
 
@@ -297,7 +325,30 @@ class SemanticBundleCatalog(Protocol):
         bundle_id: str,
         *,
         production: ProductionActivationContext | None = None,
+        operator_audit_reference: str | None = None,
     ) -> BundleCatalogOutcome: ...
+
+    def record_audit_entries(
+        self,
+        entries: Sequence[AssemblyAuditEvidenceEntry],
+        *,
+        tenant_scope_fingerprint: str,
+    ) -> None: ...
+
+    def audit_entries(
+        self,
+        *,
+        tenant_scope_fingerprint: str | None = None,
+        draft_id: str | None = None,
+        draft_revision_min: int | None = None,
+        draft_revision_max: int | None = None,
+        assertion_id: str | None = None,
+        bundle_fingerprint: str | None = None,
+        lifecycle_reference: str | None = None,
+        predecessor_event_id: str | None = None,
+        limit: int = MAX_TRAIL_ENTRIES,
+        cursor: str | None = None,
+    ) -> AuditTrail: ...
 
 
 class InMemorySemanticBundleCatalog:
@@ -322,6 +373,7 @@ class InMemorySemanticBundleCatalog:
         self._publications: dict[tuple[str | None, str], tuple[BundlePublication, ...]] = {}
         self._active: dict[tuple[str | None, str], BundlePublication] = {}
         self._history: dict[tuple[str | None, str], tuple[BundlePublication, ...]] = {}
+        self._audit_store: list[AssemblyAuditEvidenceEntry] = []
         self._lock = RLock()
 
     def authoritative_release_binding_matches(
@@ -504,6 +556,7 @@ class InMemorySemanticBundleCatalog:
             audit=records.audit,
             verification_evidence=records.verification_evidence,
             frozen_release_binding=records.frozen_release_binding,
+            audit_evidence=records.audit_evidence,
             supersession=SupersessionMetadata(
                 predecessor_fingerprint=predecessor_fingerprint,
             ),
@@ -523,6 +576,25 @@ class InMemorySemanticBundleCatalog:
             )
             existing = existing[:-1] + (predecessor,)
         self._publications[key] = existing + (record,)
+        if records.audit_evidence is not None:
+            # The publication entry links the release readiness inputs to the
+            # immutable Bundle fingerprint; the predecessor publication entry
+            # is linked when it exists, never fabricated for legacy records.
+            predecessor_entry = (
+                self._find_publication_entry(
+                    key[0], predecessor_fingerprint
+                )
+                if predecessor_fingerprint is not None
+                else None
+            )
+            self._append_audit_entry_locked(
+                publication_audit_entry(
+                    records.audit_evidence,
+                    predecessor_event_ids=(
+                        () if predecessor_entry is None else (predecessor_entry.event_id,)
+                    ),
+                )
+            )
         return _success(
             "published",
             bundle,
@@ -656,6 +728,7 @@ class InMemorySemanticBundleCatalog:
         *,
         production: ProductionActivationContext | None = None,
         tenant_scope_fingerprint: str | None = None,
+        operator_audit_reference: str | None = None,
     ) -> BundleCatalogOutcome:
         """Atomically point the active pointer at a published valid bundle.
 
@@ -686,6 +759,7 @@ class InMemorySemanticBundleCatalog:
             publication,
             production=production,
             tenant_scope_fingerprint=tenant_scope_fingerprint,
+            operator_audit_reference=operator_audit_reference,
         )
 
     def activate_fingerprint(
@@ -695,6 +769,7 @@ class InMemorySemanticBundleCatalog:
         *,
         production: ProductionActivationContext | None = None,
         tenant_scope_fingerprint: str | None = None,
+        operator_audit_reference: str | None = None,
     ) -> BundleCatalogOutcome:
         """Atomically activate one immutable publication by fingerprint."""
         publication = self._publication_by_fingerprint(
@@ -713,6 +788,7 @@ class InMemorySemanticBundleCatalog:
             publication,
             production=production,
             tenant_scope_fingerprint=tenant_scope_fingerprint,
+            operator_audit_reference=operator_audit_reference,
         )
 
     @staticmethod
@@ -743,6 +819,8 @@ class InMemorySemanticBundleCatalog:
         *,
         production: ProductionActivationContext | None,
         tenant_scope_fingerprint: str | None,
+        operator_audit_reference: str | None = None,
+        pointer_entry_kind: AuditEventKind = AuditEventKind.ACTIVATION,
     ) -> BundleCatalogOutcome:
         bundle = publication.bundle
         if publication.state is PublishedVersionState.RETIRED:
@@ -763,6 +841,7 @@ class InMemorySemanticBundleCatalog:
                     audit=publication.audit,
                     verification_evidence=publication.verification_evidence,
                     frozen_release_binding=publication.frozen_release_binding,
+                    audit_evidence=publication.audit_evidence,
                 )
             )
         except PublicationIntegrityError as error:
@@ -806,6 +885,25 @@ class InMemorySemanticBundleCatalog:
                 )
         key = (tenant_scope_fingerprint, bundle_id)
         previous = self._active.get(key)
+        prior_fingerprint = (
+            previous.bundle.fingerprint if previous is not None else None
+        )
+        # The pointer audit entry is built and validated before the pointer
+        # changes so a malformed entry can never accompany a live mutation.
+        pointer_entry = self._build_pointer_audit_entry(
+            key=key,
+            publication=publication,
+            prior_active_fingerprint=prior_fingerprint,
+            resulting_active_fingerprint=bundle.fingerprint,
+            pointer_entry_kind=pointer_entry_kind,
+            operator_audit_reference=operator_audit_reference,
+        )
+        if pointer_entry is None and tenant_scope_fingerprint is not None:
+            return _failure(
+                "rejected",
+                "audit_evidence_invalid",
+                "the activation audit-evidence entry could not be created",
+            )
         if previous is not None:
             self._history[key] = (previous,) + self._history.get(key, ())
             self._replace_publication(
@@ -820,6 +918,8 @@ class InMemorySemanticBundleCatalog:
             tenant_scope_fingerprint=tenant_scope_fingerprint,
         )
         self._active[key] = active
+        if pointer_entry is not None:
+            self._append_audit_entry_locked(pointer_entry)
         return _success("activated", bundle)
 
     def rollback(
@@ -828,6 +928,7 @@ class InMemorySemanticBundleCatalog:
         *,
         production: ProductionActivationContext | None = None,
         tenant_scope_fingerprint: str | None = None,
+        operator_audit_reference: str | None = None,
     ) -> BundleCatalogOutcome:
         """Move the active pointer to the previous active version.
 
@@ -902,6 +1003,22 @@ class InMemorySemanticBundleCatalog:
                     "production rollback requires passing production verification evidence",
                 )
         current = self._active[key]
+        prior_fingerprint = current.bundle.fingerprint
+        restored_fingerprint = previous.bundle.fingerprint
+        rollback_entry = self._build_pointer_audit_entry(
+            key=key,
+            publication=previous,
+            prior_active_fingerprint=prior_fingerprint,
+            resulting_active_fingerprint=restored_fingerprint,
+            pointer_entry_kind=AuditEventKind.ROLLBACK,
+            operator_audit_reference=operator_audit_reference,
+        )
+        if rollback_entry is None and tenant_scope_fingerprint is not None:
+            return _failure(
+                "rejected",
+                "audit_evidence_invalid",
+                "the rollback audit-evidence entry could not be created",
+            )
         current = current.model_copy(update={"state": PublishedVersionState.SUPERSEDED})
         previous = previous.model_copy(update={"state": PublishedVersionState.ACTIVE})
         self._replace_publication(
@@ -916,6 +1033,8 @@ class InMemorySemanticBundleCatalog:
         )
         self._active[key] = previous
         self._history[key] = tuple(rest)
+        if rollback_entry is not None:
+            self._append_audit_entry_locked(rollback_entry)
         return _success("rolled_back", previous.bundle)
 
     def rollback_to_fingerprint(
@@ -925,6 +1044,7 @@ class InMemorySemanticBundleCatalog:
         *,
         production: ProductionActivationContext | None = None,
         tenant_scope_fingerprint: str | None = None,
+        operator_audit_reference: str | None = None,
     ) -> BundleCatalogOutcome:
         """Change only the active pointer to a prior immutable fingerprint."""
         target = self._publication_by_fingerprint(
@@ -952,6 +1072,8 @@ class InMemorySemanticBundleCatalog:
             target,
             production=production,
             tenant_scope_fingerprint=tenant_scope_fingerprint,
+            operator_audit_reference=operator_audit_reference,
+            pointer_entry_kind=AuditEventKind.ROLLBACK,
         )
         if outcome.success:
             return BundleCatalogOutcome(kind="rolled_back", bundle=target.bundle)
@@ -1029,6 +1151,250 @@ class InMemorySemanticBundleCatalog:
             else publication
             for publication in self._publications.get(key, ())
         )
+
+    # -- audit-evidence storage -------------------------------------------------
+
+    def record_audit_entries(
+        self,
+        entries: Sequence[AssemblyAuditEvidenceEntry],
+        *,
+        tenant_scope_fingerprint: str,
+    ) -> None:
+        """Record host-supplied lifecycle audit entries after validation.
+
+        Tampered entries (fingerprint mismatch), cross-scope entries, and
+        conflicting reuse of an existing event id are rejected before any
+        write; re-recording an identical entry is idempotent.
+        """
+        with self._lock:
+            for entry in entries:
+                if entry.tenant_scope_fingerprint != tenant_scope_fingerprint:
+                    raise ValueError(
+                        "audit evidence entry does not match the recording scope"
+                    )
+                if not entry.verify_fingerprint():
+                    raise ValueError("audit evidence entry fingerprint mismatch")
+            for entry in entries:
+                self._append_audit_entry_locked(entry)
+
+    def audit_entries(
+        self,
+        *,
+        tenant_scope_fingerprint: str | None = None,
+        draft_id: str | None = None,
+        draft_revision_min: int | None = None,
+        draft_revision_max: int | None = None,
+        assertion_id: str | None = None,
+        bundle_fingerprint: str | None = None,
+        lifecycle_reference: str | None = None,
+        predecessor_event_id: str | None = None,
+        limit: int = MAX_TRAIL_ENTRIES,
+        cursor: str | None = None,
+    ) -> AuditTrail:
+        """Return one deterministic bounded page of scoped audit entries."""
+        with self._lock:
+            selected = [
+                entry
+                for entry in self._audit_store
+                if (
+                    tenant_scope_fingerprint is None
+                    or entry.tenant_scope_fingerprint == tenant_scope_fingerprint
+                )
+                and (draft_id is None or entry.draft_id == draft_id)
+                and (
+                    draft_revision_min is None
+                    or (
+                        entry.draft_revision is not None
+                        and entry.draft_revision >= draft_revision_min
+                    )
+                )
+                and (
+                    draft_revision_max is None
+                    or (
+                        entry.draft_revision is not None
+                        and entry.draft_revision <= draft_revision_max
+                    )
+                )
+                and (assertion_id is None or entry.assertion_id == assertion_id)
+                and (
+                    bundle_fingerprint is None
+                    or entry.bundle_fingerprint == bundle_fingerprint
+                )
+                and (
+                    lifecycle_reference is None
+                    or entry.lifecycle_reference == lifecycle_reference
+                )
+                and (
+                    predecessor_event_id is None
+                    or predecessor_event_id in entry.predecessor_event_ids
+                )
+            ]
+        return bounded_audit_trail(selected, limit=limit, cursor=cursor)
+
+    def _build_pointer_audit_entry(
+        self,
+        *,
+        key: tuple[str | None, str],
+        publication: BundlePublication,
+        prior_active_fingerprint: str | None,
+        resulting_active_fingerprint: str,
+        pointer_entry_kind: AuditEventKind,
+        operator_audit_reference: str | None,
+    ) -> AssemblyAuditEvidenceEntry | None:
+        """Build the activation or rollback entry for one pointer change.
+
+        Returns ``None`` for unscoped (global) catalogs, where a valid
+        tenant-scoped entry cannot exist; legacy unscoped pointer changes
+        are classified as legacy rather than fabricating evidence.
+        """
+        tenant_scope_fingerprint, _ = key
+        if tenant_scope_fingerprint is None:
+            return None
+        bundle = publication.bundle
+        publication_entry = self._find_publication_entry(
+            tenant_scope_fingerprint, bundle.fingerprint
+        )
+        if publication.frozen_release_binding is not None:
+            source_scope = publication.frozen_release_binding.source_scope_fingerprint
+        else:
+            source_scope = sha256_fingerprint(
+                {"source_id": bundle.descriptor.source_id}
+            )
+        lifecycle_reference = self._publication_lifecycle_reference(
+            publication, publication_entry
+        )
+        common: dict[str, Any] = {
+            "tenant_scope_fingerprint": tenant_scope_fingerprint,
+            "source_scope_fingerprint": source_scope,
+            "event_id": self._pointer_event_id(
+                pointer_entry_kind,
+                bundle_id=bundle.bundle_id,
+                prior_active_fingerprint=prior_active_fingerprint,
+                resulting_active_fingerprint=resulting_active_fingerprint,
+            ),
+            "bundle_fingerprint": bundle.fingerprint,
+            "lifecycle_reference": lifecycle_reference,
+            "operator_audit_reference": operator_audit_reference,
+            "predecessor_event_ids": (
+                () if publication_entry is None else (publication_entry.event_id,)
+            ),
+        }
+        try:
+            if pointer_entry_kind is AuditEventKind.ROLLBACK:
+                return rollback_audit_entry(
+                    prior_active_fingerprint=prior_active_fingerprint or "",
+                    restored_fingerprint=resulting_active_fingerprint,
+                    **common,
+                )
+            return activation_audit_entry(
+                resulting_active_fingerprint=resulting_active_fingerprint,
+                prior_active_fingerprint=prior_active_fingerprint,
+                **common,
+            )
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _pointer_event_id(
+        kind: AuditEventKind,
+        *,
+        bundle_id: str,
+        prior_active_fingerprint: str | None,
+        resulting_active_fingerprint: str,
+    ) -> str:
+        """Deterministic event id derived from the pointer transition facts."""
+        prefix = "activate" if kind is AuditEventKind.ACTIVATION else "rollback"
+        return (
+            prefix
+            + "-"
+            + sha256_fingerprint(
+                {
+                    "bundle_id": bundle_id,
+                    "prior_active_fingerprint": prior_active_fingerprint,
+                    "resulting_active_fingerprint": resulting_active_fingerprint,
+                }
+            ).removeprefix("sha256:")[:24]
+        )
+
+    @staticmethod
+    def _publication_lifecycle_reference(
+        publication: BundlePublication,
+        publication_entry: AssemblyAuditEvidenceEntry | None,
+    ) -> str:
+        """The publish audit reference when present, else the publication entry."""
+        if publication.audit is not None:
+            return publication.audit.audit_id
+        if publication_entry is not None:
+            return publication_entry.event_id
+        return (
+            "publication-"
+            + publication.bundle.fingerprint.removeprefix("sha256:")[:24]
+        )
+
+    def _find_publication_entry(
+        self,
+        tenant_scope_fingerprint: str | None,
+        bundle_fingerprint: str,
+    ) -> AssemblyAuditEvidenceEntry | None:
+        """The recorded publication entry for one scoped immutable fingerprint."""
+        if tenant_scope_fingerprint is None:
+            return None
+        return next(
+            (
+                entry
+                for entry in self._audit_store
+                if entry.event_kind is AuditEventKind.PUBLICATION
+                and entry.tenant_scope_fingerprint == tenant_scope_fingerprint
+                and entry.bundle_fingerprint == bundle_fingerprint
+            ),
+            None,
+        )
+
+    def _append_audit_entry_locked(self, entry: AssemblyAuditEvidenceEntry) -> None:
+        """Append one validated entry under the catalog lock; idempotent."""
+        existing = next(
+            (
+                stored
+                for stored in self._audit_store
+                if stored.event_id == entry.event_id
+            ),
+            None,
+        )
+        if existing is not None:
+            if existing.fingerprint != entry.fingerprint:
+                raise ValueError("audit evidence event id conflict")
+            return
+        self._audit_store.append(entry)
+        self._trim_audit_entries_locked()
+
+    def _trim_audit_entries_locked(self) -> None:
+        """Bounded retention that protects active lifecycle dependencies."""
+        overflow = len(self._audit_store) - _AUDIT_STORE_LIMIT
+        if overflow <= 0:
+            return
+        protected_fingerprints = {
+            publication.bundle.fingerprint
+            for publications in self._publications.values()
+            for publication in publications
+            if publication.state is not PublishedVersionState.RETIRED
+        }
+        protected_ids = {
+            event_id
+            for entry in self._audit_store
+            if entry.bundle_fingerprint in protected_fingerprints
+            for event_id in (entry.event_id, *entry.predecessor_event_ids)
+        }
+        retained: list[AssemblyAuditEvidenceEntry] = []
+        for entry in self._audit_store:
+            if (
+                overflow > 0
+                and entry.bundle_fingerprint not in protected_fingerprints
+                and entry.event_id not in protected_ids
+            ):
+                overflow -= 1
+                continue
+            retained.append(entry)
+        self._audit_store = retained
 
 
 def _expected_snapshot_fingerprint(

@@ -6,6 +6,7 @@ The freeze/materialize stages and the shared stage-output models live in
 
 from __future__ import annotations
 
+from nl2data_core.assembly.audit_evidence import PublicationAuditEvidence
 from nl2data_core.assembly.models import AssertionProvenanceKind, ReviewState
 from nl2data_core.bundles.publication import (
     AssertionProvenanceSummary,
@@ -190,17 +191,39 @@ def aggregate_stage(
             }
         )
     )
+    manifest_fingerprint = sha256_fingerprint(
+        materialized.manifest.canonical_payload()
+    )
+    audit_id = (
+        "publish-"
+        + sha256_fingerprint(
+            {
+                "bundle_id": materialized.bundle.bundle_id,
+                "bundle_fingerprint": materialized.bundle.fingerprint,
+            }
+        ).removeprefix("sha256:")[:24]
+    )
     try:
+        audit_evidence = PublicationAuditEvidence(
+            approved_draft_id=verified.evidence.draft_id,
+            approved_draft_revision=verified.evidence.draft_revision,
+            approved_plan_fingerprint=verified.evidence.plan_fingerprint,
+            bundle_fingerprint=materialized.bundle.fingerprint,
+            manifest_fingerprint=manifest_fingerprint,
+            verification_evidence_fingerprint=verified.evidence.fingerprint,
+            tenant_scope_fingerprint=release_binding.tenant_scope_fingerprint,
+            source_scope_fingerprint=release_binding.source_scope_fingerprint,
+            policy_profile=verified.evidence.policy_profile,
+            policy_version=verified.evidence.policy_version,
+            policy_fingerprint=verified.evidence.policy_fingerprint,
+            lint_reference=context.lint_reference,
+            separation_mode=context.separation.mode.value,
+            separation_allowed=context.separation.allowed,
+            separation_reason_code=context.separation.reason_code,
+            publish_audit_reference=audit_id,
+        )
         audit = PublishAuditRecord(
-            audit_id=(
-                "publish-"
-                + sha256_fingerprint(
-                    {
-                        "bundle_id": materialized.bundle.bundle_id,
-                        "bundle_fingerprint": materialized.bundle.fingerprint,
-                    }
-                ).removeprefix("sha256:")[:24]
-            ),
+            audit_id=audit_id,
             bundle_id=materialized.bundle.bundle_id,
             bundle_fingerprint=materialized.bundle.fingerprint,
             approval_chain=chain,
@@ -246,6 +269,7 @@ def aggregate_stage(
             audit=audit,
             verification_evidence=verified.evidence,
             frozen_release_binding=release_binding,
+            audit_evidence=audit_evidence,
         )
     except ValueError:
         return rejected("audit_invalid", "publish audit metadata is invalid")

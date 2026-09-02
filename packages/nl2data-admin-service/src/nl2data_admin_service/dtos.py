@@ -12,8 +12,9 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
+from nl2data_core.assembly import MAX_TRAIL_ENTRIES, AuditPayloadBindings
 from nl2data_core.verification.models import VerificationSuiteEvidence
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .auth import Permission
 
@@ -471,6 +472,95 @@ class LintResultDetail(BaseModel):
     truncated: bool = False
 
 
+class AuditTrailQuery(BaseModel):
+    """Bounded, side-effect-free audit-evidence inspection request.
+
+    Supports lookup by draft ID/revision range, assertion ID, Bundle
+    fingerprint, publication/activation/rollback lifecycle reference,
+    predecessor event, and cursor/limit paging.  At least one subject key
+    is required so inspection stays targeted and scoped.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    draft_id: str | None = Field(default=None, pattern=_IDENTIFIER_PATTERN)
+    draft_revision_min: int | None = Field(default=None, ge=1)
+    draft_revision_max: int | None = Field(default=None, ge=1)
+    assertion_id: str | None = Field(default=None, pattern=_FINGERPRINT_PATTERN)
+    bundle_fingerprint: str | None = Field(default=None, pattern=_FINGERPRINT_PATTERN)
+    lifecycle_reference: str | None = Field(default=None, pattern=_IDENTIFIER_PATTERN)
+    predecessor_event_id: str | None = Field(default=None, pattern=_IDENTIFIER_PATTERN)
+    cursor: str | None = Field(default=None, pattern=_IDENTIFIER_PATTERN)
+    limit: int = Field(default=50, ge=1, le=MAX_TRAIL_ENTRIES)
+
+    @model_validator(mode="after")
+    def _validate_subject_selection(self) -> AuditTrailQuery:
+        if not (
+            self.draft_id
+            or self.assertion_id
+            or self.bundle_fingerprint
+            or self.lifecycle_reference
+            or self.predecessor_event_id
+        ):
+            raise ValueError("at least one audit subject key is required")
+        if (
+            self.draft_revision_min is not None or self.draft_revision_max is not None
+        ) and self.draft_id is None:
+            raise ValueError("draft revision bounds require draft_id")
+        if (
+            self.draft_revision_min is not None
+            and self.draft_revision_max is not None
+            and self.draft_revision_min > self.draft_revision_max
+        ):
+            raise ValueError("draft revision bounds are inverted")
+        return self
+
+
+class AuditEntryView(BaseModel):
+    """Redacted, bounded projection of one audit-evidence entry.
+
+    Scope fingerprints are intentionally excluded: inspection results are
+    already scoped to the caller, and only artifact fingerprints, statuses,
+    bounded reasons, and opaque operator audit references are exposed.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    schema_version: int = Field(ge=1, le=1_000)
+    event_id: str = Field(pattern=_IDENTIFIER_PATTERN)
+    event_kind: str = Field(min_length=1, max_length=32)
+    subject_kind: str = Field(min_length=1, max_length=32)
+    subject_reference: str = Field(min_length=1, max_length=128)
+    occurred_at: datetime
+    outcome: str = Field(min_length=1, max_length=16)
+    status_code: str | None = Field(default=None, min_length=1, max_length=32)
+    reason: str = Field(default="", max_length=_MAX_REASON_CHARS)
+    operator_audit_reference: str | None = Field(
+        default=None, min_length=1, max_length=512
+    )
+    draft_id: str | None = Field(default=None, pattern=_IDENTIFIER_PATTERN)
+    draft_revision: int | None = Field(default=None, ge=1)
+    assertion_id: str | None = Field(default=None, pattern=_FINGERPRINT_PATTERN)
+    bundle_fingerprint: str | None = Field(default=None, pattern=_FINGERPRINT_PATTERN)
+    lifecycle_reference: str | None = Field(default=None, pattern=_IDENTIFIER_PATTERN)
+    predecessor_event_ids: tuple[str, ...] = Field(default_factory=tuple, max_length=8)
+    payload_bindings: AuditPayloadBindings
+    fingerprint: str = Field(pattern=_FINGERPRINT_PATTERN)
+
+
+class AuditTrailPage(BaseModel):
+    """One deterministic bounded page of redacted audit-evidence entries."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    entries: tuple[AuditEntryView, ...] = Field(
+        default_factory=tuple, max_length=MAX_TRAIL_ENTRIES
+    )
+    total_count: int = Field(default=0, ge=0)
+    next_cursor: str | None = Field(default=None, pattern=_IDENTIFIER_PATTERN)
+    has_more: bool = False
+
+
 class AssertionDecisionCommand(DraftRevisionCommand):
     """Approve, reject, or edit one assertion."""
 
@@ -600,6 +690,10 @@ class Capability(BaseModel):
     lifecycle_role: str | None = Field(default=None, max_length=32)
     supported_api_versions: tuple[str, ...] = Field(default_factory=tuple, max_length=8)
     maximum_input_size: int | None = Field(default=None, ge=1)
+    subject_keys: tuple[str, ...] = Field(default_factory=tuple, max_length=16)
+    maximum_result_count: int | None = Field(default=None, ge=1)
+    cursor_paginated: bool = False
+    redacted: bool = False
 
 
 class CapabilitiesResult(BaseModel):

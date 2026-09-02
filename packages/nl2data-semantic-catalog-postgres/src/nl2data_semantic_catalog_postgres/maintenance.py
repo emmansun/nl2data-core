@@ -32,13 +32,16 @@ def cleanup(uow: CatalogUnitOfWork, *, now: datetime | None = None) -> int:
 
     Expired snapshots that no pointer references, expired publications
     that neither pointer nor history references (and that no publication
-    depends on), and expired lifecycle events are removed in bounded
-    batches.  Active snapshots, active Bundles, and required dependencies
-    are never removed.
+    depends on), expired lifecycle events, and expired audit-evidence
+    entries (unless their bundle fingerprint belongs to a non-retired
+    published version, or a protected entry references them as a
+    predecessor) are removed in bounded batches.  Active snapshots,
+    active Bundles, and required dependencies are never removed.
     """
     config = uow.config
     current = uow.now() if now is None else now
     event_cutoff = current - timedelta(seconds=config.event_retention_seconds)
+    audit_cutoff = current - timedelta(seconds=config.audit_retention_seconds)
     total = 0
     with uow.transaction() as conn:
         cursor = uow.execute(
@@ -57,6 +60,12 @@ def cleanup(uow: CatalogUnitOfWork, *, now: datetime | None = None) -> int:
             conn,
             "delete_expired_events",
             (event_cutoff, config.cleanup_batch_size),
+        )
+        total += int(cursor.rowcount or 0)
+        cursor = uow.execute(
+            conn,
+            "delete_expired_audit_entries",
+            (audit_cutoff, config.cleanup_batch_size),
         )
         total += int(cursor.rowcount or 0)
         uow.insert_event(

@@ -11,7 +11,13 @@ import json
 from typing import TYPE_CHECKING, Any
 
 from .driver import _as_dt
-from .keys import _event_key, _lock_or_fail, _publication_key, _snap_key
+from .keys import (
+    _audit_entry_key,
+    _event_key,
+    _lock_or_fail,
+    _publication_key,
+    _snap_key,
+)
 
 if TYPE_CHECKING:
     from .driver import _FakeConnection
@@ -205,5 +211,53 @@ def _h_delete_expired_events(
             continue
         conn._touch(_event_key(*key))
         del pool.events[key]
+        removed += 1
+    return ([], removed)
+
+
+def _non_retired_audit_fingerprints(pool: FakePostgresPool) -> set[tuple[str, str]]:
+    """(namespace, fingerprint) pairs of non-retired published versions."""
+    return {
+        (row["scope_namespace"], row["bundle_fingerprint"])
+        for row in pool.published_versions.values()
+        if row["lifecycle_state"] != "retired"
+    }
+
+
+def _predecessors_of_protected(
+    pool: FakePostgresPool, protected: set[tuple[str, str]]
+) -> set[str]:
+    """Event ids referenced as predecessors by protected audit entries."""
+    ids: set[str] = set()
+    for (namespace, _event_id), row in pool.audit_entries.items():
+        if (namespace, row["bundle_fingerprint"]) not in protected:
+            continue
+        envelope = json.loads(row["envelope"])
+        ids.update((envelope.get("payload") or {}).get("predecessor_event_ids") or [])
+    return ids
+
+
+def _h_delete_expired_audit_entries(
+    pool: FakePostgresPool, conn: _FakeConnection, params: tuple[Any, ...], timeout: float
+) -> tuple[list[dict[str, Any]], int]:
+    cutoff = _as_dt(params[0])
+    limit = int(params[1])
+    protected = _non_retired_audit_fingerprints(pool)
+    protected_ids = _predecessors_of_protected(pool, protected)
+    candidates = [
+        ((row["occurred_at"], event_id), (namespace, event_id))
+        for (namespace, event_id), row in pool.audit_entries.items()
+        if row["occurred_at"] < cutoff
+        and (namespace, row["bundle_fingerprint"]) not in protected
+        and event_id not in protected_ids
+    ]
+    removed = 0
+    for _, key in sorted(candidates)[:limit]:
+        _lock_or_fail(pool, conn, _audit_entry_key(*key), timeout)
+        row = pool.audit_entries.get(key)
+        if row is None:
+            continue
+        conn._touch(_audit_entry_key(*key))
+        del pool.audit_entries[key]
         removed += 1
     return ([], removed)

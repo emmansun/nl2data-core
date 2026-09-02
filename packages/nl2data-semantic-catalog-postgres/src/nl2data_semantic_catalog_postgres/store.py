@@ -25,10 +25,16 @@ raw driver text.  The psycopg driver is optional and lazy via
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import datetime
 from typing import Any, overload
 
+from nl2data_core.assembly.audit_evidence import (
+    MAX_TRAIL_ENTRIES,
+    AssemblyAuditEvidenceEntry,
+    AuditEventKind,
+    AuditTrail,
+)
 from nl2data_core.assembly.manifest import AcceptedAssertionManifest
 from nl2data_core.assembly.models import AssemblyDraft
 from nl2data_core.bundles.catalog import (
@@ -70,6 +76,7 @@ from .maintenance import cleanup as _cleanup
 from .maintenance import reload_active as _reload_active
 from .repositories import (
     ActivationRepository,
+    AuditEvidenceRepository,
     DraftRepository,
     EvidenceRepository,
     PublicationRepository,
@@ -127,8 +134,11 @@ class PostgreSQLSemanticCatalog:
         self._snapshots = SnapshotRepository(self._uow)
         self._drafts = DraftRepository(self._uow)
         self._evidence = EvidenceRepository(self._uow)
-        self._publications = PublicationRepository(self._uow, self._evidence)
-        self._activation = ActivationRepository(self._uow, self._evidence, self._publications)
+        self._audit = AuditEvidenceRepository(self._uow)
+        self._publications = PublicationRepository(self._uow, self._evidence, self._audit)
+        self._activation = ActivationRepository(
+            self._uow, self._evidence, self._publications, self._audit
+        )
         self._initialize_schema()
 
     # -- schema and connection ---------------------------------------------
@@ -536,6 +546,7 @@ class PostgreSQLSemanticCatalog:
         *,
         production: ProductionActivationContext | None = None,
         tenant_scope_fingerprint: str | None = None,
+        operator_audit_reference: str | None = None,
     ) -> BundleCatalogOutcome:
         """Atomically point the active pointer at a published valid Bundle."""
         namespace = _namespace(tenant_scope_fingerprint)
@@ -545,6 +556,7 @@ class PostgreSQLSemanticCatalog:
                 conn, bundle_id, version, namespace=namespace, now=now,
                 production=production,
                 tenant_scope_fingerprint=tenant_scope_fingerprint,
+                operator_audit_reference=operator_audit_reference,
             )
 
     def activate_fingerprint(
@@ -554,6 +566,7 @@ class PostgreSQLSemanticCatalog:
         *,
         production: ProductionActivationContext | None = None,
         tenant_scope_fingerprint: str | None = None,
+        operator_audit_reference: str | None = None,
     ) -> BundleCatalogOutcome:
         """Atomically activate a complete publication by semantic fingerprint."""
         bundle = self._publications.get_by_fingerprint(
@@ -571,6 +584,7 @@ class PostgreSQLSemanticCatalog:
             bundle.model_version,
             production=production,
             tenant_scope_fingerprint=tenant_scope_fingerprint,
+            operator_audit_reference=operator_audit_reference,
         )
 
     def rollback(
@@ -579,6 +593,7 @@ class PostgreSQLSemanticCatalog:
         *,
         production: ProductionActivationContext | None = None,
         tenant_scope_fingerprint: str | None = None,
+        operator_audit_reference: str | None = None,
     ) -> BundleCatalogOutcome:
         """Move the active pointer to the previous active version."""
         namespace = _namespace(tenant_scope_fingerprint)
@@ -588,6 +603,7 @@ class PostgreSQLSemanticCatalog:
                 conn, bundle_id, namespace=namespace, now=now,
                 production=production,
                 tenant_scope_fingerprint=tenant_scope_fingerprint,
+                operator_audit_reference=operator_audit_reference,
             )
 
     def rollback_to_fingerprint(
@@ -597,6 +613,7 @@ class PostgreSQLSemanticCatalog:
         *,
         production: ProductionActivationContext | None = None,
         tenant_scope_fingerprint: str | None = None,
+        operator_audit_reference: str | None = None,
     ) -> BundleCatalogOutcome:
         """Change only the active pointer to a published semantic fingerprint."""
         active = self._activation.active(
@@ -620,13 +637,18 @@ class PostgreSQLSemanticCatalog:
             )
         if active.fingerprint == fingerprint:
             return _success("rolled_back", target)
-        outcome = self.activate_fingerprint(
-            bundle_id, fingerprint, production=production,
-            tenant_scope_fingerprint=tenant_scope_fingerprint,
-        )
-        if not outcome.success:
-            return outcome
-        return _success("rolled_back", target)
+        # A fingerprint rollback is a rollback, not an activation: the
+        # pointer-change audit entry must carry the rollback event kind.
+        namespace = _namespace(tenant_scope_fingerprint)
+        with self._uow.transaction() as conn:
+            outcome = self._activation.activate(
+                conn, bundle_id, target.model_version, namespace=namespace,
+                now=self._uow.now(), production=production,
+                tenant_scope_fingerprint=tenant_scope_fingerprint,
+                operator_audit_reference=operator_audit_reference,
+                entry_kind=AuditEventKind.ROLLBACK,
+            )
+        return _success("rolled_back", target) if outcome.success else outcome
 
     def set_version_state(
         self,
@@ -640,6 +662,47 @@ class PostgreSQLSemanticCatalog:
         return self._activation.set_version_state(
             bundle_id, fingerprint, state,
             tenant_scope_fingerprint=tenant_scope_fingerprint,
+        )
+
+    # -- assembly audit evidence -------------------------------------------------
+
+    def record_audit_entries(
+        self,
+        entries: Sequence[AssemblyAuditEvidenceEntry],
+        *,
+        tenant_scope_fingerprint: str,
+    ) -> None:
+        """Record externally supplied audit-evidence entries under one scope."""
+        self._audit.record_audit_entries(
+            entries, tenant_scope_fingerprint=tenant_scope_fingerprint
+        )
+
+    def audit_entries(
+        self,
+        *,
+        tenant_scope_fingerprint: str | None = None,
+        draft_id: str | None = None,
+        draft_revision_min: int | None = None,
+        draft_revision_max: int | None = None,
+        assertion_id: str | None = None,
+        bundle_fingerprint: str | None = None,
+        lifecycle_reference: str | None = None,
+        predecessor_event_id: str | None = None,
+        limit: int = MAX_TRAIL_ENTRIES,
+        cursor: str | None = None,
+    ) -> AuditTrail:
+        """Return one deterministic, bounded, tenant-scoped trail page."""
+        return self._audit.audit_entries(
+            tenant_scope_fingerprint=tenant_scope_fingerprint,
+            draft_id=draft_id,
+            draft_revision_min=draft_revision_min,
+            draft_revision_max=draft_revision_max,
+            assertion_id=assertion_id,
+            bundle_fingerprint=bundle_fingerprint,
+            lifecycle_reference=lifecycle_reference,
+            predecessor_event_id=predecessor_event_id,
+            limit=limit,
+            cursor=cursor,
         )
 
     # -- maintenance -----------------------------------------------------------

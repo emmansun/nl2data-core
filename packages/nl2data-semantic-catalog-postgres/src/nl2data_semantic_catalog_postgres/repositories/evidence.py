@@ -11,8 +11,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from nl2data_core.assembly.audit_evidence import PublicationAuditEvidence
 from nl2data_core.assembly.manifest import AcceptedAssertionManifest
 from nl2data_core.bundles.publication import PublishAuditRecord
+from nl2data_core.canonical import sha256_fingerprint
 from nl2data_core.control_plane.publication.contracts import (
     FrozenReleaseBinding,
     PublicationIntegrityError,
@@ -21,7 +23,7 @@ from nl2data_core.control_plane.publication.contracts import (
 )
 from nl2data_core.verification.models import VerificationSuiteEvidence
 
-from ..envelope import ArtifactKind
+from ..envelope import ENVELOPE_SCHEMA_VERSION, ArtifactKind
 from ..errors import SemanticCatalogError, SemanticCatalogErrorCode
 from ..unit_of_work import CatalogUnitOfWork, _namespace
 
@@ -35,6 +37,7 @@ _CAUSE_TYPES = {
     "verification_binding_mismatch": "VerificationBindingMismatch",
     "verification_evidence_mismatch": "VerificationEvidenceMetadataMismatch",
     "verification_binding_audit_mismatch": "VerificationAuditMismatch",
+    "publication_audit_evidence_mismatch": "PublicationAuditEvidenceMismatch",
 }
 
 
@@ -111,6 +114,69 @@ class EvidenceRepository:
             row_schema_version=row["schema_version"],
         )
         return self._uow.release_binding_from_envelope(envelope)
+
+    def insert_publication_audit_evidence(
+        self,
+        conn: Any,
+        namespace: str,
+        bundle_id: str,
+        fingerprint: str,
+        binding: PublicationAuditEvidence,
+        *,
+        now: Any,
+    ) -> None:
+        """Persist the publication audit-evidence binding inside a transaction."""
+        payload = self._uow.publication_audit_evidence_payload(binding)
+        self._uow.execute(
+            conn,
+            "insert_publication_audit_evidence",
+            (
+                namespace,
+                bundle_id,
+                fingerprint,
+                binding.fingerprint,
+                ENVELOPE_SCHEMA_VERSION,
+                self._uow.encode(
+                    ArtifactKind.PUBLICATION_AUDIT_EVIDENCE,
+                    payload,
+                    sha256_fingerprint(payload),
+                ),
+                now,
+            ),
+        )
+
+    def read_publication_audit_evidence(
+        self,
+        conn: Any,
+        namespace: str,
+        bundle_id: str,
+        fingerprint: str,
+    ) -> PublicationAuditEvidence | None:
+        """Load one publication audit-evidence binding inside a transaction."""
+        row = self._uow.execute(
+            conn,
+            "read_publication_audit_evidence",
+            (namespace, bundle_id, fingerprint),
+        ).fetchone()
+        if row is None:
+            return None
+        envelope = self._uow.decode(
+            row["envelope"],
+            ArtifactKind.PUBLICATION_AUDIT_EVIDENCE,
+            row_schema_version=row["schema_version"],
+        )
+        binding = self._uow.publication_audit_evidence_from_envelope(envelope)
+        if (
+            binding.bundle_fingerprint != fingerprint
+            or binding.fingerprint != row["evidence_fingerprint"]
+        ):
+            raise SemanticCatalogError(
+                SemanticCatalogErrorCode.ENVELOPE_REJECTED,
+                "persisted publication audit evidence metadata does not "
+                "match publication",
+                details={"cause_type": "PublicationAuditEvidenceMismatch"},
+            )
+        return binding
 
     def read_verification_evidence(
         self,
@@ -212,6 +278,9 @@ class EvidenceRepository:
             conn, namespace, bundle_id, fingerprint
         )
         audit = self.read_publish_audit(conn, namespace, bundle_id, fingerprint)
+        audit_evidence = self.read_publication_audit_evidence(
+            conn, namespace, bundle_id, fingerprint
+        )
         manifest_row = self._uow.execute(
             conn,
             "read_accepted_manifest",
@@ -245,6 +314,7 @@ class EvidenceRepository:
             audit=audit,
             verification_evidence=evidence,
             frozen_release_binding=binding,
+            audit_evidence=audit_evidence,
         )
         try:
             validate_publication_integrity(records)
@@ -274,6 +344,26 @@ class EvidenceRepository:
                     details={"cause_type": "MissingPublishAudit"},
                 ) from error
             raise _integrity_rejection(error) from error
+        if (
+            audit is not None
+            and audit_evidence is None
+            and self._uow.execute(
+                conn,
+                "read_publication_audit_entry",
+                (namespace, audit.audit_id),
+            ).fetchone()
+            is not None
+        ):
+            # The publication-kind trail entry witnesses that a binding row
+            # was persisted atomically with the publish audit; a binding
+            # row that vanished while its witness survives is corruption,
+            # never a legacy shape.
+            raise SemanticCatalogError(
+                SemanticCatalogErrorCode.ENVELOPE_REJECTED,
+                "publication audit evidence row is missing for its publish "
+                "audit",
+                details={"cause_type": "MissingPublicationAuditEvidence"},
+            )
         return records
 
     def validated_verification_evidence(

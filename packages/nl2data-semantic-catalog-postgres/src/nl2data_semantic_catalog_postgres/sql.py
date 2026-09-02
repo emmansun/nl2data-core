@@ -399,6 +399,110 @@ _MAINTENANCE_SQL: dict[str, str] = {
         "WHERE occurred_at < %s "
         "ORDER BY occurred_at, event_id LIMIT %s)"
     ),
+    # Audit-evidence retention preserves explainability: entries whose
+    # bundle fingerprint belongs to a non-retired published version and
+    # entries referenced as predecessors by such protected entries are
+    # never removed, whatever their age.
+    "delete_expired_audit_entries": (
+        "DELETE FROM {schema}.assembly_audit_evidence "
+        "WHERE (scope_namespace, event_id) IN ("
+        "SELECT a.scope_namespace, a.event_id "
+        "FROM {schema}.assembly_audit_evidence a "
+        "WHERE a.occurred_at < %s "
+        "AND NOT EXISTS ("
+        "SELECT 1 FROM {schema}.published_versions pv "
+        "WHERE pv.scope_namespace = a.scope_namespace "
+        "AND pv.bundle_fingerprint = a.bundle_fingerprint "
+        "AND pv.lifecycle_state <> 'retired') "
+        "AND NOT EXISTS ("
+        "SELECT 1 FROM {schema}.assembly_audit_evidence p "
+        "WHERE p.scope_namespace = a.scope_namespace "
+        "AND a.event_id IN (SELECT jsonb_array_elements_text("
+        "p.envelope::jsonb -> 'payload' -> 'predecessor_event_ids')) "
+        "AND EXISTS ("
+        "SELECT 1 FROM {schema}.published_versions pv2 "
+        "WHERE pv2.scope_namespace = p.scope_namespace "
+        "AND pv2.bundle_fingerprint = p.bundle_fingerprint "
+        "AND pv2.lifecycle_state <> 'retired')) "
+        "ORDER BY a.occurred_at, a.event_id LIMIT %s)"
+    ),
+}
+
+# -- assembly audit evidence -------------------------------------------------
+_AUDIT_EVIDENCE_SQL: dict[str, str] = {
+    "insert_publication_audit_evidence": (
+        "INSERT INTO {schema}.publication_audit_evidence (scope_namespace, "
+        "bundle_id, bundle_fingerprint, evidence_fingerprint, schema_version, "
+        "envelope, created_at) VALUES (%s, %s, %s, %s, %s, %s, %s)"
+    ),
+    "read_publication_audit_evidence": (
+        "SELECT evidence_fingerprint, envelope, schema_version FROM "
+        "{schema}.publication_audit_evidence WHERE scope_namespace = %s "
+        "AND bundle_id = %s AND bundle_fingerprint = %s"
+    ),
+    "insert_audit_entry": (
+        "INSERT INTO {schema}.assembly_audit_evidence (scope_namespace, "
+        "event_id, event_kind, subject_kind, subject_reference, draft_id, "
+        "draft_revision, assertion_id, bundle_fingerprint, "
+        "lifecycle_reference, entry_fingerprint, schema_version, envelope, "
+        "occurred_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, "
+        "%s, %s, %s) ON CONFLICT (scope_namespace, event_id) DO NOTHING"
+    ),
+    "read_audit_entry": (
+        "SELECT entry_fingerprint, envelope, schema_version, occurred_at FROM "
+        "{schema}.assembly_audit_evidence WHERE scope_namespace = %s "
+        "AND event_id = %s"
+    ),
+    # The publication-kind trail entry is the durable witness that a
+    # publication audit-evidence binding existed: a binding row that is
+    # lost while its publish audit survives is corruption, not legacy.
+    "read_publication_audit_entry": (
+        "SELECT event_id FROM {schema}.assembly_audit_evidence "
+        "WHERE scope_namespace = %s AND lifecycle_reference = %s "
+        "AND event_kind = 'publication' LIMIT 1"
+    ),
+    "read_latest_publication_entry": (
+        "SELECT event_id FROM {schema}.assembly_audit_evidence "
+        "WHERE scope_namespace = %s AND bundle_fingerprint = %s "
+        "AND event_kind = 'publication' "
+        "ORDER BY occurred_at DESC, event_id DESC LIMIT 1"
+    ),
+    # Optional equality filters keep the explicit ``IS NULL`` pattern so an
+    # unbound filter can never compare a column against itself (a
+    # ``col = COALESCE(x, col)`` predicate silently drops rows whose column
+    # is NULL).  The revision bounds and the keyset cursor use the same
+    # pattern.  Ordering is the deterministic (occurred_at, event_id)
+    # lifecycle order shared with the core trail.
+    "count_audit_evidence": (
+        "SELECT COUNT(*) AS total FROM {schema}.assembly_audit_evidence "
+        "WHERE scope_namespace = %s "
+        "AND (%s::text IS NULL OR draft_id = %s) "
+        "AND (%s::text IS NULL OR assertion_id = %s) "
+        "AND (%s::text IS NULL OR bundle_fingerprint = %s) "
+        "AND (%s::text IS NULL OR lifecycle_reference = %s) "
+        "AND (%s::int IS NULL OR draft_revision >= %s::int) "
+        "AND (%s::int IS NULL OR draft_revision <= %s::int) "
+        "AND (%s::text IS NULL OR envelope::jsonb -> 'payload' "
+        "-> 'predecessor_event_ids' ? %s::text) "
+        "AND (%s::timestamptz IS NULL OR (occurred_at, event_id) > "
+        "(%s::timestamptz, %s))"
+    ),
+    "list_audit_evidence": (
+        "SELECT event_id, entry_fingerprint, envelope, schema_version, "
+        "occurred_at FROM "
+        "{schema}.assembly_audit_evidence WHERE scope_namespace = %s "
+        "AND (%s::text IS NULL OR draft_id = %s) "
+        "AND (%s::text IS NULL OR assertion_id = %s) "
+        "AND (%s::text IS NULL OR bundle_fingerprint = %s) "
+        "AND (%s::text IS NULL OR lifecycle_reference = %s) "
+        "AND (%s::int IS NULL OR draft_revision >= %s::int) "
+        "AND (%s::int IS NULL OR draft_revision <= %s::int) "
+        "AND (%s::text IS NULL OR envelope::jsonb -> 'payload' "
+        "-> 'predecessor_event_ids' ? %s::text) "
+        "AND (%s::timestamptz IS NULL OR (occurred_at, event_id) > "
+        "(%s::timestamptz, %s)) "
+        "ORDER BY occurred_at, event_id LIMIT %s"
+    ),
 }
 
 #: Every statement the catalog issues, keyed by a stable name.
@@ -411,5 +515,6 @@ SQL_TEMPLATES: dict[str, str] = {
     **_PUBLICATION_LIFECYCLE_SQL,
     **_ACTIVATION_SQL,
     **_EVENT_SQL,
+    **_AUDIT_EVIDENCE_SQL,
     **_MAINTENANCE_SQL,
 }

@@ -10,6 +10,16 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
+from .handlers_audit import (
+    _h_count_audit_evidence,
+    _h_insert_audit_entry,
+    _h_insert_publication_audit_evidence,
+    _h_list_audit_evidence,
+    _h_read_audit_entry,
+    _h_read_latest_publication_entry,
+    _h_read_publication_audit_entry,
+    _h_read_publication_audit_evidence,
+)
 from .handlers_drafts import (
     _h_insert_assembly_draft,
     _h_lock_assembly_draft,
@@ -17,6 +27,7 @@ from .handlers_drafts import (
     _h_replace_assembly_draft,
 )
 from .handlers_maintenance import (
+    _h_delete_expired_audit_entries,
     _h_delete_expired_events,
     _h_delete_expired_publications,
     _h_delete_expired_snapshots,
@@ -118,7 +129,16 @@ HANDLERS: dict[str, Callable[..., tuple[list[dict[str, Any]], int]]] = {
     "list_bundle_pointers": _h_list_bundle_pointers,
     "list_orphan_active_versions": _h_list_orphan_active_versions,
     "insert_event": _h_insert_event,
+    "insert_publication_audit_evidence": _h_insert_publication_audit_evidence,
+    "read_publication_audit_evidence": _h_read_publication_audit_evidence,
+    "insert_audit_entry": _h_insert_audit_entry,
+    "read_audit_entry": _h_read_audit_entry,
+    "read_publication_audit_entry": _h_read_publication_audit_entry,
+    "read_latest_publication_entry": _h_read_latest_publication_entry,
+    "count_audit_evidence": _h_count_audit_evidence,
+    "list_audit_evidence": _h_list_audit_evidence,
     "delete_expired_snapshots": _h_delete_expired_snapshots,
     "delete_expired_publications": _h_delete_expired_publications,
     "delete_expired_events": _h_delete_expired_events,
+    "delete_expired_audit_entries": _h_delete_expired_audit_entries,
 }

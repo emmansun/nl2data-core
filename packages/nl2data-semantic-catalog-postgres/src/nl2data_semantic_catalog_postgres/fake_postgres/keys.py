@@ -80,6 +80,16 @@ def _event_key(namespace: str, event_id: str) -> tuple[Any, ...]:
     return ("events", namespace, event_id)
 
 
+def _publication_audit_evidence_key(
+    namespace: str, bundle_id: str, fingerprint: str
+) -> tuple[Any, ...]:
+    return ("publication_audit_evidence", namespace, bundle_id, fingerprint)
+
+
+def _audit_entry_key(namespace: str, event_id: str) -> tuple[Any, ...]:
+    return ("audit_entries", namespace, event_id)
+
+
 def _lock_or_fail(
     pool: FakePostgresPool,
     connection: _FakeConnection,

@@ -83,6 +83,12 @@ class SemanticCatalogConfig(BaseModel):
     event_retention_seconds: float = Field(
         default=604_800.0, ge=60.0, le=_MAX_EVENT_RETENTION_SECONDS
     )
+    #: Audit-evidence entries older than this age out unless their bundle
+    #: fingerprint belongs to a non-retired published version (or another
+    #: protected entry references them as a predecessor).
+    audit_retention_seconds: float = Field(
+        default=604_800.0, ge=60.0, le=_MAX_EVENT_RETENTION_SECONDS
+    )
     #: Maximum records removed by one bounded cleanup pass.
     cleanup_batch_size: int = Field(default=500, ge=1, le=_MAX_CLEANUP_BATCH)
     #: Hard upper bound for one persisted envelope (bytes).
@@ -120,6 +126,7 @@ class SemanticCatalogConfig(BaseModel):
             "schema_version": self.schema_version,
             "snapshot_retention_seconds": self.snapshot_retention_seconds,
             "event_retention_seconds": self.event_retention_seconds,
+            "audit_retention_seconds": self.audit_retention_seconds,
             "cleanup_batch_size": self.cleanup_batch_size,
             "max_envelope_bytes": self.max_envelope_bytes,
             "max_payload_bytes": self.max_payload_bytes,
