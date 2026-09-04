@@ -434,7 +434,14 @@ cross_domain_import_budget:
   # justified above (assembly.audit_evidence consumers across bundles,
   # control_plane, admin, and semantic_catalog_postgres).  No new import
   # direction or edge outside those families was introduced.
-  baseline: 418
+  # Ratcheted from 418 after the fluent authoring builder API:
+  # nl2data_core.assembly.authoring.builder imports
+  # nl2data_core.bundles.models (BundleCompatibility) so builder-constructed
+  # documents are the same model object graph the YAML loader produces.  Both
+  # new edges follow the already-approved inward assembly.authoring ->
+  # bundles.models direction (authoring.models imports the same symbol for
+  # the AuthoringSpec.compatibility field); no new direction was introduced.
+  baseline: 420
   max_new_imports: 0
 
 duplicate_detection:

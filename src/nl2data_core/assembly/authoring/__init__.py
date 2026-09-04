@@ -1,5 +1,6 @@
 """Safe semantic assembly authoring contracts and operations."""
 
+from .builder import AuthoringBuilderError, SemanticAssemblyBuilder
 from .diagnostics import (
     AuthoringDiagnostic,
     AuthoringExportResult,
@@ -30,6 +31,7 @@ from .models import (
     AuthoringSource,
     AuthoringSourceReference,
     AuthoringSpec,
+    AuthoringVerificationPlan,
     SemanticAssemblyAuthoring,
 )
 from .policy_templates import (
@@ -44,6 +46,7 @@ __all__ = [
     "AUTHORING_API_VERSION",
     "AUTHORING_KIND",
     "MAX_AUTHORING_BYTES",
+    "AuthoringBuilderError",
     "AuthoringCalculatedField",
     "AuthoringDeploymentBinding",
     "AuthoringDiagnostic",
@@ -65,11 +68,13 @@ __all__ = [
     "AuthoringSpec",
     "AuthoringSummary",
     "AuthoringValidationResult",
+    "AuthoringVerificationPlan",
     "ExpandedPolicy",
     "POLICY_TEMPLATE_NAMES",
     "PolicyTemplateError",
     "SemanticAssemblyAuthoring",
     "SemanticAssemblyAuthoringLoader",
+    "SemanticAssemblyBuilder",
     "expand_policy_templates",
     "lower_authoring",
     "export_authoring",

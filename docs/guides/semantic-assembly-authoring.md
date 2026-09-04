@@ -113,6 +113,72 @@ decision engine: query-time enforcement continues to come from the host
 `PolicyScope`, and binding policy assertions to runtime enforcement is a
 deliberately deferred future change.
 
+## Builder API
+
+Programmatic hosts can construct the same authoring document in code with the
+fluent `SemanticAssemblyBuilder` instead of emitting YAML text. Builder calls
+construct the same pydantic models the YAML loader produces, so every bound,
+safe-content rule, identifier pattern, and forbidden-key rejection applies at
+the construction call — there is no fork where a document passes one entry
+point and fails the other. A builder document and an equivalent YAML document
+produce identical validation summaries, lowered assertion identities and
+payload hashes, and byte-identical exports.
+
+```python
+from nl2data_core.assembly.authoring import SemanticAssemblyBuilder
+
+builder = SemanticAssemblyBuilder("sales", "1.0.0", "Sales semantic model")
+builder.source("warehouse")
+(
+    builder.entity("orders", "Orders")
+    .field("amount", "Amount", "int", allowed_aggregations=("sum", "avg"))
+    .field("customer_id", "Customer", "int")
+    .relationship(
+        "orders_customers",
+        "customers",
+        ("customer_id",),
+        ("tenant_id",),
+        "Order customer",
+    )
+    .done()
+)
+builder.measure("revenue", "amount", "Revenue", aggregation="sum")
+builder.policy("tenant-isolation", entity="orders", field="customer_id", claim="tenant_id")
+builder.deployment_binding("prod", "production", "warehouse", "env:NL2DATA_DEMO_DSN")
+document = builder.build()
+```
+
+The result feeds the unchanged pipeline: `validate_authoring(document)`,
+`lower_authoring(document, draft_id=..., author_reference=...)`, and
+`export_authoring(document)`.
+
+Notes:
+
+- Calculated fields accept only governed `ExprNode` expression trees, never
+  expression strings.
+- `verification_plan` accepts an `AuthoringVerificationPlan` instance or a
+  JSON-compatible mapping and routes through the same normalized model
+  construction as YAML: camelCase aliases are accepted and lifecycle keys
+  (`fingerprint`, `status`, `evidence`, runner/executor identities) are
+  rejected.
+- `compatibility` accepts a `BundleCompatibility` instance or field-wise
+  arguments mirroring the model.
+- The builder surface diverges deliberately from the DDS-020 §9.2 sketch:
+  there are no `table=`, `column=`, or `dsn=` parameters. Authoring carries
+  references only — deployment bindings take a `connection_reference` scheme
+  such as `env:`, `vault:`, or `file:` — and the builder exposes no lifecycle
+  state, review or approval bindings, computed fingerprints, or credentials.
+- The builder performs no sorting and adds no validation of its own beyond
+  structural misuse checks; identity-based ordering stays owned by lowering
+  and export.
+
+Construction failures and misuse raise `AuthoringBuilderError` with a bounded
+message and an authoring path such as `$.spec.entities[0].fields[0]`. Messages
+never echo rejected values, and there are no line/column marks because
+programmatic input has none. Misuse — entity-scoped calls outside an open
+entity scope, calls after `done()` or `build()`, or `build()` with an entity
+scope still open — fails closed the same way.
+
 ## Diagnostics and lifecycle
 
 Diagnostics have a stable code, normalized `$` path, optional one-based line

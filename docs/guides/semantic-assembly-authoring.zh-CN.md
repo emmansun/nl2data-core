@@ -87,6 +87,63 @@ pending 策略断言，规范载荷只包含已解析的策略语义（`policy_k
 和审计的内容单元，而不是新的运行时决策引擎：查询时强制仍来自宿主
 `PolicyScope`，将策略断言绑定到运行时强制是刻意推迟的后续变更。
 
+## Builder API
+
+程序化宿主可以用流式的 `SemanticAssemblyBuilder` 在代码中构造与 YAML
+完全相同的编写文档，而不必生成 YAML 文本。Builder 的每次调用构造的都是
+YAML 加载器产生的同一批 pydantic 模型，因此所有边界、安全内容规则、
+标识符模式和禁止键校验都在构造调用处生效——不存在同一文档从一个入口
+通过而从另一个入口失败的分叉。Builder 文档与等价 YAML 文档产生完全相同
+的校验摘要、断言标识与载荷哈希，以及逐字节相同的导出。
+
+```python
+from nl2data_core.assembly.authoring import SemanticAssemblyBuilder
+
+builder = SemanticAssemblyBuilder("sales", "1.0.0", "Sales semantic model")
+builder.source("warehouse")
+(
+    builder.entity("orders", "Orders")
+    .field("amount", "Amount", "int", allowed_aggregations=("sum", "avg"))
+    .field("customer_id", "Customer", "int")
+    .relationship(
+        "orders_customers",
+        "customers",
+        ("customer_id",),
+        ("tenant_id",),
+        "Order customer",
+    )
+    .done()
+)
+builder.measure("revenue", "amount", "Revenue", aggregation="sum")
+builder.policy("tenant-isolation", entity="orders", field="customer_id", claim="tenant_id")
+builder.deployment_binding("prod", "production", "warehouse", "env:NL2DATA_DEMO_DSN")
+document = builder.build()
+```
+
+结果进入完全相同的管线：`validate_authoring(document)`、
+`lower_authoring(document, draft_id=..., author_reference=...)` 与
+`export_authoring(document)`。
+
+要点：
+
+- 计算字段只接受受治理的 `ExprNode` 表达式树，不接受表达式字符串。
+- `verification_plan` 接受 `AuthoringVerificationPlan` 实例或 JSON 兼容映射，
+  并经过与 YAML 相同的规范化模型构造：接受 camelCase 别名，拒绝生命周期键
+  （`fingerprint`、`status`、`evidence`、运行器/执行器身份）。
+- `compatibility` 接受 `BundleCompatibility` 实例或按字段展开的参数。
+- Builder 接口刻意偏离 DDS-020 §9.2 草图：不提供 `table=`、`column=` 或
+  `dsn=` 参数。编写层只承载引用——部署绑定使用 `env:`、`vault:` 或
+  `file:` 引用形式的 `connection_reference`——并且 Builder 不暴露生命周期
+  状态、评审或批准绑定、计算指纹或凭据。
+- Builder 自身不做排序，也不在结构误用检查之外添加校验；基于标识的排序
+  仍由降低和导出负责。
+
+构造失败和误用都会抛出带受限消息与编写路径（例如
+`$.spec.entities[0].fields[0]`）的 `AuthoringBuilderError`。消息绝不回显
+被拒绝的值；程序化输入没有行列号，因此也没有源位置标记。误用——在未
+打开的实体作用域外调用实体级方法、`done()` 或 `build()` 之后继续调用、
+或实体作用域未关闭时调用 `build()`——同样失败关闭。
+
 ## 诊断与生命周期
 
 诊断包含稳定代码、规范化 `$` 路径、可选的一基行列号和受控消息。最多
