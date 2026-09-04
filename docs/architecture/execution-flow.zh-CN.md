@@ -114,4 +114,6 @@ not-configured 回退仍然保留。
   门内的安全决策。
 - [工作流状态](workflow-state.md) — `persist` 实际存储什么、
   恢复如何工作。
+- [验证套件](verification-suite.zh-CN.md) — 本流程的发布期对应物：
+  Bundle 候选在发布前如何获得通过的验证证据。
 - [English source](execution-flow.md) — 英文原文（规范）。

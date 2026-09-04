@@ -35,6 +35,12 @@ Bundle、确定性的受治理工作流运行时，以及可选的数据库、�
 | 可选工作流状态后端 | `nl2data_workflow_postgres`（兄弟发行包） | 独立包 |
 | 可选内存后端 | `nl2data_memory_redis`（兄弟发行包） | 独立包 |
 | 可选模型提供方 | `nl2data_openai`（兄弟发行包） | 独立包 |
+| 可选管理控制平面 | `nl2data_admin_service`（兄弟发行包） | 独立包 |
+
+语义程序集（Semantic Assembly）YAML 通过一个有边界的编写加载器进入系统。
+它将语义内容归一化为受治理模型，并派生待审断言；受信任的 Admin 边界单独
+提供作者与草稿身份。编写格式永远不作为评审、批准、发布或激活的权威来源。
+参见[语义程序集 YAML 编写](../guides/semantic-assembly-authoring.zh-CN.md)。
 
 ## 边界图
 
@@ -113,6 +119,7 @@ flowchart LR
 
 - [执行流程](execution-flow.md) — 一个请求从提示词到受保护结果的
   全阶段路径。
+- [语义层](semantic-layer.zh-CN.md) — 语义层与编译器之间的词汇边界。
 - [包边界](package-boundaries.md) — 公共/内部导入与可选依赖加载。
 - [治理与多租户](governance-and-tenancy.md) — 谁可以决策，
   以及租户隔离如何强制执行。
@@ -120,6 +127,8 @@ flowchart LR
   持久化与 at-least-once 语义。
 - [元数据生命周期](metadata-lifecycle.md) — 发现、推断、评审、
   Bundle 发布与 schema 漂移。
+- [验证套件](verification-suite.zh-CN.md) — Bundle 候选在发布前
+  如何获得通过的验证证据。
 - [证据与指纹](evidence-and-fingerprints.md) — 指纹为何存在、
   覆盖什么、如何计算。
 - [English source](overview.md) — 英文原文（规范）。

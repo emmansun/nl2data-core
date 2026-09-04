@@ -130,6 +130,8 @@ structurally checked in CI.
 
 - [Execution flow](execution-flow.md) — the path of one request through
   every stage, from prompt to protected result.
+- [Semantic layer](semantic-layer.md) — the vocabulary boundary between
+  the semantic layer and the compiler.
 - [Package boundaries](package-boundaries.md) — public/internal imports
   and optional dependency loading.
 - [Governance and tenancy](governance-and-tenancy.md) — who may decide,
@@ -138,6 +140,8 @@ structurally checked in CI.
   persistence, and at-least-once semantics.
 - [Metadata lifecycle](metadata-lifecycle.md) — discovery, inference,
   review, Bundle publication, and schema drift.
+- [Verification suite](verification-suite.md) — how a bundle candidate
+  earns passing evidence before publication.
 - [Evidence and fingerprints](evidence-and-fingerprints.md) — why
   fingerprints exist, what they cover, and how they are computed.
 - [架构总览 (简体中文)](overview.zh-CN.md) — 中文架构总览。

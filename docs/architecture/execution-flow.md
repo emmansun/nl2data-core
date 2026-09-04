@@ -129,4 +129,7 @@ Without any configured runtime, the facade returns the stable
   decisions inside the `govern` / `authorize` gates.
 - [Workflow state](workflow-state.md) — what `persist` actually stores
   and how recovery works.
+- [Verification suite](verification-suite.md) — the publication-time
+  counterpart of this flow: how a bundle candidate earns passing evidence
+  before release.
 - [执行流程 (简体中文)](execution-flow.zh-CN.md) — 中文执行流程。

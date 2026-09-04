@@ -17,7 +17,7 @@ NL2Data 是一个受治理、可扩展的 Python 框架，用于以自然语言�
 | 分区 | 目标读者 | 前置条件 | 从这里开始 |
 | --- | --- | --- | --- |
 | [快速上手](getting-started/installation.md) | 希望安装并运行首个查询的应用开发者 | Python 3.11+ 与 `pip` | [安装](getting-started/installation.md) → [快速上手](getting-started/quickstart.md) |
-| [指南](guides/composition-and-query-lifecycle.md) | 组合使用本库的应用集成者 | 快速上手 | [组合与查询生命周期](guides/composition-and-query-lifecycle.md) · [从元数据到激活 Bundle](guides/metadata-to-bundle.zh-CN.md) · [主流程演示](guides/mainflow-demo.zh-CN.md) |
+| [指南](guides/composition-and-query-lifecycle.md) | 组合使用本库的应用集成者 | 快速上手 | [组合与查询生命周期](guides/composition-and-query-lifecycle.md) · [从元数据到激活 Bundle](guides/metadata-to-bundle.zh-CN.md) · [语义程序集 YAML 编写](guides/semantic-assembly-authoring.zh-CN.md) · [主流程演示](guides/mainflow-demo.zh-CN.md) |
 | [架构](architecture/overview.md) | 架构师、安全评审人员与维护者 | 了解公共 API 基础 | [架构总览](architecture/overview.md) |
 | [开发](development/local-development.md) | 本仓库贡献者 | Python 工具链（pytest、mypy、ruff） | [本地开发](development/local-development.md) |
 | [运维](operations/services.md) | 运维与平台工程师 | 按需访问 PostgreSQL、Redis、MongoDB 或 OpenAI | [服务配置](operations/services.md) |
@@ -35,7 +35,8 @@ Mermaid 含义、规范性要求与安全警告，并始终链接到规范的英
 | [快速上手](getting-started/quickstart.md) | [快速上手 (简体中文)](getting-started/quickstart.zh-CN.md) — 完整翻译 |
 | [组合与查询生命周期](guides/composition-and-query-lifecycle.md) | English-first（暂无中文翻译，请阅读英文原文） |
 | [主流程演示](guides/mainflow-demo.md) | [主流程演示 (简体中文)](guides/mainflow-demo.zh-CN.md) — 完整翻译 |
-| [从元数据到激活 Bundle](guides/metadata-to-bundle.md) | [Metadata to active Bundle](guides/metadata-to-bundle.md) — 英文规范原文与中文翻译 |
+| [从元数据到激活 Bundle](guides/metadata-to-bundle.md) | [从元数据到激活 Bundle (简体中文)](guides/metadata-to-bundle.zh-CN.md) — 完整翻译 |
+| [语义程序集 YAML 编写](guides/semantic-assembly-authoring.md) | [语义程序集 YAML 编写 (简体中文)](guides/semantic-assembly-authoring.zh-CN.md) — 完整翻译 |
 | [架构总览](architecture/overview.md) | [架构总览 (简体中文)](architecture/overview.zh-CN.md) — 完整翻译 |
 | [执行流程](architecture/execution-flow.md) | [执行流程 (简体中文)](architecture/execution-flow.zh-CN.md) — 完整翻译 |
 | [包边界](architecture/package-boundaries.md) | English-first（暂无中文翻译，请阅读英文原文） |
@@ -43,6 +44,9 @@ Mermaid 含义、规范性要求与安全警告，并始终链接到规范的英
 | [工作流状态](architecture/workflow-state.md) | English-first（暂无中文翻译，请阅读英文原文） |
 | [元数据生命周期](architecture/metadata-lifecycle.md) | English-first（暂无中文翻译，请阅读英文原文） |
 | [语义层](architecture/semantic-layer.md) | [语义层 (简体中文)](architecture/semantic-layer.zh-CN.md) — 完整翻译 |
+| [ADR：pii 掩码执行点](architecture/adr-pii-masking-enforcement-point.md) | [ADR：pii 掩码执行点 (简体中文)](architecture/adr-pii-masking-enforcement-point.zh-CN.md) — 完整翻译 |
+| [ADR-045：计算字段操作符白名单](architecture/adr-calculated-field-operator-whitelist.md) | [ADR-045：计算字段操作符白名单 (简体中文)](architecture/adr-calculated-field-operator-whitelist.zh-CN.md) — 完整翻译 |
+| [ADR 注册表](architecture/adr-registry.md) | English-first（暂无中文翻译，请阅读英文原文） |
 | [证据与指纹](architecture/evidence-and-fingerprints.md) | [证据与指纹 (简体中文)](architecture/evidence-and-fingerprints.zh-CN.md) — 完整翻译 |
 | [验证套件](architecture/verification-suite.md) | [验证套件 (简体中文)](architecture/verification-suite.zh-CN.md) — 完整翻译 |
 | [本地开发](development/local-development.md) | English-first（暂无中文翻译，请阅读英文原文） |
@@ -57,6 +61,8 @@ Mermaid 含义、规范性要求与安全警告，并始终链接到规范的英
 | [能力与支持](reference/capabilities.md) | [能力与支持 (简体中文)](reference/capabilities.zh-CN.md) — 完整翻译 |
 | [兼容性](reference/compatibility.md) | [兼容性 (简体中文)](reference/compatibility.zh-CN.md) — 完整翻译 |
 | [生产就绪](reference/production-readiness.md) | English-first（暂无中文翻译，请阅读英文原文） |
+| [语义程序集 lint 参考](reference/semantic-assembly-lint.md) | English-first（暂无中文翻译，请阅读英文原文） |
+| [程序集审计证据参考](reference/assembly-audit-evidence.md) | English-first（暂无中文翻译，请阅读英文原文） |
 
 ## 读者路径
 

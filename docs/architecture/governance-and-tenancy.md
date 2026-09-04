@@ -141,5 +141,10 @@ execution instead of silently downgrading.
 
 - [Workflow state](workflow-state.md) — how ownership and fencing
   protect state across workers.
+- [Verification suite](verification-suite.md) — the publication-time
+  counterpart of these decisions: how a bundle candidate earns passing
+  evidence before release.
+- [Assembly audit evidence](../reference/assembly-audit-evidence.md) —
+  the durable trail that records why each publication decision was made.
 - [Evidence and fingerprints](evidence-and-fingerprints.md) — what the
   fingerprints used above actually are.
