@@ -319,11 +319,12 @@ MIGRATIONS: dict[int, tuple[str, ...]] = {
         """,
         # Predecessor links live inside the canonical envelope; the GIN
         # index keeps predecessor-scoped lookups bounded without denormalizing
-        # the immutable payload.
+        # the immutable payload.  Only the jsonb expression is indexed: plain
+        # text columns have no default GIN operator class, and the namespace
+        # equality is served by the scope-leading btree indexes via BitmapAnd.
         """
         CREATE INDEX IF NOT EXISTS idx_audit_evidence_predecessors
             ON {schema}.assembly_audit_evidence USING gin (
-                scope_namespace,
                 (envelope::jsonb -> 'payload' -> 'predecessor_event_ids')
             )
         """,

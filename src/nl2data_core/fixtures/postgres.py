@@ -187,7 +187,11 @@ class PostgresFixtureProfile(FixtureProfile):
                         for column_index, cell in enumerate(row)
                     )
                 )
-        fingerprint = strict_sha256_fingerprint({"columns": columns, "rows": rows})
+        # Tuples are not JSON-safe; the canonical fingerprint is computed
+        # over list form so it matches the fixture fingerprint convention.
+        fingerprint = strict_sha256_fingerprint(
+            {"columns": list(columns), "rows": [list(row) for row in rows]}
+        )
         duration_ms = int((time.monotonic() - started) * 1000)
         return ExecutionResult(
             result_id=f"result-{fingerprint[-16:]}",
