@@ -7,7 +7,7 @@ import re
 import time
 from typing import Any
 
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 from nl2data_core.metadata.models import (
     MetadataConstraint,
     MetadataConstraintKind,
@@ -193,7 +193,7 @@ def _introspect(
         field_evidence = MetadataEvidence(
             evidence_id=f"pg-obj-{name}",
             kind="object",
-            reference=sha256_fingerprint(
+            reference=strict_sha256_fingerprint(
                 {"object": name, "fields": sorted(field.field_id for field in fields)}
             ),
             description="postgresql catalog object observation",
@@ -320,7 +320,7 @@ def _introspect(
                 )
             )
 
-    source_digest = sha256_fingerprint(
+    source_digest = strict_sha256_fingerprint(
         {
             "objects": sorted(obj.object_id for obj in objects),
             "fingerprints": sorted(evidence_item.reference for evidence_item in evidence),
@@ -342,7 +342,7 @@ def _introspect(
             sample_limit=config.max_samples,
         ),
         provenance=MetadataProvenance(
-            discovered_by_fingerprint=sha256_fingerprint(
+            discovered_by_fingerprint=strict_sha256_fingerprint(
                 {"backend": "sql:postgresql", "schema": schema}
             ),
             method="postgresql_introspection",

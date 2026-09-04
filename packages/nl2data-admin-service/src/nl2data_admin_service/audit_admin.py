@@ -9,7 +9,7 @@ publications, activations, rollbacks, or retention changes.
 from __future__ import annotations
 
 from nl2data_core.assembly import AssemblyAuditEvidenceEntry, AuditTrail, redact_audit_entry
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 
 from .auth import AuthContext, Permission
 from .common import AdminDependencyAccess, load_draft, require_permission
@@ -79,7 +79,7 @@ class AuditInspectionAdminCapability:
     ) -> None:
         """Fail closed when any entry falls outside the caller's source scope."""
         authorized = frozenset(
-            sha256_fingerprint({"source_id": source_id})
+            strict_sha256_fingerprint({"source_id": source_id})
             for source_id in auth_context.source_ids
         )
         if not authorized:

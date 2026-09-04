@@ -18,7 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from nl2data.models import QueryRequest
 from nl2data_core.ai.context import SemanticReference
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 from nl2data_core.memory.context import (
     CurrentTurnContext,
     MemoryContextProjection,
@@ -105,7 +105,7 @@ class MultiTurnResolution(BaseModel):
 
     @model_validator(mode="after")
     def _compute_fingerprint(self) -> MultiTurnResolution:
-        fingerprint = sha256_fingerprint(
+        fingerprint = strict_sha256_fingerprint(
             {
                 "kind": self.kind.value,
                 "projection": self.projection.fingerprint if self.projection else None,
@@ -250,7 +250,7 @@ def record_query_reference(
     fingerprints so equal queries never create duplicate references; raw
     prompts and queries are never stored.
     """
-    reference_id = sha256_fingerprint(
+    reference_id = strict_sha256_fingerprint(
         {"ir": ir_fingerprint, "intent": intent_fingerprint}
     )[7:23]
     if turn.tenant_scope_fingerprint is None:

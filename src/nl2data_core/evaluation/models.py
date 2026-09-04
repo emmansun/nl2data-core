@@ -17,7 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from nl2data.errors import ErrorRecord
 from nl2data_core.ai.models import ValueResolutionOutcome
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 from nl2data_core.fixtures.models import FIXED_TIMEZONE, TIME_ANCHOR
 from nl2data_core.planning.ir.models import SemanticQueryIR
 from nl2data_core.planning.models import PhysicalBinding
@@ -229,7 +229,7 @@ class EvaluationDataset(BaseModel):
 
     @model_validator(mode="after")
     def _compute_fingerprint(self) -> EvaluationDataset:
-        fingerprint = sha256_fingerprint(
+        fingerprint = strict_sha256_fingerprint(
             {
                 "dataset_id": self.dataset_id,
                 "name": self.name,
@@ -296,21 +296,23 @@ class CaseEvidence(BaseModel):
         calculated_section = (
             {
                 "calculated_field_attribution": [
-                    record.model_dump()
+                    record.model_dump(mode="json")
                     for record in self.calculated_field_attribution
                 ]
             }
             if self.calculated_field_attribution
             else {}
         )
-        fingerprint = sha256_fingerprint(
+        fingerprint = strict_sha256_fingerprint(
             {
                 "ir_fingerprint": self.ir_fingerprint,
                 "result_fingerprint": self.result_fingerprint,
-                "columns": self.columns,
-                "rows": self.rows,
+                # Model-native tuples carry as JSON arrays so strict
+                # canonicalization stays fail-closed.
+                "columns": list(self.columns),
+                "rows": [list(row) for row in self.rows],
                 "value_semantics_attribution": [
-                    record.model_dump()
+                    record.model_dump(mode="json")
                     for record in self.value_semantics_attribution
                 ],
                 **calculated_section,
@@ -356,7 +358,7 @@ class EvaluationReport(BaseModel):
 
     @model_validator(mode="after")
     def _compute_fingerprint(self) -> EvaluationReport:
-        object.__setattr__(self, "fingerprint", sha256_fingerprint(self._semantic_payload()))
+        object.__setattr__(self, "fingerprint", strict_sha256_fingerprint(self._semantic_payload()))
         return self
 
     def _semantic_payload(self) -> dict[str, Any]:
@@ -373,9 +375,14 @@ class EvaluationReport(BaseModel):
                     "case_id": result.case_id,
                     "outcome": result.outcome.value,
                     "evidence": (
-                        result.evidence.model_dump() if result.evidence is not None else None
+                        result.evidence.model_dump(mode="json")
+                        if result.evidence is not None
+                        else None
                     ),
-                    "assertions": [assertion.model_dump() for assertion in result.assertions],
+                    "assertions": [
+                        assertion.model_dump(mode="json")
+                        for assertion in result.assertions
+                    ],
                     "error": (result.error.safe_dump() if result.error is not None else None),
                 }
                 for result in self.results
@@ -442,8 +449,14 @@ class EvaluationReport(BaseModel):
             {
                 "case_id": result.case_id,
                 "outcome": result.outcome.value,
-                "evidence": (result.evidence.model_dump() if result.evidence is not None else None),
-                "assertions": [assertion.model_dump() for assertion in result.assertions],
+                "evidence": (
+                    result.evidence.model_dump(mode="json")
+                    if result.evidence is not None
+                    else None
+                ),
+                "assertions": [
+                    assertion.model_dump(mode="json") for assertion in result.assertions
+                ],
                 "error": result.error.safe_dump() if result.error is not None else None,
                 "duration_ms": result.duration_ms,
             }

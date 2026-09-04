@@ -17,7 +17,7 @@ from nl2data_core.bundles.publication import (
     PublishIdempotencyStatus,
     PublishVerificationSummary,
 )
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 from nl2data_core.control_plane.publication.scalars import (
     FINGERPRINT_PATTERN,
     IDENTIFIER_PATTERN,
@@ -46,7 +46,7 @@ class PublicationDraftBinding(BaseModel):
 
     @model_validator(mode="after")
     def _validate_and_fingerprint(self) -> PublicationDraftBinding:
-        object.__setattr__(self, "fingerprint", sha256_fingerprint(self.canonical_payload()))
+        object.__setattr__(self, "fingerprint", strict_sha256_fingerprint(self.canonical_payload()))
         return self
 
     def canonical_payload(self) -> dict[str, Any]:
@@ -95,7 +95,7 @@ class FrozenReleaseBinding(BaseModel):
             raise ValueError(
                 "executor identity and capability fingerprint must be both set or absent"
             )
-        object.__setattr__(self, "fingerprint", sha256_fingerprint(self.canonical_payload()))
+        object.__setattr__(self, "fingerprint", strict_sha256_fingerprint(self.canonical_payload()))
         return self
 
     @classmethod
@@ -390,7 +390,7 @@ def validate_publication_integrity(records: PublicationRecordSet) -> None:
             "verification_evidence_mismatch",
             "verification evidence does not match the published bundle",
         )
-    if manifest is None or evidence.manifest_fingerprint != sha256_fingerprint(
+    if manifest is None or evidence.manifest_fingerprint != strict_sha256_fingerprint(
         manifest.canonical_payload()
     ):
         # The evidence-to-manifest link is checked before the audit
@@ -443,7 +443,7 @@ def validate_publication_integrity(records: PublicationRecordSet) -> None:
     if audit_evidence is not None and (
         manifest is None
         or audit_evidence.manifest_fingerprint
-        != sha256_fingerprint(manifest.canonical_payload())
+        != strict_sha256_fingerprint(manifest.canonical_payload())
         or audit_evidence.verification_evidence_fingerprint
         != evidence.fingerprint
         or audit_evidence.approved_draft_id != evidence.draft_id
@@ -545,7 +545,7 @@ class PublicationAggregate(BaseModel):
 
     @model_validator(mode="after")
     def _validate_cross_links(self) -> PublicationAggregate:
-        manifest_fingerprint = sha256_fingerprint(
+        manifest_fingerprint = strict_sha256_fingerprint(
             self.accepted_assertion_manifest.canonical_payload()
         )
         if (

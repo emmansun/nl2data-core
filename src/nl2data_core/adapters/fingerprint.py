@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 
 _SECRET_KEY_TOKENS = (
     "secret",
@@ -56,6 +56,15 @@ def safe_artifact_payload(
     return _strip_sensitive(payload, approved_tenant_keys)
 
 
+def _json_safe_value(value: Any) -> Any:
+    """Prepare model-native tuples as the JSON arrays they canonicalize to."""
+    if isinstance(value, Mapping):
+        return {str(key): _json_safe_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe_value(item) for item in value]
+    return value
+
+
 def artifact_fingerprint(
     payload: Mapping[str, Any], *, approved_tenant_keys: frozenset[str] = frozenset()
 ) -> str:
@@ -63,6 +72,8 @@ def artifact_fingerprint(
 
     Equal payloads in different key orders produce the same fingerprint.
     """
-    return sha256_fingerprint(
-        safe_artifact_payload(payload, approved_tenant_keys=approved_tenant_keys)
+    return strict_sha256_fingerprint(
+        _json_safe_value(
+            safe_artifact_payload(payload, approved_tenant_keys=approved_tenant_keys)
+        )
     )

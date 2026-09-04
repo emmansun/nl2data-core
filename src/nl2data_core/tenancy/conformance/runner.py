@@ -15,7 +15,7 @@ import json
 import time
 from datetime import datetime
 
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 from nl2data_core.fixtures.models import FIXED_TIMEZONE, TIME_ANCHOR
 from nl2data_core.tenancy.namespace import tenant_namespace
 from nl2data_core.tenancy.validation import validate_tenant_scope
@@ -267,10 +267,10 @@ class TenantConformanceRunner:
         peer_namespace_fingerprint: str | None = None
         if trusted is not None:
             namespace = tenant_namespace(trusted, kind="cache")
-            namespace_fingerprint = sha256_fingerprint({"namespace": namespace})
+            namespace_fingerprint = strict_sha256_fingerprint({"namespace": namespace})
         if case.peer_context is not None:
             peer_namespace = tenant_namespace(case.peer_context, kind="cache")
-            peer_namespace_fingerprint = sha256_fingerprint({"namespace": peer_namespace})
+            peer_namespace_fingerprint = strict_sha256_fingerprint({"namespace": peer_namespace})
         return TenantProtectedEvidence(
             case_id=case.case_id,
             decision=decision,

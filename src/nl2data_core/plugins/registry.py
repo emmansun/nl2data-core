@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 
 from .models import (
     PluginActivationStatus,
@@ -141,7 +141,15 @@ class PluginRegistry:
                     f"plugin '{manifest.identity.name}' is already registered",
                     details={"name": manifest.identity.name},
                 )
-        fingerprint = sha256_fingerprint(manifest.model_dump())
+        # Frozenset members carry as sorted arrays so strict
+        # canonicalization stays fail-closed and deterministic.
+        fingerprint = strict_sha256_fingerprint(
+            {
+                **manifest.model_dump(mode="json"),
+                "categories": sorted(manifest.categories),
+                "permissions": sorted(manifest.permissions),
+            }
+        )
         descriptor = PluginDescriptor(
             manifest_fingerprint=fingerprint,
             identity=manifest.identity,

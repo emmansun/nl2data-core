@@ -24,7 +24,7 @@ from nl2data_core.assembly.models import AssemblyDraft, DraftRevisionConflict
 from nl2data_core.bundles.models import BUNDLE_SCHEMA_VERSION, SemanticModelBundle
 from nl2data_core.bundles.publication import PublishAuditRecord
 from nl2data_core.bundles.validation import validate_bundle
-from nl2data_core.canonical import canonical_json, sha256_fingerprint
+from nl2data_core.canonical import strict_canonical_json, strict_sha256_fingerprint
 from nl2data_core.control_plane.publication.contracts import FrozenReleaseBinding
 from nl2data_core.metadata.models import MetadataSnapshot
 from nl2data_core.metadata.proposals import SemanticProposalSet
@@ -566,7 +566,7 @@ class CatalogUnitOfWork:
         occurred_at: datetime,
     ) -> None:
         """Append one bounded lifecycle event (idempotent by identity)."""
-        payload = canonical_json(
+        payload = strict_canonical_json(
             {
                 "kind": kind,
                 "member_id": member_id,
@@ -579,7 +579,7 @@ class CatalogUnitOfWork:
             "insert_event",
             (
                 namespace,
-                sha256_fingerprint(payload),
+                strict_sha256_fingerprint(payload),
                 kind,
                 member_id,
                 ENVELOPE_SCHEMA_VERSION,

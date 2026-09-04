@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 from nl2data_core.fixtures.models import TIME_ANCHOR
 from nl2data_core.memory.models import (
     MemoryRecallBudget,
@@ -49,7 +49,7 @@ DEFAULT_CONFORMANCE_VIEW = AuthorizedView(
     field_ids=frozenset({"order_id", "amount", "region", "status"}),
     catalog_fingerprint=CATALOG_A,
 )
-SEMANTIC_VIEW_A = sha256_fingerprint(
+SEMANTIC_VIEW_A = strict_sha256_fingerprint(
     {
         "source_id": DEFAULT_CONFORMANCE_VIEW.source_id,
         "root_entity_ids": sorted(DEFAULT_CONFORMANCE_VIEW.root_entity_ids),

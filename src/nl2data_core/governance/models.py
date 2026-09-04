@@ -12,7 +12,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 
 _IDENTIFIER_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_\-\.]{0,127}$"
 _FINGERPRINT_PATTERN = r"^sha256:[0-9a-f]{64}$"
@@ -89,7 +89,7 @@ class PolicyScope(BaseModel):
 
     @model_validator(mode="after")
     def _compute_fingerprint(self) -> PolicyScope:
-        fingerprint = sha256_fingerprint(
+        fingerprint = strict_sha256_fingerprint(
             {
                 "policy_id": self.policy_id,
                 "source_ids": sorted(self.source_ids),
@@ -131,7 +131,7 @@ class MandatoryFilterObligation(BaseModel):
 
     @model_validator(mode="after")
     def _compute_fingerprint(self) -> MandatoryFilterObligation:
-        fingerprint = sha256_fingerprint(
+        fingerprint = strict_sha256_fingerprint(
             {
                 "field_id": self.field_id,
                 "operator": self.operator,

@@ -14,7 +14,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 
 _IDENTIFIER_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_\-\.]{0,127}$"
 _FINGERPRINT_PATTERN = r"^sha256:[0-9a-f]{64}$"
@@ -187,7 +187,7 @@ def scope_fingerprint(*, tenant: TenantContext, subject: SubjectContext) -> str:
     the same fingerprint; different tenants or principals never share one.
     A fingerprint is a stable reference, not proof of identity.
     """
-    return sha256_fingerprint(canonical_scope_payload(tenant=tenant, subject=subject))
+    return strict_sha256_fingerprint(canonical_scope_payload(tenant=tenant, subject=subject))
 
 
 class TenantScopeContext(BaseModel):

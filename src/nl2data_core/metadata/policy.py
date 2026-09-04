@@ -25,7 +25,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 
 from .drift import DriftDecision, DriftOverride
 from .models import MetadataSnapshot
@@ -89,7 +89,7 @@ class SnapshotActivationPolicy(BaseModel):
 
     def fingerprint(self) -> str:
         """Canonical policy identity for evidence."""
-        return sha256_fingerprint(self.canonical_payload())
+        return strict_sha256_fingerprint(self.canonical_payload())
 
 
 class ActivationCheckIssue(BaseModel):

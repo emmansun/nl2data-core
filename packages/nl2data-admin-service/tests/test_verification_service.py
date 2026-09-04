@@ -14,7 +14,7 @@ from nl2data_core.assembly import (
     ReviewState,
     SemanticAssertion,
 )
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 from nl2data_core.governance.models import PolicyScope
 from nl2data_core.planning.validation import AuthorizedView
 from nl2data_core.verification.execution import VerificationExecutionContext
@@ -71,7 +71,7 @@ class ContextFactory:
                 operation_ids=frozenset({"select"}),
             ),
             tenant_scope_fingerprint=auth_context.tenant_scope_fingerprint,
-            source_scope_fingerprint=sha256_fingerprint(
+            source_scope_fingerprint=strict_sha256_fingerprint(
                 {"source_id": draft.source_id}
             ),
             deadline_at=datetime.now(UTC) + timedelta(seconds=10),

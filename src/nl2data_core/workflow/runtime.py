@@ -65,7 +65,7 @@ from nl2data_core.ai.models import (
 from nl2data_core.ai.plan_builder import build_ir_from_resolved_intent
 from nl2data_core.ai.protocol import ModelProvider
 from nl2data_core.ai.resolver import IntentResolver
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 from nl2data_core.compilation.contract import (
     ArtifactGuardResult,
     CompilationContext,
@@ -295,10 +295,10 @@ class _BoundCompiler:
         if adapter_type == "mongodb":
             # Canonical JSON keeps the identity stable across equivalent MQL
             # artifact serializations without depending on the backend package.
-            return sha256_fingerprint(
+            return strict_sha256_fingerprint(
                 {"artifact": json.loads(artifact), "adapter_type": adapter_type}
             )
-        return sha256_fingerprint({"artifact": artifact, "adapter_type": adapter_type})
+        return strict_sha256_fingerprint({"artifact": artifact, "adapter_type": adapter_type})
 
 
 def _utc_now() -> datetime:
@@ -771,7 +771,7 @@ class _PlanNode(_NodeBase):
             )
         self._channel["ir"] = ir
         self._channel["join_plan"] = join_plan
-        self._channel["compat"]["ir"] = sha256_fingerprint(
+        self._channel["compat"]["ir"] = strict_sha256_fingerprint(
             {"ir_version": ir.ir_version, "ir_fingerprint": ir.fingerprint}
         )
         return StageResult(
@@ -821,7 +821,7 @@ class _ValidateNode(_NodeBase):
         if runtime.view.view_bound:
             assert runtime.view.view_fingerprint is not None
             plan_evidence["view_fingerprint"] = runtime.view.view_fingerprint
-        gate_evidence[WorkflowGate.PLAN_VALIDATION] = sha256_fingerprint(plan_evidence)
+        gate_evidence[WorkflowGate.PLAN_VALIDATION] = strict_sha256_fingerprint(plan_evidence)
         return StageResult(
             stage=self.stage,
             status=RuntimeOutcomeStatus.SUCCEEDED,
@@ -1030,7 +1030,7 @@ class _GovernNode(_NodeBase):
                 ),
             )
         gate_evidence: dict[WorkflowGate, str] = self._channel["gate_evidence"]
-        gate_evidence[WorkflowGate.GOVERNANCE] = sha256_fingerprint(
+        gate_evidence[WorkflowGate.GOVERNANCE] = strict_sha256_fingerprint(
             {"policy": policy_scope.policy_fingerprint, "decision": "allow"}
         )
         return StageResult(
@@ -1993,10 +1993,10 @@ class DeterministicWorkflowRuntime:
         """
         scope_fingerprint = options.scope_fingerprint
         base_evidence = {
-            WorkflowGate.TENANT_SCOPE: sha256_fingerprint(
+            WorkflowGate.TENANT_SCOPE: strict_sha256_fingerprint(
                 {"tenant_scope": scope_fingerprint}
             ),
-            WorkflowGate.DEADLINE: sha256_fingerprint(
+            WorkflowGate.DEADLINE: strict_sha256_fingerprint(
                 {"deadline_at": options.deadline.deadline_at.isoformat()}
             ),
         }
@@ -2593,7 +2593,7 @@ class DeterministicWorkflowRuntime:
         assert view.view_id is not None
         assert view.view_version is not None
         assert view.view_fingerprint is not None
-        return sha256_fingerprint(
+        return strict_sha256_fingerprint(
             {
                 "view_id": view.view_id,
                 "view_version": view.view_version,

@@ -20,7 +20,7 @@ from typing import Any, cast
 
 from nl2data_core.adapters.models import ExecutionResult
 from nl2data_core.adapters.sql.execution import SQLExecutionError
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 from nl2data_core.fixtures.base import FixtureProfile
 from nl2data_core.fixtures.data import (
     FIXTURE_SETUP_FINGERPRINT,
@@ -187,7 +187,7 @@ class PostgresFixtureProfile(FixtureProfile):
                         for column_index, cell in enumerate(row)
                     )
                 )
-        fingerprint = sha256_fingerprint({"columns": columns, "rows": rows})
+        fingerprint = strict_sha256_fingerprint({"columns": columns, "rows": rows})
         duration_ms = int((time.monotonic() - started) * 1000)
         return ExecutionResult(
             result_id=f"result-{fingerprint[-16:]}",

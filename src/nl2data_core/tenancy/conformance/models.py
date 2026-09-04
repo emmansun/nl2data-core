@@ -16,7 +16,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 from nl2data_core.fixtures.models import FIXED_TIMEZONE, TIME_ANCHOR
 from nl2data_core.tenancy.models import TenantScopeContext
 
@@ -98,7 +98,7 @@ class TenantConformanceDataset(BaseModel):
 
     @model_validator(mode="after")
     def _compute_fingerprint(self) -> TenantConformanceDataset:
-        fingerprint = sha256_fingerprint(
+        fingerprint = strict_sha256_fingerprint(
             {
                 "dataset_id": self.dataset_id,
                 "name": self.name,
@@ -152,7 +152,7 @@ class TenantProtectedEvidence(BaseModel):
 
     @model_validator(mode="after")
     def _compute_fingerprint(self) -> TenantProtectedEvidence:
-        fingerprint = sha256_fingerprint(
+        fingerprint = strict_sha256_fingerprint(
             {
                 "case_id": self.case_id,
                 "decision": self.decision.value,
@@ -210,7 +210,7 @@ class TenantConformanceReport(BaseModel):
 
     @model_validator(mode="after")
     def _compute_fingerprint(self) -> TenantConformanceReport:
-        object.__setattr__(self, "fingerprint", sha256_fingerprint(self._semantic_payload()))
+        object.__setattr__(self, "fingerprint", strict_sha256_fingerprint(self._semantic_payload()))
         return self
 
     def _semantic_payload(self) -> dict[str, Any]:

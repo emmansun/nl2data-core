@@ -26,7 +26,7 @@ from typing import Protocol, runtime_checkable
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from nl2data_core.adapters.models import AdapterCapabilities
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 from nl2data_core.governance.models import EffectiveLimits, ExecutionAuthorization
 from nl2data_core.planning.ir.models import IRViewReference, LogicalJoinPlan, SemanticQueryIR
 from nl2data_core.planning.models import PhysicalBinding
@@ -300,12 +300,12 @@ def compilation_evidence_fingerprint(evidence: CompilationEvidence) -> str:
         ]
     if evidence.expansion_identity is not None:
         payload["expansion_identity"] = evidence.expansion_identity
-    return sha256_fingerprint(payload)
+    return strict_sha256_fingerprint(payload)
 
 
 def artifact_guard_evidence_fingerprint(guard: ArtifactGuardResult) -> str:
     """Stable evidence fingerprint of one artifact guard result."""
-    return sha256_fingerprint(
+    return strict_sha256_fingerprint(
         {
             "accepted": guard.accepted,
             "guard_identity": guard.guard_identity,
@@ -319,7 +319,7 @@ def artifact_guard_evidence_fingerprint(guard: ArtifactGuardResult) -> str:
 
 def result_lineage_fingerprint(lineage: ResultLineageEvidence) -> str:
     """Stable fingerprint of one protected result's decision lineage."""
-    return sha256_fingerprint(
+    return strict_sha256_fingerprint(
         {
             "result_fingerprint": lineage.result_fingerprint,
             "artifact_fingerprint": lineage.artifact_fingerprint,

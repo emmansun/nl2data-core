@@ -10,7 +10,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 
 _FINGERPRINT_PATTERN = r"^sha256:[0-9a-f]{64}$"
 _IDENTIFIER_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_\-\.]{0,127}$"
@@ -92,12 +92,12 @@ class SQLGuardResult(BaseModel):
 
 def sql_artifact_fingerprint(sql_text: str, dialect: str) -> str:
     """Stable fingerprint of a SQL artifact; identical text yields identical digests."""
-    return sha256_fingerprint({"sql": sql_text, "dialect": dialect})
+    return strict_sha256_fingerprint({"sql": sql_text, "dialect": dialect})
 
 
 def sql_guard_fingerprint(parsed: SQLParsedArtifact, policy_hash: str) -> str:
     """Stable fingerprint of validated facts and the applied guard policy."""
-    return sha256_fingerprint(
+    return strict_sha256_fingerprint(
         {
             "artifact": parsed.fingerprint,
             "statement_type": parsed.statement_type,

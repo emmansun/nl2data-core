@@ -9,7 +9,7 @@ from typing import Annotated, Any, Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from nl2data_core.canonical import canonical_json, sha256_fingerprint
+from nl2data_core.canonical import strict_canonical_json, strict_sha256_fingerprint
 from nl2data_core.memory.models import scan_raw_text
 from nl2data_core.planning.ir.models import SemanticQueryIR
 
@@ -381,7 +381,7 @@ class VerificationPlan(BaseModel):
         case_ids = [case.case_id for case in (*self.smoke_cases, *self.semantic_cases)]
         if len(case_ids) != len(set(case_ids)):
             raise ValueError("verification case ids must be globally unique")
-        object.__setattr__(self, "fingerprint", sha256_fingerprint(self.canonical_payload()))
+        object.__setattr__(self, "fingerprint", strict_sha256_fingerprint(self.canonical_payload()))
         return self
 
     def canonical_payload(self) -> dict[str, Any]:
@@ -401,7 +401,7 @@ class VerificationPlan(BaseModel):
         }
 
     def serialize_canonical(self) -> str:
-        return canonical_json(self.canonical_payload())
+        return strict_canonical_json(self.canonical_payload())
 
 
 class VerificationCaseEvidence(BaseModel):
@@ -433,7 +433,7 @@ class VerificationCaseEvidence(BaseModel):
     def _validate_and_fingerprint(self) -> VerificationCaseEvidence:
         if self.passed_assertion_count > self.assertion_count:
             raise ValueError("passed assertion count cannot exceed assertion count")
-        object.__setattr__(self, "fingerprint", sha256_fingerprint(self.evidence_payload()))
+        object.__setattr__(self, "fingerprint", strict_sha256_fingerprint(self.evidence_payload()))
         return self
 
     def evidence_payload(self) -> dict[str, Any]:
@@ -477,7 +477,7 @@ class VerificationLayerEvidence(BaseModel):
             raise ValueError("layer evidence case ids must be unique")
         if any(case.layer is not self.layer for case in self.cases):
             raise ValueError("case evidence layer must match its containing layer")
-        object.__setattr__(self, "fingerprint", sha256_fingerprint(self.evidence_payload()))
+        object.__setattr__(self, "fingerprint", strict_sha256_fingerprint(self.evidence_payload()))
         return self
 
     def evidence_payload(self) -> dict[str, Any]:
@@ -535,7 +535,7 @@ class VerificationSuiteEvidence(BaseModel):
         if len(layer_ids) != len(set(layer_ids)):
             raise ValueError("suite evidence layers must be unique")
         VerificationCaseEvidence._validate_issue_codes(self.issue_codes)
-        object.__setattr__(self, "fingerprint", sha256_fingerprint(self.evidence_payload()))
+        object.__setattr__(self, "fingerprint", strict_sha256_fingerprint(self.evidence_payload()))
         return self
 
     def evidence_payload(self) -> dict[str, Any]:

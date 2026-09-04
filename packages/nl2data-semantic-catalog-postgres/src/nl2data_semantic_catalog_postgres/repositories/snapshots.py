@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Any
 
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 from nl2data_core.metadata.drift import DriftDecision, DriftOverride
 from nl2data_core.metadata.models import MetadataSnapshot
 from nl2data_core.metadata.policy import (
@@ -311,7 +311,7 @@ class SnapshotRepository:
         namespace = _namespace(tenant_scope_fingerprint)
         now = self._uow.now()
         payload = _proposal_set_payload(proposal_set)
-        fingerprint = sha256_fingerprint(payload)
+        fingerprint = strict_sha256_fingerprint(payload)
         envelope = self._uow.encode(ArtifactKind.PROPOSAL_SET, payload, fingerprint)
         with self._uow.transaction() as conn:
             exists = self._uow.execute(

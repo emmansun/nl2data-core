@@ -12,7 +12,7 @@ import os
 from enum import StrEnum
 from typing import Any
 
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 _IDENTIFIER_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_\-\.]{0,127}$"
@@ -126,4 +126,4 @@ class MongoAdapterConfig(BaseModel):
 
     def fingerprint(self) -> str:
         """Stable fingerprint of this configuration; no secrets included."""
-        return sha256_fingerprint(self.safe_payload())
+        return strict_sha256_fingerprint(self.safe_payload())

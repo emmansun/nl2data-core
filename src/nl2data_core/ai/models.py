@@ -13,7 +13,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 from nl2data_core.planning.models import AggregationKind, FilterOperator, OrderDirection
 
 from .errors import ModelErrorRecord
@@ -125,7 +125,7 @@ class ModelResponse(BaseModel):
 
     @model_validator(mode="after")
     def _compute_fingerprint(self) -> ModelResponse:
-        fingerprint = sha256_fingerprint(
+        fingerprint = strict_sha256_fingerprint(
             {
                 "response_id": self.response_id,
                 "request_id": self.request_id,
@@ -182,11 +182,16 @@ class IntentFilter(BaseModel):
         return value
 
     def canonical_payload(self) -> dict[str, Any]:
+        # Model-native value tuples carry as JSON arrays so strict
+        # canonicalization stays fail-closed.
+        value: Any = (
+            list(self.value) if isinstance(self.value, tuple) else self.value
+        )
         return {
             "filter_id": self.filter_id,
             "field_id": self.field_id,
             "operator": self.operator,
-            "value": self.value,
+            "value": value,
         }
 
 
@@ -254,7 +259,7 @@ class StructuredIntent(BaseModel):
 
     @model_validator(mode="after")
     def _compute_fingerprint(self) -> StructuredIntent:
-        fingerprint = sha256_fingerprint(self.canonical_payload())
+        fingerprint = strict_sha256_fingerprint(self.canonical_payload())
         object.__setattr__(self, "fingerprint", fingerprint)
         return self
 
@@ -320,7 +325,7 @@ class ClarificationRequest(BaseModel):
 
     @model_validator(mode="after")
     def _compute_fingerprint(self) -> ClarificationRequest:
-        fingerprint = sha256_fingerprint(
+        fingerprint = strict_sha256_fingerprint(
             {
                 "clarification_id": self.clarification_id,
                 "request_id": self.request_id,
@@ -445,7 +450,7 @@ class MultiEntityIntent(BaseModel):
 
     @model_validator(mode="after")
     def _compute_fingerprint(self) -> MultiEntityIntent:
-        fingerprint = sha256_fingerprint(self.canonical_payload())
+        fingerprint = strict_sha256_fingerprint(self.canonical_payload())
         object.__setattr__(self, "fingerprint", fingerprint)
         return self
 

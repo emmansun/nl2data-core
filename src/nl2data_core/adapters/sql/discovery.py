@@ -24,7 +24,7 @@ from importlib import import_module
 from pathlib import Path
 from typing import Any
 
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 from nl2data_core.metadata.models import (
     MetadataConstraint,
     MetadataConstraintKind,
@@ -365,7 +365,7 @@ class SqlMetadataDiscoverer:
             field_evidence = MetadataEvidence(
                 evidence_id=f"sql-obj-{name}",
                 kind="object",
-                reference=sha256_fingerprint(
+                reference=strict_sha256_fingerprint(
                     {"object": name, "fields": sorted(field.field_id for field in fields)}
                 ),
                 description="postgresql catalog object observation",
@@ -500,7 +500,7 @@ class SqlMetadataDiscoverer:
                     )
                 )
 
-        source_digest = sha256_fingerprint(
+        source_digest = strict_sha256_fingerprint(
             {
                 "objects": sorted(obj.object_id for obj in objects),
                 "fingerprints": sorted(
@@ -524,7 +524,7 @@ class SqlMetadataDiscoverer:
                 sample_limit=config.max_samples,
             ),
             provenance=MetadataProvenance(
-                discovered_by_fingerprint=sha256_fingerprint(
+                discovered_by_fingerprint=strict_sha256_fingerprint(
                     {"backend": f"sql:{self._dialect}", "schema": schema}
                 ),
                 method="postgresql_introspection",
@@ -606,7 +606,7 @@ class SqlMetadataDiscoverer:
             field_evidence = MetadataEvidence(
                 evidence_id=f"sql-obj-{name}",
                 kind="object",
-                reference=sha256_fingerprint(
+                reference=strict_sha256_fingerprint(
                     {"object": name, "fields": sorted(field.field_id for field in fields)}
                 ),
                 description="sqlite catalog object observation",
@@ -712,7 +712,7 @@ class SqlMetadataDiscoverer:
                     )
                 )
 
-        source_digest = sha256_fingerprint(
+        source_digest = strict_sha256_fingerprint(
             {
                 "objects": sorted(obj.object_id for obj in objects),
                 "fingerprints": sorted(
@@ -736,7 +736,7 @@ class SqlMetadataDiscoverer:
                 sample_limit=config.max_samples,
             ),
             provenance=MetadataProvenance(
-                discovered_by_fingerprint=sha256_fingerprint(
+                discovered_by_fingerprint=strict_sha256_fingerprint(
                     {"backend": f"sql:{self._dialect}"}
                 ),
                 method="sqlite_introspection",

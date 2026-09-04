@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 _FINGERPRINT_PATTERN = r"^sha256:[0-9a-f]{64}$"
@@ -40,7 +40,7 @@ class OpenAIProviderConfig(BaseModel):
 
     @model_validator(mode="after")
     def _compute_fingerprint(self) -> OpenAIProviderConfig:
-        object.__setattr__(self, "fingerprint", sha256_fingerprint(self.safe_payload()))
+        object.__setattr__(self, "fingerprint", strict_sha256_fingerprint(self.safe_payload()))
         return self
 
     def safe_payload(self) -> dict[str, Any]:

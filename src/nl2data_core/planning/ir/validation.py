@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 
 from .models import (
     IR_VERSION,
@@ -83,7 +83,7 @@ def verify_ir_fingerprint(ir: SemanticQueryIR) -> bool:
     the input can never pass this check, so compilers can fail closed on
     tampered IR before any physical artifact is produced.
     """
-    return ir.fingerprint == sha256_fingerprint(ir.canonical_payload())
+    return ir.fingerprint == strict_sha256_fingerprint(ir.canonical_payload())
 
 
 def _is_time_field(field_id: str) -> bool:

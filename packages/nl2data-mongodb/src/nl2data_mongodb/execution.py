@@ -14,7 +14,7 @@ from datetime import datetime
 from typing import Any
 
 from nl2data_core.adapters.models import ExecutionResult
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 from nl2data_core.compilation.expansion import ZeroDivisionPolicyError
 
 from .executor import MongoExecutor
@@ -205,7 +205,14 @@ def execute_mongo_spec(
             details={"timeout_seconds": str(timeout_seconds)},
         )
 
-    fingerprint = sha256_fingerprint({"columns": columns, "rows": rows})
+    # Rows are model-native tuples; the fingerprint payload carries them
+    # as JSON arrays so strict canonicalization stays fail-closed.
+    fingerprint = strict_sha256_fingerprint(
+        {
+            "columns": list(columns),
+            "rows": [list(row) for row in rows],
+        }
+    )
     duration_ms = int((time.monotonic() - started) * 1000)
     return ExecutionResult(
         result_id=f"result-{fingerprint[-16:]}",

@@ -212,12 +212,104 @@ def test_architecture_manifest_is_versioned_and_complete() -> None:
     assert manifest["schema_version"] == 1
     assert manifest["name"] == "semantic-control-plane"
     assert manifest["canonical_owners"]
+    assert manifest["canonicalization"]
     assert manifest["compatibility_reexports"]
     assert manifest["layers"]
     assert manifest["prohibited_imports"]
     assert manifest["port_declarations"]
     assert manifest["hotspot_budgets"]
     assert manifest["duplicate_detection"]["exact_duplicate_allowlist"] == []
+
+
+def test_canonicalization_owner_is_declared_and_resolves() -> None:
+    """The single canonicalization owner exists with its strict contract."""
+    owner = _manifest()["canonicalization"]["owner"]
+    module = importlib.import_module(owner["module"])
+    for symbol in [*owner["strict_symbols"], *owner["compatibility_symbols"]]:
+        assert hasattr(module, symbol), f"{owner['module']} is missing {symbol}"
+
+
+def _source_module(path: Path) -> str | None:
+    """Resolve a source file under src/ or packages/*/src/ to its module."""
+    relative = path.relative_to(REPO_ROOT).as_posix()
+    if relative.startswith("src/"):
+        candidate = relative.removeprefix("src/")
+    else:
+        parts = relative.split("/")
+        if len(parts) > 3 and parts[0] == "packages" and parts[2] == "src":
+            candidate = "/".join(parts[3:])
+        else:
+            return None
+    candidate = candidate.removesuffix(".py")
+    if candidate.endswith("/__init__"):
+        candidate = candidate[: -len("/__init__")]
+    return candidate.replace("/", ".")
+
+
+def _canonicalization_scan_files() -> list[Path]:
+    """Every runtime source file, core and optional packages alike."""
+    roots = [REPO_ROOT / "src" / "nl2data_core", REPO_ROOT / "src" / "nl2data"]
+    roots.extend(sorted((REPO_ROOT / "packages").glob("*/src/*")))
+    files: set[Path] = set()
+    for root in roots:
+        files.update(root.rglob("*.py"))
+    return sorted(files)
+
+
+def _calls_with_keyword(tree: ast.Module, func_attr: str, keyword: str) -> list[str]:
+    """Rendered source snippets of calls passing an explicit keyword."""
+    hits: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if not isinstance(node.func, ast.Attribute) or node.func.attr != func_attr:
+            continue
+        if any(kw.arg == keyword for kw in node.keywords):
+            hits.append(ast.unparse(node))
+    return hits
+
+
+def test_local_hashing_is_confined_to_the_canonicalization_owner() -> None:
+    """No source module may compute digests outside the declared owner."""
+    owner = _manifest()["canonicalization"]["owner"]["module"]
+    offenders: list[str] = []
+    for path in _canonicalization_scan_files():
+        module = _source_module(path)
+        if module is None or module == owner:
+            continue
+        text = path.read_text(encoding="utf-8")
+        tree = ast.parse(text, filename=str(path))
+        imports_hashlib = any(
+            isinstance(node, ast.Import)
+            and any(alias.name == "hashlib" for alias in node.names)
+            or isinstance(node, ast.ImportFrom)
+            and node.module == "hashlib"
+            for node in ast.walk(tree)
+        )
+        if imports_hashlib:
+            offenders.append(module)
+    assert not offenders, f"local digest computation outside {owner}: {offenders}"
+
+
+def test_deterministic_serializers_are_allowlisted_presentation_only() -> None:
+    """Duplicate canonical serializers need an explicit presentation entry."""
+    canonicalization = _manifest()["canonicalization"]
+    owner = canonicalization["owner"]["module"]
+    allowlist = {
+        entry["module"] for entry in canonicalization["presentation_only_allowlist"]
+    }
+    offenders: list[str] = []
+    for path in _canonicalization_scan_files():
+        module = _source_module(path)
+        if module is None or module == owner or module in allowlist:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        if _calls_with_keyword(tree, "dumps", "sort_keys"):
+            offenders.append(module)
+    assert not offenders, (
+        "deterministic serializers outside the owner need a manifest "
+        f"presentation_only_allowlist entry: {offenders}"
+    )
 
 
 def test_canonical_owner_symbols_resolve() -> None:

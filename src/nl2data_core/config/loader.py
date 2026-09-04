@@ -14,7 +14,7 @@ import yaml
 
 from nl2data.errors import ErrorCode
 from nl2data_core.ai.config import ModelConfig
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 
 from .models import (
     SUPPORTED_SCHEMA_VERSION,
@@ -190,7 +190,7 @@ def load_config(source: Mapping[str, Any] | str) -> EffectiveConfig:
         "extensions": {name: section.values for name, section in sorted(extensions.items())},
         "model": model.safe_payload() if model is not None else None,
     }
-    fingerprint = sha256_fingerprint(payload)
+    fingerprint = strict_sha256_fingerprint(payload)
     return EffectiveConfig(
         schema_version=SUPPORTED_SCHEMA_VERSION,
         service=service,

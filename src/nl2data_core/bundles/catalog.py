@@ -33,7 +33,7 @@ from nl2data_core.assembly.audit_evidence import (
     rollback_audit_entry,
 )
 from nl2data_core.assembly.manifest import AcceptedAssertionManifest
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 from nl2data_core.control_plane.publication.contracts import (
     FrozenReleaseBinding,
     PublicationAggregate,
@@ -390,7 +390,7 @@ class InMemorySemanticBundleCatalog:
         return (
             authoritative is not None
             and authoritative.draft_revision == binding.draft_revision
-            and sha256_fingerprint(authoritative.file_payload())
+            and strict_sha256_fingerprint(authoritative.file_payload())
             == binding.draft_payload_fingerprint
         )
 
@@ -428,7 +428,7 @@ class InMemorySemanticBundleCatalog:
                     )
                 if (
                     authoritative.draft_revision != publication_binding.draft_revision
-                    or sha256_fingerprint(authoritative.file_payload())
+                    or strict_sha256_fingerprint(authoritative.file_payload())
                     != publication_binding.draft_payload_fingerprint
                 ):
                     return _failure(
@@ -1257,7 +1257,7 @@ class InMemorySemanticBundleCatalog:
         if publication.frozen_release_binding is not None:
             source_scope = publication.frozen_release_binding.source_scope_fingerprint
         else:
-            source_scope = sha256_fingerprint(
+            source_scope = strict_sha256_fingerprint(
                 {"source_id": bundle.descriptor.source_id}
             )
         lifecycle_reference = self._publication_lifecycle_reference(
@@ -1307,7 +1307,7 @@ class InMemorySemanticBundleCatalog:
         return (
             prefix
             + "-"
-            + sha256_fingerprint(
+            + strict_sha256_fingerprint(
                 {
                     "bundle_id": bundle_id,
                     "prior_active_fingerprint": prior_active_fingerprint,

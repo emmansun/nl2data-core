@@ -15,7 +15,7 @@ from nl2data_core.bundles.publication import (
     PublishIdempotencyStatus,
     PublishVerificationSummary,
 )
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 from nl2data_core.control_plane.publication.contracts import (
     AssemblyPublishOutcome,
     FrozenReleaseBinding,
@@ -65,7 +65,7 @@ def verify_stage(
         )
     if not verification.valid:
         return AssemblyPublishOutcome(kind="rejected", issues=verification.issues)
-    manifest_fingerprint = sha256_fingerprint(materialized.manifest.canonical_payload())
+    manifest_fingerprint = strict_sha256_fingerprint(materialized.manifest.canonical_payload())
     if draft.verification_plan is None:
         selected_policy = context.verification_policy or COMPATIBILITY_POLICY
         if selected_policy != COMPATIBILITY_POLICY:
@@ -191,12 +191,12 @@ def aggregate_stage(
             }
         )
     )
-    manifest_fingerprint = sha256_fingerprint(
+    manifest_fingerprint = strict_sha256_fingerprint(
         materialized.manifest.canonical_payload()
     )
     audit_id = (
         "publish-"
-        + sha256_fingerprint(
+        + strict_sha256_fingerprint(
             {
                 "bundle_id": materialized.bundle.bundle_id,
                 "bundle_fingerprint": materialized.bundle.fingerprint,

@@ -18,7 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from nl2data.models import QueryRequest
 from nl2data_core.ai.errors import ModelErrorRecord
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 from nl2data_core.fixtures.models import FIXED_TIMEZONE, TIME_ANCHOR
 
 _IDENTIFIER_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_\-\.]{0,127}$"
@@ -91,7 +91,7 @@ class AIEvaluationDataset(BaseModel):
 
     @model_validator(mode="after")
     def _compute_fingerprint(self) -> AIEvaluationDataset:
-        fingerprint = sha256_fingerprint(
+        fingerprint = strict_sha256_fingerprint(
             {
                 "dataset_id": self.dataset_id,
                 "name": self.name,
@@ -150,7 +150,7 @@ class AIProtectedEvidence(BaseModel):
 
     @model_validator(mode="after")
     def _compute_fingerprint(self) -> AIProtectedEvidence:
-        fingerprint = sha256_fingerprint(
+        fingerprint = strict_sha256_fingerprint(
             {
                 "case_id": self.case_id,
                 "outcome": self.outcome,
@@ -209,7 +209,7 @@ class AIEvaluationReport(BaseModel):
 
     @model_validator(mode="after")
     def _compute_fingerprint(self) -> AIEvaluationReport:
-        object.__setattr__(self, "fingerprint", sha256_fingerprint(self._semantic_payload()))
+        object.__setattr__(self, "fingerprint", strict_sha256_fingerprint(self._semantic_payload()))
         return self
 
     def _semantic_payload(self) -> dict[str, Any]:
@@ -319,7 +319,7 @@ class LiveAIEvaluationReport(BaseModel):
 
     @model_validator(mode="after")
     def _compute_fingerprint(self) -> LiveAIEvaluationReport:
-        object.__setattr__(self, "fingerprint", sha256_fingerprint(self._semantic_payload()))
+        object.__setattr__(self, "fingerprint", strict_sha256_fingerprint(self._semantic_payload()))
         return self
 
     def _semantic_payload(self) -> dict[str, Any]:

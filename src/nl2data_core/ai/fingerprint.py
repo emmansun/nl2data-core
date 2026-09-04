@@ -12,7 +12,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from nl2data_core.adapters.fingerprint import safe_artifact_payload
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 
 
 def safe_ai_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -22,4 +22,4 @@ def safe_ai_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
 
 def ai_fingerprint(payload: Mapping[str, Any]) -> str:
     """Compute a stable fingerprint that never includes secrets."""
-    return sha256_fingerprint(safe_ai_payload(payload))
+    return strict_sha256_fingerprint(safe_ai_payload(payload))

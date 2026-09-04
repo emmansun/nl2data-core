@@ -13,7 +13,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 
 from .models import (
     MongoAdapterError,
@@ -205,7 +205,7 @@ class MongoGuardPolicy:
 
     def policy_hash(self) -> str:
         """Canonical fingerprint of the policy used in guard fingerprints."""
-        return sha256_fingerprint(
+        return strict_sha256_fingerprint(
             {
                 "allowed_collections": sorted(self.allowed_collections),
                 "allowed_fields": sorted(self.allowed_fields),
@@ -228,7 +228,7 @@ class MongoGuardPolicy:
 def _guard_fingerprint(spec: MongoQuerySpec, policy: MongoGuardPolicy) -> str:
     from .normalize import mql_spec_fingerprint
 
-    return sha256_fingerprint(
+    return strict_sha256_fingerprint(
         {
             "spec": mql_spec_fingerprint(spec),
             "policy": policy.policy_hash(),

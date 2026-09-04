@@ -14,7 +14,7 @@ from typing import Any, Literal, cast
 
 from nl2data.errors import ErrorCategory, ErrorCode, NL2DataError
 from nl2data_core.adapters.models import AsyncMode
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .config import MongoAdapterConfig, MongoProfile
@@ -296,7 +296,7 @@ class MongoQueryFacts(BaseModel):
         object.__setattr__(
             self,
             "fingerprint",
-            sha256_fingerprint(
+            strict_sha256_fingerprint(
                 {
                     "source_id": self.source_id,
                     "collection": self.collection,

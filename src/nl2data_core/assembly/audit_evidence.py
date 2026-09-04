@@ -25,7 +25,7 @@ from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 from nl2data_core.views.models import validate_safe_description
 
 FINGERPRINT_PATTERN = r"^sha256:[0-9a-f]{64}$"
@@ -184,7 +184,7 @@ class AssemblyAuditEvidenceEntry(BaseModel):
             raise ValueError("audit entries cannot be their own predecessor")
         self._check_subject_consistency()
         object.__setattr__(
-            self, "fingerprint", sha256_fingerprint(self.canonical_payload())
+            self, "fingerprint", strict_sha256_fingerprint(self.canonical_payload())
         )
         return self
 
@@ -270,7 +270,7 @@ class AssemblyAuditEvidenceEntry(BaseModel):
 
     def verify_fingerprint(self) -> bool:
         """Whether the stored entry fingerprint still matches its facts."""
-        return self.fingerprint == sha256_fingerprint(self.canonical_payload())
+        return self.fingerprint == strict_sha256_fingerprint(self.canonical_payload())
 
 
 class PublicationAuditEvidence(BaseModel):
@@ -311,7 +311,7 @@ class PublicationAuditEvidence(BaseModel):
     @model_validator(mode="after")
     def _validate_and_fingerprint(self) -> PublicationAuditEvidence:
         object.__setattr__(
-            self, "fingerprint", sha256_fingerprint(self.canonical_payload())
+            self, "fingerprint", strict_sha256_fingerprint(self.canonical_payload())
         )
         return self
 

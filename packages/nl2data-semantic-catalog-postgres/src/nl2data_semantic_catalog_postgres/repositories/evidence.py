@@ -14,7 +14,7 @@ from typing import Any
 from nl2data_core.assembly.audit_evidence import PublicationAuditEvidence
 from nl2data_core.assembly.manifest import AcceptedAssertionManifest
 from nl2data_core.bundles.publication import PublishAuditRecord
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 from nl2data_core.control_plane.publication.contracts import (
     FrozenReleaseBinding,
     PublicationIntegrityError,
@@ -139,7 +139,7 @@ class EvidenceRepository:
                 self._uow.encode(
                     ArtifactKind.PUBLICATION_AUDIT_EVIDENCE,
                     payload,
-                    sha256_fingerprint(payload),
+                    strict_sha256_fingerprint(payload),
                 ),
                 now,
             ),

@@ -20,7 +20,7 @@ from tests.contract.test_compiler_governance_boundaries import (
 from nl2data.errors import ErrorCode, NL2DataError
 from nl2data_core.adapters.models import AdapterCapabilities
 from nl2data_core.adapters.sql.compile import SQLCompileError, compile_sql
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 from nl2data_core.compilation.contract import (
     EXPANSION_IDENTITY_VERSIONING,
     CompilationContext,
@@ -533,7 +533,7 @@ class TestEvidenceHashRecords:
             "join_plan_fingerprint": evidence.join_plan_fingerprint,
             "planner_identity": evidence.planner_identity,
         }
-        assert compilation_evidence_fingerprint(evidence) == sha256_fingerprint(
+        assert compilation_evidence_fingerprint(evidence) == strict_sha256_fingerprint(
             legacy_payload
         )
 

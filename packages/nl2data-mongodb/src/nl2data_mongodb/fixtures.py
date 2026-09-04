@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 from nl2data_core.fixtures.base import FixtureProfile
 from nl2data_core.fixtures.models import FixtureSpec, FixtureVerificationError, TableCount
 
@@ -63,9 +63,18 @@ MONGO_EXPECTED_COUNTS: tuple[TableCount, ...] = (
     TableCount(table="orders", count=len(MONGO_SEED["orders"])),
 )
 
-#: Canonical setup fingerprint of the MongoDB schema + seed.
-MONGO_FIXTURE_SETUP_FINGERPRINT: str = sha256_fingerprint(
-    {"schema": MONGO_SCHEMA, "documents": MONGO_SEED}
+#: Canonical setup fingerprint of the MongoDB schema + seed.  Seed
+#: collections are model-native tuples; the fingerprint payload carries
+#: them as JSON arrays so strict canonicalization stays fail-closed.
+MONGO_FIXTURE_SETUP_FINGERPRINT: str = strict_sha256_fingerprint(
+    {
+        "schema": {
+            collection: list(fields) for collection, fields in MONGO_SCHEMA.items()
+        },
+        "documents": {
+            name: list(documents) for name, documents in MONGO_SEED.items()
+        },
+    }
 )
 
 

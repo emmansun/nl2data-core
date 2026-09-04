@@ -83,18 +83,36 @@ resulting identity says nothing about the excluded content.
 
 ### Canonicalization
 
-Before hashing, every payload is normalized into a canonical form that
-is stable across mapping key insertion orders:
+Fingerprints are computed from canonical JSON bytes produced by a single
+canonicalization owner, `nl2data_core.canonical`. Two profiles exist:
 
-1. **Mappings** are sorted by key (string form) recursively.
-2. **Sets/frozensets** are sorted by their canonical JSON rendering.
-3. **Lists/tuples** preserve order.
-4. **Datetimes** become ISO-8601 strings.
-5. Scalars pass through; unsupported values become strings.
+- **`jcs-v1` (strict, default)** — a JCS-compatible (RFC 8785) profile:
+  UTF-8 JSON without BOM, object members sorted by UTF-16 code units,
+  minimal whitespace and escaping, ES6 number rendering (`2.0` becomes
+  `2`, `1e+21` stays exponential). It accepts **only** JSON-safe values:
+  objects with string keys, arrays, strings, integers, finite numbers,
+  booleans, and null.
+- **`legacy-deterministic-json-v1` (compatibility)** — the historical
+  serializer (recursive key sorting, NFC normalization, sorted sets,
+  ISO-8601 datetimes, `str()` coercion of unknown objects). It is
+  retained only for reading records written before profile metadata
+  existed; new fingerprints use the strict profile.
 
-The canonical JSON rendering uses `sort_keys=True` and compact
-separators, so two payloads that differ only in key order hash to the
-same identity.
+For JSON-safe payloads without float-valued integers the two profiles
+produce byte-identical output, so golden vectors and persisted
+identities do not drift.
+
+**Fail-closed values.** The strict profile rejects datetimes, sets,
+tuples, bytes, enums, callables, exceptions, native clients, arbitrary
+objects, non-finite numbers, and non-string object keys with a
+structured `CanonicalizationError` (carrying the offending path and
+type) — it never stringifies them into the identity.
+
+**Model preparation responsibility.** Domain models own normalization:
+`canonical_payload()` / safe-dump methods convert datetimes to ISO-8601
+strings, enums to `.value`, tuples and frozensets to (sorted) arrays
+before canonicalization. The canonicalizer never invents
+representations.
 
 ### Safe key-order canonicalization example
 
@@ -117,6 +135,25 @@ assert sha256_fingerprint(first) == sha256_fingerprint(second)
 The example contains no credentials, raw prompts, queries, or results —
 only safe identifiers. `sha256:<lowercase hex>` is the fixed fingerprint
 format everywhere in the system.
+
+### Canonicalization profiles in persisted records
+
+Durable catalog envelopes record which profile produced their stored
+fingerprint in a `canonicalization_profile` member (new records:
+`jcs-v1`). On reload:
+
+- a record **without** the member is classified as the legacy profile
+  and its stored fingerprint is revalidated under that profile;
+- an **unknown** declared profile fails closed with an
+  `incompatible_profile` rejection;
+- a **fingerprint mismatch** under the recorded profile is rejected —
+  reload never silently rewrites or re-derives a stored identity.
+
+Golden vectors in the test suite pin canonical bytes and fingerprints
+for representative payloads (IR, Bundle, Verification Suite evidence,
+audit evidence, catalog envelope, workflow snapshots); any
+canonicalization change must either keep them byte-identical or ship an
+explicit profile/version bump.
 
 > Note: the snippet above imports `nl2data_core` and is therefore
 > **contributor-only**. Application code never computes fingerprints; it

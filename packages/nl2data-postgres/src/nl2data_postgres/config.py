@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 _MAX_QUERY_LENGTH = 10_000
@@ -106,4 +106,4 @@ class PostgresAdapterConfig(BaseModel):
 
     def fingerprint(self) -> str:
         """Stable fingerprint of this configuration; no secrets included."""
-        return sha256_fingerprint(self.safe_payload())
+        return strict_sha256_fingerprint(self.safe_payload())

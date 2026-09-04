@@ -12,7 +12,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 
 _FINGERPRINT_PATTERN = r"^sha256:[0-9a-f]{64}$"
 
@@ -35,7 +35,7 @@ class ModelConfig(BaseModel):
 
     @model_validator(mode="after")
     def _compute_fingerprint(self) -> ModelConfig:
-        fingerprint = sha256_fingerprint(self.safe_payload())
+        fingerprint = strict_sha256_fingerprint(self.safe_payload())
         object.__setattr__(self, "fingerprint", fingerprint)
         return self
 

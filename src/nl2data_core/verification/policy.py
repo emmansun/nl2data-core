@@ -8,7 +8,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 from nl2data_core.verification.models import VerificationLayer
 
 _BUILTIN_POLICY_IDS = frozenset({"compatibility-v1", "production-v1"})
@@ -48,7 +48,7 @@ class VerificationPolicy(BaseModel):
         payload = self.canonical_payload()
         if expected is not None and payload != expected:
             raise ValueError(f"built-in policy identity '{self.policy_id}' cannot be weakened")
-        object.__setattr__(self, "fingerprint", sha256_fingerprint(payload))
+        object.__setattr__(self, "fingerprint", strict_sha256_fingerprint(payload))
         return self
 
     def canonical_payload(self) -> dict[str, Any]:

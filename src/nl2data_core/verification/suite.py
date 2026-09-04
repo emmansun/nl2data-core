@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable
 
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 from nl2data_core.verification.execution import (
     VerificationExecutionCache,
     VerificationExecutionContext,
@@ -263,7 +263,7 @@ class VerificationSuiteRunner:
             "draft_id": draft_id,
             "draft_revision": draft_revision,
             "bundle_fingerprint": context.candidate.fingerprint,
-            "manifest_fingerprint": sha256_fingerprint(context.manifest.canonical_payload()),
+            "manifest_fingerprint": strict_sha256_fingerprint(context.manifest.canonical_payload()),
             "tenant_scope_fingerprint": context.tenant_scope_fingerprint,
             "source_scope_fingerprint": context.source_scope_fingerprint,
             "layers": layers,
@@ -305,7 +305,7 @@ def validate_bound_evidence(
         and evidence.draft_revision == draft_revision
         and evidence.bundle_fingerprint == context.candidate.fingerprint
         and evidence.manifest_fingerprint
-        == sha256_fingerprint(context.manifest.canonical_payload())
+        == strict_sha256_fingerprint(context.manifest.canonical_payload())
         and evidence.tenant_scope_fingerprint == context.tenant_scope_fingerprint
         and evidence.source_scope_fingerprint == context.source_scope_fingerprint
         and evidence.runner_id == SUITE_RUNNER_ID

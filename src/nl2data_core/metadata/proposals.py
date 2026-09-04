@@ -21,7 +21,7 @@ from typing import Any, cast
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 
 from .models import MetadataConfidence, MetadataTrustLevel
 
@@ -129,6 +129,20 @@ def _freeze_fact(value: Mapping[str, Any]) -> dict[str, Any]:
     return cast(dict[str, Any], _FrozenFact(frozen))
 
 
+def _thaw_fact(value: Any) -> Any:
+    """Invert :func:`_freeze_fact` back to plain JSON containers.
+
+    Canonical payloads must be JSON-safe: frozen mappings and tuples are
+    model-native storage shapes, so fingerprint payloads carry them as
+    plain dicts and JSON arrays.
+    """
+    if isinstance(value, Mapping):
+        return {str(key): _thaw_fact(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_thaw_fact(item) for item in value]
+    return value
+
+
 class SemanticProposal(BaseModel):
     """One bounded semantic proposal with full trust/provenance metadata.
 
@@ -171,7 +185,7 @@ class SemanticProposal(BaseModel):
             "proposal_id": self.proposal_id,
             "kind": self.kind.value,
             "target_id": self.target_id,
-            "fact": dict(self.fact),
+            "fact": _thaw_fact(self.fact),
             "trust_level": self.trust_level.value,
             "method": self.method,
             "confidence": self.confidence.canonical_payload(),
@@ -188,7 +202,7 @@ class SemanticProposal(BaseModel):
         Used to reference the proposal from Bundle provenance and trust
         markers without exposing its payload.
         """
-        return sha256_fingerprint(self.canonical_payload())
+        return strict_sha256_fingerprint(self.canonical_payload())
 
 
 class SemanticProposalSet(BaseModel):
@@ -242,9 +256,9 @@ class SemanticProposalSet(BaseModel):
 
     def evidence_fingerprint_of(self) -> str:
         """Stable fingerprint of this proposal set's canonical form."""
-        from nl2data_core.canonical import sha256_fingerprint
+        from nl2data_core.canonical import strict_sha256_fingerprint
 
-        return sha256_fingerprint(self.canonical_payload())
+        return strict_sha256_fingerprint(self.canonical_payload())
 
     def proposal(self, proposal_id: str) -> SemanticProposal | None:
         """The proposal with the given id, or ``None`` when absent."""

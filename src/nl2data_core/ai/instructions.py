@@ -24,7 +24,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from nl2data.models import QueryRequest
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 from nl2data_core.planning.validation import AuthorizedView
 from nl2data_core.views.projection import ResolvedViewProjection
 
@@ -199,7 +199,7 @@ class OutputContract(BaseModel):
 
     @model_validator(mode="after")
     def _compute_fingerprint(self) -> OutputContract:
-        object.__setattr__(self, "fingerprint", sha256_fingerprint(self.canonical_payload()))
+        object.__setattr__(self, "fingerprint", strict_sha256_fingerprint(self.canonical_payload()))
         return self
 
     def canonical_payload(self) -> dict[str, Any]:
@@ -342,7 +342,7 @@ class ModelInstructionBundle(BaseModel):
 
     @model_validator(mode="after")
     def _compute_fingerprint(self) -> ModelInstructionBundle:
-        object.__setattr__(self, "fingerprint", sha256_fingerprint(self.canonical_payload()))
+        object.__setattr__(self, "fingerprint", strict_sha256_fingerprint(self.canonical_payload()))
         return self
 
     def canonical_payload(self) -> dict[str, Any]:
@@ -485,7 +485,7 @@ def instruction_evidence_fingerprint(bundle: ModelInstructionBundle) -> str:
     Covers the instruction version, the bundle fingerprint, and the output
     schema fingerprint - never raw instruction text, prompts, or claims.
     """
-    return sha256_fingerprint(
+    return strict_sha256_fingerprint(
         {
             "instruction_version": bundle.bundle_version,
             "instruction_fingerprint": bundle.fingerprint,

@@ -72,6 +72,20 @@ class MetadataDiscoveryConfig(BaseModel):
                 raise ValueError("allowlist entries must be bounded identifiers")
         return value
 
+    def canonical_payload(self) -> dict[str, Any]:
+        """JSON-safe canonical form; frozensets carry as sorted arrays."""
+        return {
+            "allowed_objects": sorted(self.allowed_objects),
+            "allowed_fields": sorted(self.allowed_fields),
+            "max_objects": self.max_objects,
+            "max_fields_per_object": self.max_fields_per_object,
+            "max_samples": self.max_samples,
+            "max_statistics": self.max_statistics,
+            "timeout_seconds": self.timeout_seconds,
+            "max_concurrency": self.max_concurrency,
+            "include_statistics": self.include_statistics,
+        }
+
 
 class MetadataDiscoveryCapability(BaseModel):
     """Backend-neutral declaration of a metadata discovery capability.

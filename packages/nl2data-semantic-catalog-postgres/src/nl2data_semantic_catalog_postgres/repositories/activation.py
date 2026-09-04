@@ -38,7 +38,7 @@ from nl2data_core.bundles.publication import (
     witness_cause_type,
 )
 from nl2data_core.bundles.validation import validate_bundle
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 from nl2data_core.control_plane.publication.contracts import (
     PublicationRecordSet,
 )
@@ -98,7 +98,7 @@ class ActivationRepository:
         if binding is not None:
             source_scope = binding.source_scope_fingerprint
         else:
-            source_scope = sha256_fingerprint(
+            source_scope = strict_sha256_fingerprint(
                 {"source_id": bundle.descriptor.source_id}
             )
         if records.audit is not None:
@@ -114,7 +114,7 @@ class ActivationRepository:
         event_id = (
             prefix
             + "-"
-            + sha256_fingerprint(
+            + strict_sha256_fingerprint(
                 {
                     "bundle_id": bundle.bundle_id,
                     "prior_active_fingerprint": prior_active_fingerprint,

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 from nl2data_core.planning.ir.models import (
     IRFilter,
     IRGrouping,
@@ -39,7 +39,7 @@ _TUPLE_VALUE_OPERATORS = frozenset({"in", "not_in"})
 
 def _derived_grouping_id(selection_id: str) -> str:
     """Deterministic, collision-safe grouping id derived from a selection."""
-    return f"g-{sha256_fingerprint({'selection_id': selection_id})[-16:]}"
+    return f"g-{strict_sha256_fingerprint({'selection_id': selection_id})[-16:]}"
 
 
 def _derive_required_capabilities(

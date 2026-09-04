@@ -20,7 +20,7 @@ from nl2data_core.ai.context import (
     SemanticReference,
     assemble_model_context,
 )
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 from nl2data_core.governance.models import PolicyScope
 from nl2data_core.memory.models import (
     MemoryRecallProjection,
@@ -58,7 +58,7 @@ def _view_fingerprint(view: AuthorizedView | None) -> str | None:
     if view.view_bound:
         assert view.view_fingerprint is not None
         return view.view_fingerprint
-    return sha256_fingerprint(
+    return strict_sha256_fingerprint(
         {
             "source_id": view.source_id,
             "root_entity_ids": sorted(view.root_entity_ids),
@@ -91,7 +91,7 @@ class CurrentTurnContext(BaseModel):
 
     @model_validator(mode="after")
     def _compute_fingerprint(self) -> CurrentTurnContext:
-        object.__setattr__(self, "fingerprint", sha256_fingerprint(self.safe_payload()))
+        object.__setattr__(self, "fingerprint", strict_sha256_fingerprint(self.safe_payload()))
         return self
 
     def safe_payload(self) -> dict[str, Any]:
@@ -176,7 +176,7 @@ class MemoryReference(BaseModel):
         object.__setattr__(
             self,
             "fingerprint",
-            sha256_fingerprint(
+            strict_sha256_fingerprint(
                 {
                     "reference_kind": self.reference_kind,
                     "reference_id": self.reference_id,
@@ -232,7 +232,7 @@ class MemoryContextProjection(BaseModel):
 
     @model_validator(mode="after")
     def _compute_fingerprint(self) -> MemoryContextProjection:
-        fingerprint = sha256_fingerprint(
+        fingerprint = strict_sha256_fingerprint(
             {
                 "model_context_fingerprint": self.model_context.fingerprint,
                 "memory_references": [

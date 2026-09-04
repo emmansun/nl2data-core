@@ -24,7 +24,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 from nl2data_core.planning.models import AggregationKind
 
 if TYPE_CHECKING:
@@ -423,10 +423,10 @@ def _project(
         principal_authorization_fingerprint=context.principal_authorization_fingerprint,
         purpose=context.purpose,
         model_version=context.model_version,
-        adapter_capability_fingerprint=sha256_fingerprint(
+        adapter_capability_fingerprint=strict_sha256_fingerprint(
             sorted(context.adapter_capabilities)
         ),
-        feature_flag_fingerprint=sha256_fingerprint(sorted(context.feature_flags)),
+        feature_flag_fingerprint=strict_sha256_fingerprint(sorted(context.feature_flags)),
         provenance=ViewProvenance(
             descriptor_fingerprint=descriptor.fingerprint,
             policy_decision_fingerprint=context.policy_fingerprint,

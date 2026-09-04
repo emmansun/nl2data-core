@@ -20,7 +20,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 from nl2data_core.planning.models import AggregationKind
 
 from .models import ViewProvenance
@@ -218,7 +218,7 @@ class ResolvedViewProjection(BaseModel):
                 "projection bundle binding requires bundle_id, bundle_version, "
                 "and bundle_fingerprint together"
             )
-        fingerprint = sha256_fingerprint(self.canonical_payload())
+        fingerprint = strict_sha256_fingerprint(self.canonical_payload())
         object.__setattr__(self, "fingerprint", fingerprint)
         return self
 

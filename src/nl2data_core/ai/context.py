@@ -13,7 +13,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from nl2data.models import QueryRequest
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 from nl2data_core.planning.validation import AuthorizedView
 from nl2data_core.views.projection import ResolvedViewProjection
 
@@ -82,7 +82,7 @@ class AuthorizedModelContext(BaseModel):
 
     @model_validator(mode="after")
     def _compute_fingerprint(self) -> AuthorizedModelContext:
-        fingerprint = sha256_fingerprint(self.safe_payload())
+        fingerprint = strict_sha256_fingerprint(self.safe_payload())
         object.__setattr__(self, "fingerprint", fingerprint)
         return self
 

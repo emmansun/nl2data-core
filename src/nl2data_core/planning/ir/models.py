@@ -32,7 +32,7 @@ from pydantic import (
     model_validator,
 )
 
-from nl2data_core.canonical import canonical_json, sha256_fingerprint
+from nl2data_core.canonical import strict_canonical_json, strict_sha256_fingerprint
 from nl2data_core.planning.models import AggregationKind, FilterOperator, OrderDirection
 
 IR_VERSION = 1
@@ -125,6 +125,20 @@ def _freeze_json_value(value: Any) -> Any:
     return value
 
 
+def _thaw_json_value(value: Any) -> Any:
+    """Invert :func:`_freeze_json_value` back to plain JSON containers.
+
+    Canonical payloads must be JSON-safe: frozen mappings and tuples are
+    model-native storage shapes, so fingerprint payloads carry them as
+    plain dicts and JSON arrays.
+    """
+    if isinstance(value, Mapping):
+        return {str(key): _thaw_json_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_thaw_json_value(item) for item in value]
+    return value
+
+
 def _check_scalar(value: Any) -> None:
     if not isinstance(value, SCALAR_TYPES):
         raise ValueError(
@@ -203,11 +217,16 @@ class IRFilter(BaseModel):
         return value
 
     def canonical_payload(self) -> dict[str, Any]:
+        # Tuples are model-native value bundles; canonical payloads carry
+        # them as JSON arrays so strict canonicalization stays fail-closed.
+        value: Any = (
+            list(self.value) if isinstance(self.value, tuple) else self.value
+        )
         return {
             "filter_id": self.filter_id,
             "field_id": self.field_id,
             "operator": self.operator,
-            "value": self.value,
+            "value": value,
         }
 
 
@@ -276,10 +295,13 @@ class IRTimeContext(BaseModel):
         return self
 
     def canonical_payload(self) -> dict[str, Any]:
+        value: Any = (
+            list(self.value) if isinstance(self.value, tuple) else self.value
+        )
         return {
             "context_id": self.context_id,
             "reference": self.reference,
-            "value": self.value,
+            "value": value,
         }
 
 
@@ -362,7 +384,7 @@ class LogicalJoinPlan(BaseModel):
 
     @model_validator(mode="after")
     def _compute_fingerprint(self) -> LogicalJoinPlan:
-        fingerprint = sha256_fingerprint(self.canonical_payload())
+        fingerprint = strict_sha256_fingerprint(self.canonical_payload())
         object.__setattr__(self, "fingerprint", fingerprint)
         return self
 
@@ -430,7 +452,7 @@ class IRExtension(BaseModel):
         return {
             "extension_id": self.extension_id,
             "kind": self.kind,
-            "payload": self.payload,
+            "payload": _thaw_json_value(self.payload),
         }
 
 
@@ -567,7 +589,7 @@ class SemanticQueryIR(BaseModel):
 
     @model_validator(mode="after")
     def _compute_fingerprint(self) -> SemanticQueryIR:
-        fingerprint = sha256_fingerprint(self.canonical_payload())
+        fingerprint = strict_sha256_fingerprint(self.canonical_payload())
         object.__setattr__(self, "fingerprint", fingerprint)
         return self
 
@@ -594,7 +616,7 @@ class SemanticQueryIR(BaseModel):
 
     def serialize_canonical(self) -> str:
         """Canonical JSON with explicit version and sorted keys."""
-        return canonical_json(self.canonical_payload())
+        return strict_canonical_json(self.canonical_payload())
 
     @classmethod
     def from_canonical_json(cls, payload: str) -> SemanticQueryIR:
@@ -622,11 +644,15 @@ class SemanticQueryIR(BaseModel):
         so governance obligations stay stable across the migration.
         """
         return frozenset(
-            sha256_fingerprint(
+            strict_sha256_fingerprint(
                 {
                     "field_id": filter_.field_id,
                     "operator": filter_.operator,
-                    "value": filter_.value,
+                    "value": (
+                        list(filter_.value)
+                        if isinstance(filter_.value, tuple)
+                        else filter_.value
+                    ),
                 }
             )
             for filter_ in self.filters

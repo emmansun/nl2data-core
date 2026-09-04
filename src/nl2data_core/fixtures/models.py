@@ -8,7 +8,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from nl2data.errors import ErrorCategory, ErrorCode, NL2DataError
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 
 _IDENTIFIER_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_\-\.]{0,127}$"
 _FINGERPRINT_PATTERN = r"^sha256:[0-9a-f]{64}$"
@@ -84,7 +84,7 @@ class FixtureSpec(BaseModel):
 
     @model_validator(mode="after")
     def _compute_fingerprint(self) -> FixtureSpec:
-        fingerprint = sha256_fingerprint(
+        fingerprint = strict_sha256_fingerprint(
             {
                 "fixture_id": self.fixture_id,
                 "version": self.version,
@@ -112,7 +112,7 @@ def fixture_setup_fingerprint(
     Equal schema/seed in different insertion orders produce the same
     fingerprint, so repeatable provisioning can be proven.
     """
-    return sha256_fingerprint(
+    return strict_sha256_fingerprint(
         {
             "version": FIXTURE_SCHEMA_VERSION,
             "schema": {table: ddl for table, ddl in sorted(schema.items())},

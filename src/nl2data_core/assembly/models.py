@@ -12,7 +12,7 @@ from typing import Any, Literal, cast
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from nl2data_core.bundles.models import BundleCompatibility, SemanticSourceReference
-from nl2data_core.canonical import canonical_json, sha256_fingerprint
+from nl2data_core.canonical import strict_canonical_json, strict_sha256_fingerprint
 from nl2data_core.verification.models import VerificationPlan
 from nl2data_core.views.models import validate_safe_description
 
@@ -159,6 +159,20 @@ def _freeze_payload(value: Mapping[str, Any]) -> dict[str, Any]:
     return cast(dict[str, Any], freeze(value, depth=0))
 
 
+def _thaw_payload(value: Any) -> Any:
+    """Invert :func:`_freeze_payload` back to plain JSON containers.
+
+    Canonical payloads must be JSON-safe: frozen mappings and tuples are
+    model-native storage shapes, so fingerprint payloads carry them as
+    plain dicts and JSON arrays.
+    """
+    if isinstance(value, Mapping):
+        return {str(key): _thaw_payload(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_thaw_payload(item) for item in value]
+    return value
+
+
 def _identity_string(payload: Mapping[str, Any], key: str) -> str:
     value = payload.get(key)
     if not isinstance(value, str) or not value or len(value) > 128:
@@ -216,7 +230,7 @@ def derive_assertion_id(
     payload: Mapping[str, Any],
 ) -> str:
     """Derive a stable assertion ID from identity semantics only."""
-    return sha256_fingerprint(
+    return strict_sha256_fingerprint(
         {
             "assertion_type": assertion_type.value,
             "identity": assertion_identity_payload(assertion_type, payload),
@@ -346,11 +360,11 @@ class SemanticAssertion(BaseModel):
 
     def canonical_payload(self) -> dict[str, Any]:
         """Return semantic assertion content without lifecycle metadata."""
-        return {"type": self.type.value, "payload": dict(self.payload)}
+        return {"type": self.type.value, "payload": _thaw_payload(self.payload)}
 
     def payload_hash(self) -> str:
         """Hash the canonical semantic content reviewed by a decision."""
-        return sha256_fingerprint(self.canonical_payload())
+        return strict_sha256_fingerprint(self.canonical_payload())
 
     def has_valid_review_binding(self) -> bool:
         """Whether a reviewed assertion remains bound to its current payload."""
@@ -516,7 +530,7 @@ class AssemblyDraft(BaseModel):
 
     def serialize_canonical(self) -> str:
         """Serialize this draft as deterministic canonical JSON."""
-        return canonical_json(self.file_payload())
+        return strict_canonical_json(self.file_payload())
 
     def require_revision(self, expected_revision: int) -> None:
         """Fail when a mutation was based on an older or future draft revision."""

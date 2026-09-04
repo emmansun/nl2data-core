@@ -13,7 +13,7 @@ from sqlglot import exp, parse
 from sqlglot.errors import ParseError
 
 from nl2data.errors import ErrorCategory, ErrorCode, NL2DataError
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 
 from .models import SQLParsedArtifact, sql_artifact_fingerprint
 
@@ -151,11 +151,13 @@ def sql_filter_predicate_fingerprints(
         _walk_predicates(clause, predicates)
     bindings = field_bindings or {}
     return frozenset(
-        sha256_fingerprint(
+        strict_sha256_fingerprint(
             {
                 "field_id": bindings.get(field_id, field_id),
                 "operator": operator,
-                "value": value,
+                # Model-native value tuples carry as JSON arrays so strict
+                # canonicalization stays fail-closed.
+                "value": list(value) if isinstance(value, tuple) else value,
             }
         )
         for field_id, operator, value in predicates

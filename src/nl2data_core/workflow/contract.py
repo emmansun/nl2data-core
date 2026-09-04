@@ -19,7 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from nl2data.errors import ErrorCategory, ErrorCode, NL2DataError
 from nl2data.models import QueryOutcome, QueryRequest
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 from nl2data_core.governance.models import ExecutionAuthorization
 from nl2data_core.workflow.models import WorkflowBudget, WorkflowGate, WorkflowStage
 
@@ -367,7 +367,7 @@ def authorization_evidence_fingerprint(authorization: ExecutionAuthorization) ->
     Covers identity, policy, artifact, limits, mandatory filters, and
     validity window only - credentials never exist on an authorization.
     """
-    return sha256_fingerprint(
+    return strict_sha256_fingerprint(
         {
             "authorization_id": authorization.authorization_id,
             "policy_fingerprint": authorization.policy_fingerprint,

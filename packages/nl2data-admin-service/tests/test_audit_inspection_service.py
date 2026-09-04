@@ -17,7 +17,7 @@ from nl2data_core.assembly import (
     verification_reference_audit_entry,
 )
 from nl2data_core.assembly.lifecycle import DraftLifecycleAction, DraftLifecycleRecord
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 from pydantic import ValidationError as PydanticValidationError
 
 from helpers import _FakeDependencies, _make_auth
@@ -37,7 +37,7 @@ from nl2data_admin_service.schema import build_schema, validate_schema
 from nl2data_admin_service.service import AdminService
 
 _TENANT = "sha256:" + "0" * 64
-_SOURCE_FP = sha256_fingerprint({"source_id": "source-1"})
+_SOURCE_FP = strict_sha256_fingerprint({"source_id": "source-1"})
 _EVIDENCE_FP = "sha256:" + "c" * 64
 _BUNDLE_FP = "sha256:" + "d" * 64
 _BASE = datetime(2026, 1, 1, tzinfo=UTC)

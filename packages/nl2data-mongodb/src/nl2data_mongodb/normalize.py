@@ -11,7 +11,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 
 #: JSON-compatible scalar types accepted inside structured MQL values.
 _SCALAR_TYPES: tuple[type, ...] = (str, int, float, bool, type(None))
@@ -60,7 +60,7 @@ def assert_json_compatible(value: Any, *, path: str = "") -> None:
 
 def predicate_fingerprint(field_id: str, operator: str, value: Any) -> str:
     """Stable fingerprint of one leaf predicate; matches governance obligations."""
-    return sha256_fingerprint(
+    return strict_sha256_fingerprint(
         {"field_id": field_id, "operator": operator, "value": normalize_mql_value(value)}
     )
 
@@ -69,7 +69,7 @@ def mql_metadata_fingerprint(
     collections: Mapping[str, Sequence[str]],
 ) -> str:
     """Fingerprint of a bounded collection/field metadata snapshot."""
-    return sha256_fingerprint(
+    return strict_sha256_fingerprint(
         {
             collection: sorted(fields)
             for collection, fields in sorted(collections.items(), key=lambda item: item[0])
@@ -121,4 +121,4 @@ def mql_spec_payload(spec: Any) -> dict[str, Any]:
 
 def mql_spec_fingerprint(spec: Any) -> str:
     """Stable sha256 fingerprint of a structured MQL spec."""
-    return sha256_fingerprint(mql_spec_payload(spec))
+    return strict_sha256_fingerprint(mql_spec_payload(spec))

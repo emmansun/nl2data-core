@@ -55,7 +55,7 @@ from nl2data_core.ai.value_semantics import (
     resolve_intent_filters,
     snapshot_unavailable_error,
 )
-from nl2data_core.canonical import canonical_json, sha256_fingerprint
+from nl2data_core.canonical import canonical_json, strict_sha256_fingerprint
 from nl2data_core.planning.validation import AuthorizedView
 from nl2data_core.views.models import SemanticDescriptor, ValueSemantics
 from nl2data_core.views.projection import ResolvedViewProjection
@@ -409,7 +409,7 @@ class IntentResolver:
             payload = {**payload, **context_extra}
         metadata: dict[str, str] = {
             "context_fingerprint": (
-                sha256_fingerprint(payload)
+                strict_sha256_fingerprint(payload)
                 if context_extra is not None
                 else context.fingerprint
             )

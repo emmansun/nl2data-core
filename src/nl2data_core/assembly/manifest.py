@@ -15,6 +15,7 @@ from .models import (
     ReviewState,
     SemanticAssertion,
     _freeze_payload,
+    _thaw_payload,
 )
 
 _FINGERPRINT_PATTERN = r"^sha256:[0-9a-f]{64}$"
@@ -67,7 +68,7 @@ class AcceptedAssertion(BaseModel):
         return {
             "id": self.id,
             "type": self.type.value,
-            "payload": dict(self.payload),
+            "payload": _thaw_payload(self.payload),
             "payload_hash": self.payload_hash,
         }
 

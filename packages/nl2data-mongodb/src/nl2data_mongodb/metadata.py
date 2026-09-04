@@ -15,7 +15,7 @@ import asyncio
 from collections.abc import Mapping
 from typing import Any
 
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 from nl2data_core.metadata.models import (
     MetadataEvidence,
     MetadataField,
@@ -110,7 +110,7 @@ def discover_metadata(
     evidence: list[MetadataEvidence] = []
     objects: list[MetadataObject] = []
     for name, paths in collections.items():
-        reference = sha256_fingerprint({"collection": name, "paths": sorted(paths)})
+        reference = strict_sha256_fingerprint({"collection": name, "paths": sorted(paths)})
         evidence.append(
             MetadataEvidence(
                 evidence_id=f"mongo-obj-{name}",
@@ -140,7 +140,7 @@ def discover_metadata(
             )
         )
 
-    source_digest = sha256_fingerprint(
+    source_digest = strict_sha256_fingerprint(
         {
             "collections": sorted(collections),
             "references": sorted(item.reference for item in evidence),
@@ -162,7 +162,7 @@ def discover_metadata(
             sample_limit=1,
         ),
         provenance=MetadataProvenance(
-            discovered_by_fingerprint=sha256_fingerprint({"backend": "mongodb"}),
+            discovered_by_fingerprint=strict_sha256_fingerprint({"backend": "mongodb"}),
             method="mongo_path_discovery",
             evidence=tuple(evidence),
         ),

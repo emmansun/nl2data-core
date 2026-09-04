@@ -28,7 +28,7 @@ from nl2data_core.bundles.publication import (
     PublishIdempotencyStatus,
 )
 from nl2data_core.bundles.validation import validate_bundle
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 from nl2data_core.control_plane.publication.contracts import (
     PublicationDraftBinding,
     PublicationRecordSet,
@@ -100,7 +100,7 @@ class PublicationRepository:
         envelope = self._uow.encode(
             ArtifactKind.BUNDLE,
             bundle_payload,
-            sha256_fingerprint(bundle_payload),
+            strict_sha256_fingerprint(bundle_payload),
         )
         manifest_envelope = None
         if accepted_assertion_manifest is not None:
@@ -108,7 +108,7 @@ class PublicationRepository:
             manifest_envelope = self._uow.encode(
                 ArtifactKind.ACCEPTED_ASSERTION_MANIFEST,
                 manifest_payload,
-                sha256_fingerprint(manifest_payload),
+                strict_sha256_fingerprint(manifest_payload),
             )
         audit_envelope = None
         if audit is not None:
@@ -116,7 +116,7 @@ class PublicationRepository:
             audit_envelope = self._uow.encode(
                 ArtifactKind.PUBLISH_AUDIT,
                 audit_payload,
-                sha256_fingerprint(audit_payload),
+                strict_sha256_fingerprint(audit_payload),
             )
         evidence_envelope = None
         if verification_evidence is not None and frozen_release_binding is not None:
@@ -127,7 +127,7 @@ class PublicationRepository:
             evidence_envelope = self._uow.encode(
                 ArtifactKind.VERIFICATION_SUITE_EVIDENCE,
                 evidence_payload,
-                sha256_fingerprint(evidence_payload),
+                strict_sha256_fingerprint(evidence_payload),
             )
         if publication_binding is not None:
             persisted = self._uow.execute(
@@ -153,7 +153,7 @@ class PublicationRepository:
                 row_schema_version=persisted["schema_version"],
             )
             persisted_draft = self._uow.draft_from_envelope(persisted_envelope)
-            if sha256_fingerprint(persisted_draft.file_payload()) != (
+            if strict_sha256_fingerprint(persisted_draft.file_payload()) != (
                 publication_binding.draft_payload_fingerprint
             ):
                 return _failure(

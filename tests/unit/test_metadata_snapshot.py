@@ -15,7 +15,7 @@ from pydantic import ValidationError
 
 from nl2data.errors import ErrorCategory, ErrorCode
 from nl2data_core.adapters.sql.discovery import _sql_type
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 from nl2data_core.metadata import (
     METADATA_SCHEMA_VERSION,
     MetadataBoundsExceededError,
@@ -146,7 +146,7 @@ class TestSnapshotContract:
     def test_fingerprint_is_computed_and_canonical(self) -> None:
         snapshot = make_snapshot()
         assert _FINGERPRINT.fullmatch(snapshot.fingerprint) is not None
-        assert snapshot.fingerprint == sha256_fingerprint(snapshot.canonical_payload())
+        assert snapshot.fingerprint == strict_sha256_fingerprint(snapshot.canonical_payload())
 
     def test_fingerprint_is_insertion_order_stable(self) -> None:
         snapshot = make_snapshot()

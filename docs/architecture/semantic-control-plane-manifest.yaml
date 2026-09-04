@@ -221,6 +221,52 @@ prohibited_imports:
       - requests
       - starlette
 
+canonicalization:
+  # Single canonicalization owner (jcs-canonical-json-hardening design
+  # decision 6): every identity-critical fingerprint and canonical JSON
+  # serialization is computed through nl2data_core.canonical.  Local
+  # hashing (hashlib) or duplicate deterministic serializers
+  # (json.dumps(... sort_keys=True ...)) are prohibited in source modules
+  # unless explicitly allowlisted here as presentation/wire-only.
+  owner:
+    module: nl2data_core.canonical
+    strict_symbols:
+      - CANONICALIZATION_PROFILE_JCS
+      - CANONICALIZATION_PROFILE_LEGACY
+      - CanonicalizationError
+      - validate_json_safe
+      - strict_canonical_bytes
+      - strict_canonical_json
+      - strict_sha256_fingerprint
+      - resolve_canonicalization_profile
+      - profile_fingerprint
+    compatibility_symbols:
+      - canonical_value
+      - canonical_json
+      - sha256_fingerprint
+  # Presentation-only deterministic serializers: these modules render
+  # documents or wire forms that never derive a fingerprint, so their
+  # local json.dumps usage is explicitly approved.
+  presentation_only_allowlist:
+    - module: nl2data_core.tenancy.conformance.models
+      reason: human-readable conformance report rendering; never fingerprinted
+    - module: nl2data_core.tenancy.conformance.runner
+      reason: conformance report text output; never fingerprinted
+    - module: nl2data_core.evaluation.models
+      reason: evaluation report JSON rendering; report identity uses the owner
+    - module: nl2data_core.ai.evaluation.models
+      reason: attribution report JSON rendering; never fingerprinted
+    - module: nl2data_core.memory.conformance.models
+      reason: memory conformance report rendering; never fingerprinted
+    - module: nl2data_core.memory.conformance.runner
+      reason: conformance report text output; never fingerprinted
+    - module: nl2data_core.workflow.durable
+      reason: durable snapshot document persistence; reload revalidates structure and never rewrites identity
+    - module: nl2data_memory_redis.serialization
+      reason: Redis record envelope document persistence; reload revalidates the full model
+    - module: nl2data_mongodb.models
+      reason: MongoDB wire-form document for parse round-trip; never fingerprinted
+
 port_declarations:
   metadata_catalog:
     owner: nl2data_admin_service.protocols

@@ -34,7 +34,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 
 from .drift import DriftDecision
 from .models import MetadataSnapshot
@@ -126,13 +126,13 @@ class ProductionDiscoveryConfig(BaseModel):
     def canonical_payload(self) -> dict[str, Any]:
         return {
             "authorization": self.authorization.canonical_payload(),
-            "bounds": self.bounds.model_dump(),
+            "bounds": self.bounds.canonical_payload(),
             "sensitive_name_markers": sorted(self.sensitive_name_markers),
         }
 
     def fingerprint(self) -> str:
         """Canonical configuration identity for evidence."""
-        return sha256_fingerprint(self.canonical_payload())
+        return strict_sha256_fingerprint(self.canonical_payload())
 
 
 class DiscoveryOutcomeCategory(StrEnum):

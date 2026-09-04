@@ -20,7 +20,7 @@ from datetime import datetime
 from pydantic import ValidationError
 
 from nl2data.models import QueryRequest
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 from nl2data_core.fixtures.models import FIXED_TIMEZONE, TIME_ANCHOR
 from nl2data_core.memory.context import CurrentTurnContext
 from nl2data_core.memory.errors import MemoryErrorCode, MemoryInvocationError
@@ -368,7 +368,7 @@ class MemoryConformanceRunner:
             provider.delete(record_id)
         compacted_count = provider.compact(now=self._time_anchor) if case.compact else 0
 
-        semantic_view_fingerprint = sha256_fingerprint(
+        semantic_view_fingerprint = strict_sha256_fingerprint(
             {
                 "source_id": self._view.source_id,
                 "root_entity_ids": sorted(self._view.root_entity_ids),

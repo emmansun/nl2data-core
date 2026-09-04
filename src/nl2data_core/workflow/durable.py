@@ -20,7 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from nl2data.errors import ErrorCategory, ErrorCode, NL2DataError
 from nl2data.models import QueryOutcome
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 
 from .models import WorkflowState, WorkflowStatus
 
@@ -342,7 +342,7 @@ def terminal_outcome_fingerprint(outcome: QueryOutcome) -> str:
     request/workflow identity, protected result fingerprint, and error code
     - never the outcome payload, rows, prompts, or credentials.
     """
-    return sha256_fingerprint(
+    return strict_sha256_fingerprint(
         {
             "status": outcome.status.value,
             "request_id": outcome.request_id,

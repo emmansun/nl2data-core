@@ -29,7 +29,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 
 from .compare import SnapshotComparison, compare_snapshots
 from .models import MetadataSnapshot
@@ -127,7 +127,7 @@ class DriftDecision(BaseModel):
 
     @model_validator(mode="after")
     def _compute_fingerprint(self) -> DriftDecision:
-        fingerprint = sha256_fingerprint(self.canonical_payload())
+        fingerprint = strict_sha256_fingerprint(self.canonical_payload())
         object.__setattr__(self, "decision_fingerprint", fingerprint)
         return self
 
@@ -198,7 +198,7 @@ class DriftOverride(BaseModel):
 
     @model_validator(mode="after")
     def _compute_fingerprint(self) -> DriftOverride:
-        fingerprint = sha256_fingerprint(self.canonical_payload())
+        fingerprint = strict_sha256_fingerprint(self.canonical_payload())
         object.__setattr__(self, "override_fingerprint", fingerprint)
         return self
 
@@ -441,7 +441,7 @@ def _classify_comparison(
         blocking_reasons=tuple(blocking[:_MAX_REASONS]),
         informational_changes=tuple(informational[:_MAX_REFERENCES]),
         warning_changes=tuple(warning[:_MAX_REFERENCES]),
-        comparison_fingerprint=sha256_fingerprint(comparison.safe_payload()),
+        comparison_fingerprint=strict_sha256_fingerprint(comparison.safe_payload()),
     )
 
 

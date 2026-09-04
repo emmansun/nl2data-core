@@ -19,7 +19,7 @@ from nl2data_core.assembly.manifest import AcceptedAssertionManifest
 from nl2data_core.assembly.models import AssemblyState, ReviewState
 from nl2data_core.bundles.catalog import BundleCatalogOutcome
 from nl2data_core.bundles.models import SemanticModelBundle
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 from nl2data_core.control_plane.publication.contracts import (
     AssemblyPublishIssue,
     AssemblyPublishOutcome,
@@ -122,13 +122,13 @@ def freeze_stage(
             "verification_plan_binding_mismatch",
             "the frozen verification plan does not match the approved draft binding",
         )
-    source_scope_fingerprint = sha256_fingerprint(
+    source_scope_fingerprint = strict_sha256_fingerprint(
         {"source_id": context.authorization.source_id}
     )
     publication_binding = PublicationDraftBinding(
         draft_id=draft.draft_id,
         draft_revision=request.expected_revision,
-        draft_payload_fingerprint=sha256_fingerprint(draft.file_payload()),
+        draft_payload_fingerprint=strict_sha256_fingerprint(draft.file_payload()),
         approved_plan_fingerprint=frozen_plan_fingerprint,
         tenant_scope_fingerprint=context.authorization.tenant_scope_fingerprint,
         source_scope_fingerprint=source_scope_fingerprint,

@@ -11,7 +11,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 
 _IDENTIFIER_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_\-\.]{0,127}$"
 
@@ -141,7 +141,7 @@ class RelationshipGraph(BaseModel):
 
     @model_validator(mode="after")
     def _compute_fingerprint(self) -> RelationshipGraph:
-        fingerprint = sha256_fingerprint(self.canonical_payload())
+        fingerprint = strict_sha256_fingerprint(self.canonical_payload())
         object.__setattr__(self, "fingerprint", fingerprint)
         return self
 

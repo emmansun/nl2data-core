@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import re
 
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 
 from .models import (
     MetadataConfidence,
@@ -75,7 +75,7 @@ def _normalized_type(data_type: str) -> str:
 
 def _evidence_reference(evidence: MetadataEvidence) -> str:
     """Canonical fingerprint of one evidence record."""
-    return sha256_fingerprint(evidence.canonical_payload())
+    return strict_sha256_fingerprint(evidence.canonical_payload())
 
 
 class _InferenceBuilder:
@@ -105,7 +105,7 @@ class _InferenceBuilder:
         references = sorted(
             self._evidence[evidence_id].reference for evidence_id in evidence_ids
         )
-        return sha256_fingerprint({"evidence": references})
+        return strict_sha256_fingerprint({"evidence": references})
 
     def _emit(
         self,
@@ -139,7 +139,9 @@ class _InferenceBuilder:
 def _object_evidence(snapshot: MetadataSnapshot, object_id: str) -> MetadataEvidence:
     obj = snapshot.object(object_id)
     reference = (
-        sha256_fingerprint(obj.canonical_payload()) if obj is not None else sha256_fingerprint({})
+        strict_sha256_fingerprint(obj.canonical_payload())
+        if obj is not None
+        else strict_sha256_fingerprint({})
     )
     return MetadataEvidence(
         evidence_id=f"obj-{object_id}",
@@ -152,9 +154,9 @@ def _object_evidence(snapshot: MetadataSnapshot, object_id: str) -> MetadataEvid
 def _field_evidence(snapshot: MetadataSnapshot, object_id: str, field_id: str) -> MetadataEvidence:
     field = snapshot.field(field_id)
     reference = (
-        sha256_fingerprint(field.canonical_payload())
+        strict_sha256_fingerprint(field.canonical_payload())
         if field is not None
-        else sha256_fingerprint({})
+        else strict_sha256_fingerprint({})
     )
     return MetadataEvidence(
         evidence_id=f"fld-{object_id}-{field_id}",
@@ -257,7 +259,7 @@ def infer_proposals(
         evidence = MetadataEvidence(
             evidence_id=f"rel-{relationship.relationship_id}",
             kind="relationship",
-            reference=sha256_fingerprint(
+            reference=strict_sha256_fingerprint(
                 {
                     "source_object_id": relationship.source_object_id,
                     "target_object_id": relationship.target_object_id,

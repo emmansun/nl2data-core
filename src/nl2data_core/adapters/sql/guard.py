@@ -14,7 +14,7 @@ from typing import Any
 from sqlglot import exp
 
 from nl2data.errors import ErrorCategory, ErrorCode, NL2DataError
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 
 from .models import SQLGuardResult, SQLParsedArtifact, sql_guard_fingerprint
 from .parsing import sql_filter_predicate_fingerprints
@@ -78,7 +78,7 @@ class SQLGuardPolicy:
 
     def policy_hash(self) -> str:
         """Canonical fingerprint of the policy used in guard fingerprints."""
-        return sha256_fingerprint(
+        return strict_sha256_fingerprint(
             {
                 "allowed_objects": sorted(self.allowed_objects),
                 "allowed_columns": (

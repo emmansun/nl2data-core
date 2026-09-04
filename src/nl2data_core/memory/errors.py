@@ -15,7 +15,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from nl2data._redact import REDACTED_VALUE, redact_key_value
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 
 _FINGERPRINT_PATTERN = r"^sha256:[0-9a-f]{64}$"
 
@@ -116,7 +116,7 @@ class MemoryErrorRecord(BaseModel):
 
     @model_validator(mode="after")
     def _compute_fingerprint(self) -> MemoryErrorRecord:
-        fingerprint = sha256_fingerprint(
+        fingerprint = strict_sha256_fingerprint(
             {
                 "code": self.code.value,
                 "category": self.category.value,

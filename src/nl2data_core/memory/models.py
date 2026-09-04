@@ -17,7 +17,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 
 _IDENTIFIER_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_\-\.]{0,127}$"
 _FINGERPRINT_PATTERN = r"^sha256:[0-9a-f]{64}$"
@@ -146,7 +146,7 @@ class MemoryScope(BaseModel):
 
     @model_validator(mode="after")
     def _compute_fingerprint(self) -> MemoryScope:
-        fingerprint = sha256_fingerprint(
+        fingerprint = strict_sha256_fingerprint(
             {
                 "tenant_scope_fingerprint": self.tenant_scope_fingerprint,
                 "session_id": self.session_id,
@@ -209,7 +209,7 @@ class QueryReference(BaseModel):
 
     @model_validator(mode="after")
     def _compute_fingerprint(self) -> QueryReference:
-        object.__setattr__(self, "fingerprint", sha256_fingerprint(self.canonical_payload()))
+        object.__setattr__(self, "fingerprint", strict_sha256_fingerprint(self.canonical_payload()))
         return self
 
     def canonical_payload(self) -> dict[str, Any]:
@@ -258,7 +258,7 @@ class SemanticDecision(BaseModel):
         object.__setattr__(
             self,
             "fingerprint",
-            sha256_fingerprint(
+            strict_sha256_fingerprint(
                 {
                     "decision_id": self.decision_id,
                     "confirmed_interpretation": self.confirmed_interpretation,
@@ -392,7 +392,7 @@ class MemoryRecord(BaseModel):
                 and self.scope.tenant_scope_fingerprint is None):
             raise ValueError("non-working memory records require a tenant scope fingerprint")
         object.__setattr__(self, "expires_at", expires)
-        object.__setattr__(self, "fingerprint", sha256_fingerprint(self.canonical_payload()))
+        object.__setattr__(self, "fingerprint", strict_sha256_fingerprint(self.canonical_payload()))
         return self
 
     @property
@@ -472,7 +472,7 @@ class MemoryRecallProjection(BaseModel):
 
     @model_validator(mode="after")
     def _compute_fingerprint(self) -> MemoryRecallProjection:
-        fingerprint = sha256_fingerprint(
+        fingerprint = strict_sha256_fingerprint(
             {
                 "scope_fingerprint": self.scope_fingerprint,
                 "records": [record.fingerprint for record in self.records],

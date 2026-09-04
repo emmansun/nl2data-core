@@ -17,7 +17,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 from nl2data_core.fixtures.models import FIXED_TIMEZONE, TIME_ANCHOR
 from nl2data_core.memory.models import (
     MemoryRecallBudget,
@@ -127,7 +127,7 @@ class MemoryConformanceDataset(BaseModel):
 
     @model_validator(mode="after")
     def _compute_fingerprint(self) -> MemoryConformanceDataset:
-        fingerprint = sha256_fingerprint(
+        fingerprint = strict_sha256_fingerprint(
             {
                 "dataset_id": self.dataset_id,
                 "name": self.name,
@@ -175,7 +175,7 @@ class MemoryProtectedEvidence(BaseModel):
 
     @model_validator(mode="after")
     def _compute_fingerprint(self) -> MemoryProtectedEvidence:
-        fingerprint = sha256_fingerprint(
+        fingerprint = strict_sha256_fingerprint(
             {
                 "case_id": self.case_id,
                 "decision": self.decision.value,
@@ -237,7 +237,7 @@ class MemoryConformanceReport(BaseModel):
 
     @model_validator(mode="after")
     def _compute_fingerprint(self) -> MemoryConformanceReport:
-        object.__setattr__(self, "fingerprint", sha256_fingerprint(self._semantic_payload()))
+        object.__setattr__(self, "fingerprint", strict_sha256_fingerprint(self._semantic_payload()))
         return self
 
     def _semantic_payload(self) -> dict[str, Any]:

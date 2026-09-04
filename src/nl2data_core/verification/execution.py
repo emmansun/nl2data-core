@@ -19,7 +19,7 @@ from nl2data_core.assembly.manifest import AcceptedAssertionManifest
 # import cycle caught by the architecture graph once relative imports are
 # resolved.
 from nl2data_core.bundles.models import SemanticModelBundle
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 from nl2data_core.evaluation.models import EvaluationRunContext
 from nl2data_core.evaluation.sqlite_executor import SqliteCaseExecutor
 from nl2data_core.fixtures.sqlite import SQLiteFixtureProfile
@@ -147,7 +147,7 @@ class VerificationObservation(BaseModel):
         object.__setattr__(
             self,
             "fingerprint",
-            sha256_fingerprint(
+            strict_sha256_fingerprint(
                 {
                     "status": self.status.value,
                     "executor_id": self.executor_id,
@@ -155,7 +155,7 @@ class VerificationObservation(BaseModel):
                     "bundle_fingerprint": self.bundle_fingerprint,
                     "ir_fingerprint": self.ir_fingerprint,
                     "fixture_setup_fingerprint": self.fixture_setup_fingerprint,
-                    "selection_ids": self.selection_ids,
+                    "selection_ids": list(self.selection_ids),
                     "row_count": len(self.rows),
                     "result_fingerprint": self.result_fingerprint,
                     "error_code": self.error_code,
@@ -238,10 +238,10 @@ def execution_key(
     executor: VerificationExecutor,
 ) -> str:
     """Fingerprint every input that can affect one governed observation."""
-    return sha256_fingerprint(
+    return strict_sha256_fingerprint(
         {
             "bundle_fingerprint": context.candidate.fingerprint,
-            "manifest_fingerprint": sha256_fingerprint(context.manifest.canonical_payload()),
+            "manifest_fingerprint": strict_sha256_fingerprint(context.manifest.canonical_payload()),
             "ir_fingerprint": ir.fingerprint,
             "view_fingerprint": context.view.view_fingerprint,
             "policy_fingerprint": context.policy.fingerprint,
@@ -293,7 +293,7 @@ class SQLiteReferenceVerificationExecutor:
     ) -> None:
         self._fixture_profiles = dict(fixture_profiles)
         self._binding = binding
-        self._capability_fingerprint = sha256_fingerprint(
+        self._capability_fingerprint = strict_sha256_fingerprint(
             {
                 "executor_id": self.executor_id,
                 "executor_version": 1,
@@ -468,6 +468,6 @@ class SQLiteReferenceVerificationExecutor:
             executor_capability_fingerprint=self.capability_fingerprint,
             bundle_fingerprint=context.candidate.fingerprint,
             ir_fingerprint=ir.fingerprint,
-            fixture_setup_fingerprint=sha256_fingerprint({"fixture": "unavailable"}),
+            fixture_setup_fingerprint=strict_sha256_fingerprint({"fixture": "unavailable"}),
             error_code="fixture_unavailable",
         )

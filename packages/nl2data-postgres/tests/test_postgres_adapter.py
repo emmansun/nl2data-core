@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from nl2data_core.adapters.models import ValidationContext
 from nl2data_core.adapters.sql.guard import SQLGuardError
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 
 from nl2data_postgres.adapter import PostgresAdapterError, PostgresQueryAdapter
 from nl2data_postgres.config import PostgresAdapterConfig
@@ -64,7 +64,7 @@ class TestPostgresObligationEnforcement:
             PostgresAdapterConfig(dsn_reference="env:X"),
             allowed_objects=frozenset({"users"}),
         )
-        obligation = sha256_fingerprint({"field_id": "id", "operator": "eq", "value": 1})
+        obligation = strict_sha256_fingerprint({"field_id": "id", "operator": "eq", "value": 1})
         artifact = adapter.parse(
             "SELECT id FROM users WHERE id = 1 LIMIT 5", ValidationContext()
         )
@@ -81,7 +81,7 @@ class TestPostgresObligationEnforcement:
             PostgresAdapterConfig(dsn_reference="env:X"),
             allowed_objects=frozenset({"users"}),
         )
-        obligation = sha256_fingerprint({"field_id": "id", "operator": "eq", "value": 1})
+        obligation = strict_sha256_fingerprint({"field_id": "id", "operator": "eq", "value": 1})
         artifact = adapter.parse("SELECT id FROM users LIMIT 5", ValidationContext())
         with pytest.raises(SQLGuardError):
             adapter.validate(

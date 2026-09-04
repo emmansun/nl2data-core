@@ -24,7 +24,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from nl2data_core.canonical import canonical_json, sha256_fingerprint
+from nl2data_core.canonical import strict_canonical_json, strict_sha256_fingerprint
 from nl2data_core.planning.models import AggregationKind
 from nl2data_core.views.models import SemanticDescriptor, validate_safe_description
 
@@ -392,7 +392,7 @@ class SemanticModelBundle(BaseModel):
 
     @model_validator(mode="after")
     def _compute_fingerprint(self) -> SemanticModelBundle:
-        fingerprint = sha256_fingerprint(self.canonical_payload())
+        fingerprint = strict_sha256_fingerprint(self.canonical_payload())
         object.__setattr__(self, "fingerprint", fingerprint)
         return self
 
@@ -437,7 +437,7 @@ class SemanticModelBundle(BaseModel):
 
     def serialize_canonical(self) -> str:
         """Canonical safe envelope with explicit schema version and sorted keys."""
-        return canonical_json(self.file_payload())
+        return strict_canonical_json(self.file_payload())
 
     def safe_payload(self) -> dict[str, Any]:
         """Serialize with safe references and descriptions only.

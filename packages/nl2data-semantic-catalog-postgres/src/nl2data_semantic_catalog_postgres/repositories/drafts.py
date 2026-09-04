@@ -11,7 +11,7 @@ publication transaction.
 from __future__ import annotations
 
 from nl2data_core.assembly.models import AssemblyDraft, DraftRevisionConflict
-from nl2data_core.canonical import sha256_fingerprint
+from nl2data_core.canonical import strict_sha256_fingerprint
 from nl2data_core.control_plane.publication.contracts import PublicationDraftBinding
 
 from ..envelope import ENVELOPE_SCHEMA_VERSION, ArtifactKind
@@ -37,7 +37,7 @@ class DraftRepository:
         envelope = self._uow.encode(
             ArtifactKind.ASSEMBLY_DRAFT,
             payload,
-            sha256_fingerprint(payload),
+            strict_sha256_fingerprint(payload),
         )
         with self._uow.transaction() as conn:
             cursor = self._uow.execute(
@@ -102,7 +102,7 @@ class DraftRepository:
         return (
             authoritative is not None
             and authoritative.draft_revision == binding.draft_revision
-            and sha256_fingerprint(authoritative.file_payload())
+            and strict_sha256_fingerprint(authoritative.file_payload())
             == binding.draft_payload_fingerprint
         )
 
@@ -124,7 +124,7 @@ class DraftRepository:
         envelope = self._uow.encode(
             ArtifactKind.ASSEMBLY_DRAFT,
             payload,
-            sha256_fingerprint(payload),
+            strict_sha256_fingerprint(payload),
         )
         with self._uow.transaction() as conn:
             cursor = self._uow.execute(
