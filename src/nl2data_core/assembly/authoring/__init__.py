@@ -25,11 +25,18 @@ from .models import (
     AuthoringGrain,
     AuthoringMeasure,
     AuthoringMetadata,
+    AuthoringPolicyTemplate,
     AuthoringRelationship,
     AuthoringSource,
     AuthoringSourceReference,
     AuthoringSpec,
     SemanticAssemblyAuthoring,
+)
+from .policy_templates import (
+    POLICY_TEMPLATE_NAMES,
+    ExpandedPolicy,
+    PolicyTemplateError,
+    expand_policy_templates,
 )
 from .validation import validate_authoring
 
@@ -49,6 +56,7 @@ __all__ = [
     "AuthoringMetadata",
     "AuthoringParseResult",
     "AuthoringPath",
+    "AuthoringPolicyTemplate",
     "AuthoringRelationship",
     "AuthoringSource",
     "AuthoringSourceMark",
@@ -57,8 +65,12 @@ __all__ = [
     "AuthoringSpec",
     "AuthoringSummary",
     "AuthoringValidationResult",
+    "ExpandedPolicy",
+    "POLICY_TEMPLATE_NAMES",
+    "PolicyTemplateError",
     "SemanticAssemblyAuthoring",
     "SemanticAssemblyAuthoringLoader",
+    "expand_policy_templates",
     "lower_authoring",
     "export_authoring",
     "export_authoring_draft",

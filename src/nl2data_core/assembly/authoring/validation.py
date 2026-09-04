@@ -32,6 +32,7 @@ from .diagnostics import (
     AuthoringValidationResult,
 )
 from .models import SemanticAssemblyAuthoring
+from .policy_templates import PolicyTemplateError, expand_policy_templates
 
 
 @dataclass(frozen=True)
@@ -61,6 +62,44 @@ def _diagnostic(
         mark=mark,
         message=message,
     )
+
+
+_POLICY_DIAGNOSTIC_CODES = {
+    "unknown_template": "invalid_member",
+    "unknown_parameter": "invalid_member",
+    "missing_parameter": "invalid_member",
+    "invalid_parameter": "invalid_member",
+    "parameter_bounds": "invalid_member",
+    "invalid_reference": "invalid_reference",
+    "duplicate_identity": "duplicate_identity",
+}
+
+
+def _policy_diagnostics(
+    model: SemanticAssemblyAuthoring,
+    source_marks: dict[tuple[str | int, ...], AuthoringSourceMark] | None,
+) -> list[AuthoringDiagnostic]:
+    """Run fail-closed policy template expansion with source locations."""
+    try:
+        expand_policy_templates(model)
+    except PolicyTemplateError as error:
+        diagnostics: list[AuthoringDiagnostic] = []
+        for issue in error.issues:
+            path: tuple[str | int, ...] = (
+                "spec",
+                "policies",
+                issue.declaration_index,
+                *issue.path,
+            )
+            code = _POLICY_DIAGNOSTIC_CODES[issue.kind]
+            diagnostics.append(_diagnostic(code, path, issue.message, source_marks))
+            if issue.duplicate_index is not None:
+                twin = ("spec", "policies", issue.duplicate_index)
+                diagnostics.append(
+                    _diagnostic(code, twin, issue.message, source_marks)
+                )
+        return diagnostics
+    return []
 
 
 def normalize_authoring(
@@ -142,6 +181,7 @@ def normalize_authoring(
                     source_marks,
                 )
             )
+    issues.extend(_policy_diagnostics(model, source_marks))
     if issues:
         return None, tuple(issues)
 
@@ -323,6 +363,7 @@ def validate_authoring(
         )
         + len(model.spec.measures)
         + len(model.spec.grains)
+        + len(model.spec.policies)
     )
     return AuthoringValidationResult(
         model=model,

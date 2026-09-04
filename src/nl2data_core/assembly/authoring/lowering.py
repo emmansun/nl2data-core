@@ -15,6 +15,7 @@ from nl2data_core.assembly.models import (
 
 from .diagnostics import AuthoringDiagnostic, AuthoringLoweringResult
 from .models import SemanticAssemblyAuthoring
+from .policy_templates import PolicyTemplateError, expand_policy_templates
 from .validation import normalize_authoring
 
 
@@ -108,6 +109,24 @@ def lower_authoring(
             SemanticAssertion.create(
                 type=AssertionType.GRAIN,
                 payload={"descriptor_id": descriptor_id, **grain.canonical_payload()},
+                provenance=provenance,
+            )
+        )
+    try:
+        expanded = expand_policy_templates(model)
+    except PolicyTemplateError:
+        # normalize_authoring already validated the declarations; this is a
+        # defensive guard so lowering never emits a partial draft.
+        diagnostic = AuthoringDiagnostic(
+            code="invalid_member",
+            message="The policy template declarations are not valid.",
+        )
+        return AuthoringLoweringResult(diagnostics=(diagnostic,), issue_count=1)
+    for policy in expanded:
+        assertions.append(
+            SemanticAssertion.create(
+                type=AssertionType.POLICY,
+                payload={"descriptor_id": descriptor_id, **policy.payload},
                 provenance=provenance,
             )
         )

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Mapping
 from typing import Any
 
 import yaml
@@ -19,6 +20,12 @@ from nl2data_core.assembly.models import (
 from .diagnostics import AuthoringDiagnostic, AuthoringExportResult
 from .lowering import lower_authoring
 from .models import AUTHORING_API_VERSION, AUTHORING_KIND, SemanticAssemblyAuthoring
+from .policy_templates import (
+    POLICY_TEMPLATE_SPECS,
+    PolicyTemplateError,
+    expand_policy_templates,
+    expanded_policy_id,
+)
 
 
 class _AuthoringDumper(yaml.SafeDumper):
@@ -58,6 +65,25 @@ def _sorted_payload(model: SemanticAssemblyAuthoring) -> dict[str, Any]:
     spec["deploymentBindings"] = sorted(
         spec.get("deploymentBindings", []), key=lambda item: item["bindingId"]
     )
+    policies = spec.get("policies")
+    if policies:
+        try:
+            order = {
+                item.declaration_index: item.policy_id
+                for item in expand_policy_templates(model)
+            }
+            policies = [
+                policies[index]
+                for index in sorted(range(len(policies)), key=lambda index: order[index])
+            ]
+        except PolicyTemplateError:
+            # Invalid models fail validation elsewhere; keep document order.
+            pass
+        for entry in policies:
+            parameters = entry.get("parameters")
+            if isinstance(parameters, dict):
+                entry["parameters"] = dict(sorted(parameters.items()))
+        spec["policies"] = policies
     verification_plan = spec.get("verificationPlan")
     if verification_plan is not None:
         verification_plan["smokeCases"] = sorted(
@@ -117,6 +143,7 @@ def _draft_payload(draft: AssemblyDraft) -> dict[str, Any] | None:
     mappings: dict[tuple[str, str], dict[str, Any]] = {}
     measures: list[dict[str, Any]] = []
     grains: list[dict[str, Any]] = []
+    policies: list[dict[str, Any]] = []
 
     expected_keys = {
         AssertionType.ENTITY: {"descriptor_id", "entity_id", "label", "description"},
@@ -177,6 +204,12 @@ def _draft_payload(draft: AssemblyDraft) -> dict[str, Any] | None:
         },
     }
     for assertion in draft.assertions:
+        if assertion.type is AssertionType.POLICY:
+            entry = _policy_declaration_payload(assertion.payload, draft.bundle_id)
+            if entry is None:
+                return None
+            policies.append(entry)
+            continue
         if (
             assertion.type not in expected_keys
             or not set(assertion.payload) <= expected_keys[assertion.type]
@@ -224,6 +257,10 @@ def _draft_payload(draft: AssemblyDraft) -> dict[str, Any] | None:
         entity["calculatedFields"] = calculated_fields.pop(entity_id, [])
     if fields or relationships or calculated_fields or mappings:
         return None
+    if policies:
+        policies.sort(
+            key=lambda entry: expanded_policy_id(entry["template"], entry["parameters"])
+        )
 
     return {
         "apiVersion": AUTHORING_API_VERSION,
@@ -245,6 +282,7 @@ def _draft_payload(draft: AssemblyDraft) -> dict[str, Any] | None:
             "entities": list(entities.values()),
             "measures": measures,
             "grains": grains,
+            **({"policies": policies} if policies else {}),
             "sourceReferences": [
                 source.model_dump(mode="json", exclude_none=True)
                 for source in draft.authoring_source_references
@@ -270,6 +308,31 @@ def _draft_payload(draft: AssemblyDraft) -> dict[str, Any] | None:
             ),
         },
     }
+
+
+def _policy_declaration_payload(
+    assertion_payload: Mapping[str, Any],
+    bundle_id: str,
+) -> dict[str, Any] | None:
+    """Reconstruct one policy template declaration from an expanded payload."""
+    payload = dict(assertion_payload)
+    if payload.pop("descriptor_id", None) != bundle_id:
+        return None
+    policy_kind = payload.pop("policy_kind", None)
+    if payload.pop("policy_id", None) is None or not isinstance(policy_kind, str):
+        return None
+    spec = POLICY_TEMPLATE_SPECS.get(policy_kind)
+    if spec is None or not set(payload) <= {
+        parameter.name for parameter in spec.parameters
+    }:
+        return None
+    try:
+        identity = expanded_policy_id(policy_kind, payload)
+    except ValueError:
+        return None
+    if identity != assertion_payload.get("policy_id"):
+        return None
+    return {"template": policy_kind, "parameters": dict(sorted(payload.items()))}
 
 
 def _draft_verification_plan_payload(plan: Any) -> dict[str, Any]:

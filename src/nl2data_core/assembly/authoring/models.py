@@ -28,6 +28,12 @@ from nl2data_core.views.models import (
     validate_safe_description,
 )
 
+from .policy_templates import (
+    MAX_POLICY_DECLARATIONS,
+    MAX_POLICY_PARAM_ENTRIES,
+    normalize_policy_parameters,
+)
+
 AUTHORING_API_VERSION: Literal["nl2data.io/semantic-assembly-authoring/v1alpha1"] = (
     "nl2data.io/semantic-assembly-authoring/v1alpha1"
 )
@@ -208,6 +214,27 @@ class AuthoringDeploymentBinding(_AuthoringModel):
     connection_reference: str = Field(min_length=1, max_length=256)
 
 
+class AuthoringPolicyTemplate(_AuthoringModel):
+    """One governance policy template declaration (authoring sugar only).
+
+    The declaration carries a registry template name and a bounded mapping
+    of JSON-compatible scalars or bounded scalar lists.  Raw policy
+    payloads, fingerprints, lifecycle fields, credentials, and non-scalar
+    values are rejected here before any expansion runs.
+    """
+
+    template: Identifier
+    parameters: dict[str, Any] = Field(max_length=MAX_POLICY_PARAM_ENTRIES)
+
+    @field_validator("parameters")
+    @classmethod
+    def _bounded_scalar_parameters(cls, value: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return normalize_policy_parameters(value)
+        except ValueError as error:
+            raise ValueError("policy parameters are not bounded scalar content") from error
+
+
 _VERIFICATION_ALIASES = {
     "verificationVersion": "verification_version",
     "policyProfile": "policy_profile",
@@ -333,6 +360,10 @@ class AuthoringSpec(_AuthoringModel):
         default_factory=tuple,
         max_length=MAX_AUTHORING_GRAINS,
     )
+    policies: tuple[AuthoringPolicyTemplate, ...] = Field(
+        default_factory=tuple,
+        max_length=MAX_POLICY_DECLARATIONS,
+    )
     source_references: tuple[AuthoringSourceReference, ...] = Field(
         default_factory=tuple,
         max_length=MAX_AUTHORING_SOURCE_REFERENCES,
@@ -433,6 +464,9 @@ class SemanticAssemblyAuthoring(_AuthoringModel):
 
     def authoring_payload(self) -> dict[str, Any]:
         payload = self.model_dump(mode="json", by_alias=True, exclude_none=True)
+        if not self.spec.policies:
+            # Documents without a policies section export exactly as before.
+            payload["spec"].pop("policies", None)
         if self.spec.verification_plan is not None:
             payload["spec"]["verificationPlan"] = (
                 self.spec.verification_plan.authoring_payload()

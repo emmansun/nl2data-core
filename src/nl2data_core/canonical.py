@@ -252,6 +252,17 @@ def strict_sha256_fingerprint(payload: Any) -> str:
     return f"sha256:{digest}"
 
 
+def strict_blake2b_16_digest(value: str) -> str:
+    """Compute a bounded blake2b-16 (128-bit) hex digest over UTF-8 bytes.
+
+    Identity-critical callers use this when a deterministic rendered form
+    would exceed a bounded identifier and a short digest fallback is
+    required.  Computation stays in the canonicalization owner so no
+    source module hashes locally.
+    """
+    return hashlib.blake2b(value.encode("utf-8"), digest_size=16).hexdigest()
+
+
 def resolve_canonicalization_profile(profile: str | None) -> str:
     """Classify a recorded canonicalization profile.
 
