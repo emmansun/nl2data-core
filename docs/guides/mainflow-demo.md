@@ -86,7 +86,10 @@ python demo/seed/seed.py --scale small
 ```
 
 This creates the order-fulfillment tables in the default schema and populates
-them with two tenant partitions and documented anomaly samples.
+them with two tenant partitions and documented anomaly samples. The reference
+schema stores money/price columns as `DOUBLE PRECISION` so adapter results stay
+inside the protected scalar set; if your database was seeded before this change,
+re-run the seed command.
 
 ## Run the demo
 
@@ -143,6 +146,53 @@ reachable. The `cancelled outcome status` line proves the cancellation
 fail-fast path: a cancelled non-terminal workflow is rejected with
 `WORKFLOW_CANCELLED` before any adapter execution.
 
+## Governed demo questions (q2/q5/q6/q8)
+
+Both profiles also run four governed business questions end to end: q2 (refund
+rate by category), q5 (weekly order growth), q6 (first-order conversion by
+channel), and q8 (low stock products). Each question is a fixed,
+application-composed case that flows through the normal runtime path — intent
+resolution, the deterministic join planner (q2/q6), IR validation, the
+context-aware compiler, the SQL guard, governance, authorization, and result
+protection. No demo-only compiler injection is used, and multi-entity IR
+provenance pins the runtime join-plan fingerprint, so a stale or divergent plan
+fails compilation instead of executing.
+
+Deterministic profile — exact golden rows from the shared controlled fixture:
+
+| # | Golden assertion | Declared shape (columns) |
+| --- | --- | --- |
+| q2 | `q2 refund rate by category` | `category`, `refunded_orders`, `total_orders`, `refund_rate` |
+| q5 | `q5 weekly order growth` | `week_start`, `order_count`, `prev_order_count` |
+| q6 | `q6 first-order conversion by channel` | `channel`, `new_customers`, `converted_customers`, `conversion_pct` |
+| q8 | `q8 low stock products` | `product_id`, `category`, `stock_quantity`, `unit_price` |
+
+Semantic time boundaries: q5 buckets orders into Monday-based weeks
+(`DATE(created_at, '-6 days', 'weekday 1')` on SQLite,
+`TO_CHAR(DATE_TRUNC('week', created_at), 'YYYY-MM-DD')` on PostgreSQL), so     
+`prev_order_count` is `NULL` for the first observed week. The fixture seeds    
+orders across the weeks starting 2026-01-05, 2026-01-12, and 2026-01-19 with   
+business statuses, customer channels, and stock levels that keep every golden  
+row stable.
+
+Bounded semantics: the governed q6 keeps the canonical first-order conversion
+semantics - a "new" customer is one with at least one paid/shipped/refunded    
+order - but without the canonical SQL's derived `first_order` CTE, whose       
+`MIN(created_at)`/`MIN(order_id)` columns its outer query never reads. The     
+governed q8 implements the low-stock signal only (`stock_quantity < 10`); the  
+canonical q8 also computes `units_sold_7d`/`days_of_cover` over a seven-day    
+window, which needs a derived aggregate stage with its own grouping that the   
+bounded IR grammar does not model. Both golden assertions are pinned to these  
+bounded semantics.
+
+Real-service profile: the same fixed intents, IRs, and provider responses run
+against the PostgreSQL reference schema; the demo seed binds the legacy text
+`orders.status` column where the controlled fixture carries
+`business_status`. Because the seed dataset is scale-random, outcomes assert
+the declared result shape (golden columns) and success rather than exact golden
+rows. A missing driver or unreachable PostgreSQL is reported as skipped — an
+explicit skip, never a pass.
+
 ## Expected outputs per demo question
 
 The standard 10-question suite is defined in `demo/questions/questions.yml`.
@@ -187,6 +237,7 @@ not expose raw SQL to operators.
 | `NL2DATA_POSTGRES_DSN is not set` | Real-service profile not configured | Set the DSN or run the deterministic profile |
 | `nl2data-postgres package is not installed` | Optional backend missing | Install the optional backend packages |
 | `Failed to connect to PostgreSQL` | Real service unavailable | Start the service and retry; deterministic profile still passes |
+| `Governed questions skipped: PostgreSQL unavailable` | Governed questions q2/q5/q6/q8 skipped on the real-service profile | Start the service and retry; deterministic profile still passes |
 | `first outcome status: rejected` with non-duplicate code | Verified runtime failure | Check the error code and the durable state record |
 | `replay outcome status: succeeded` | Duplicate request executed twice — regression | Investigate idempotency store and adapter guarding |
 

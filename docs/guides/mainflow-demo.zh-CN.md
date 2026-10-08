@@ -84,7 +84,9 @@ python demo/seed/seed.py --scale small
 ```
 
 此命令会在默认 schema 中创建订单履约数据表，并向其中填充两个租户分区的数据，
-同时包含预定义的异常样本。
+同时包含预定义的异常样本。参考 schema 中的金额/价格列使用 `DOUBLE PRECISION`，
+以保证适配器结果落在受保护标量集内；如果你的数据库是在此变更之前导入的种子数据，
+请重新执行上述种子命令。
 
 ## 运行演示
 
@@ -139,6 +141,43 @@ Real-service mainflow demo passed.
 `cancelled outcome status` 行验证了取消快速失败路径：被取消的非终端工作流会在任何
 适配器执行前以 `WORKFLOW_CANCELLED` 被拒绝。
 
+## 受治理的演示问题（q2/q5/q6/q8）
+
+两种配置都会端到端运行四道受治理的业务问题：q2（按品类的退款率）、q5（周订单环比
+增长）、q6（各渠道新客户首单转化）和 q8（低库存产品）。每道题都是固定的、由应用
+侧组装的用例，走完整运行时路径——意图解析、确定性 join 规划器（q2/q6）、IR 校验、
+上下文感知编译器、SQL 防护、治理、授权和结果保护。不使用任何仅限演示的编译器注入；
+多实体 IR 溯源会固定运行时 join 计划指纹，过期或偏离的计划会在编译阶段失败，
+而不是被执行。
+
+确定性配置——来自共享受控夹具的精确黄金行：
+
+| # | 黄金断言 | 声明形态（列） |
+| --- | --- | --- |
+| q2 | `q2 refund rate by category` | `category`, `refunded_orders`, `total_orders`, `refund_rate` |
+| q5 | `q5 weekly order growth` | `week_start`, `order_count`, `prev_order_count` |
+| q6 | `q6 first-order conversion by channel` | `channel`, `new_customers`, `converted_customers`, `conversion_pct` |
+| q8 | `q8 low stock products` | `product_id`, `category`, `stock_quantity`, `unit_price` |
+
+语义时间边界：q5 将订单按以周一为起始的周分桶（SQLite 上为
+`DATE(created_at, '-6 days', 'weekday 1')`，PostgreSQL 上为
+`TO_CHAR(DATE_TRUNC('week', created_at), 'YYYY-MM-DD')`），因此第一个观测周的
+`prev_order_count` 为 `NULL`。夹具在 2026-01-05、2026-01-12、2026-01-19 起始的周内
+播种了订单及业务状态、客户渠道和库存水平，使每条黄金行保持稳定。
+
+受限语义：受治理的 q6 保留规范的首单转化语义——“新”客户是至少拥有一笔
+paid/shipped/refunded 订单的客户——但不使用规范 SQL 中的 `first_order` 派生 CTE
+（其外查询从不读取 `MIN(created_at)`/`MIN(order_id)` 列）。受治理的 q8 仅实现
+低库存信号（`stock_quantity < 10`）；规范的 q8 还基于七天窗口计算
+`units_sold_7d`/`days_of_cover`，这需要自带分组键的派生聚合阶段，而有界 IR
+语法并不建模这一结构。两条黄金断言均固定在这组受限语义上。
+
+真实服务配置：同一组固定意图、IR 和提供方响应会针对 PostgreSQL 参考 schema 运行；
+演示种子将旧有的文本列 `orders.status` 绑定到受控夹具中的 `business_status`。
+由于种子数据集规模随机，结果断言的是声明的结果形态（黄金列）与成功状态，
+而非精确的黄金行。驱动缺失或 PostgreSQL 不可达会被上报为跳过——
+这是显式跳过，绝不计为通过。
+
 ## 各演示问题的预期输出
 
 标准 10 题套件定义在 `demo/questions/questions.yml` 中。每道题都配有稳定的
@@ -182,6 +221,7 @@ SQL 证据查询和确定性的结果形态检查。这些 SQL 仅用于证据�
 | `NL2DATA_POSTGRES_DSN is not set` | 真实服务配置未就绪 | 设置 DSN 或运行确定性配置 |
 | `nl2data-postgres package is not installed` | 可选后端缺失 | 安装可选后端包 |
 | `Failed to connect to PostgreSQL` | 真实服务不可用 | 启动服务后重试；确定性配置仍可正常通过 |
+| `Governed questions skipped: PostgreSQL unavailable` | 真实服务配置下的受治理问题 q2/q5/q6/q8 被跳过 | 启动服务后重试；确定性配置仍可正常通过 |
 | `first outcome status: rejected` 且非重复代码 | 已验证的运行时失败 | 检查错误码和持久化状态记录 |
 | `replay outcome status: succeeded` | 重复请求执行了两次 — 回归 | 检查幂等存储和适配器防护 |
 

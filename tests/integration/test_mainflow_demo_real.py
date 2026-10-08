@@ -17,6 +17,9 @@ from typing import Any
 import pytest
 import yaml
 from demo.run.demo_deterministic import run_demo as deterministic_demo
+from demo.run.demo_real_service import (
+    run_governed_questions_demo as real_service_governed_demo,
+)
 from demo.run.demo_real_service import run_join_demo as real_service_join_demo
 
 pytestmark = pytest.mark.integration
@@ -140,6 +143,34 @@ class TestRealServiceJoinDemo:
         redis_url = os.environ.get("NL2DATA_REDIS_URL")
         passed = asyncio.run(
             real_service_join_demo(dsn=DSN, redis_url=redis_url, run_id="join-b")
+        )
+        assert passed
+
+
+class TestRealServiceGovernedQuestionsDemo:
+    async def test_real_service_governed_questions_passes(self) -> None:
+        connection = _require_postgres_service()
+        _require_seeded_dataset(connection)
+        connection.close()
+        assert DSN is not None
+        passed = await real_service_governed_demo(
+            dsn=DSN,
+            redis_url=os.environ.get("NL2DATA_REDIS_URL"),
+            run_id="governed-a",
+        )
+        assert passed
+
+    def test_real_service_governed_questions_entrypoint(self) -> None:
+        connection = _require_postgres_service()
+        _require_seeded_dataset(connection)
+        connection.close()
+        assert DSN is not None
+        passed = asyncio.run(
+            real_service_governed_demo(
+                dsn=DSN,
+                redis_url=os.environ.get("NL2DATA_REDIS_URL"),
+                run_id="governed-b",
+            )
         )
         assert passed
 

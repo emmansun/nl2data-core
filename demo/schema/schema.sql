@@ -16,7 +16,9 @@ CREATE TABLE IF NOT EXISTS products (
     product_id BIGINT PRIMARY KEY,
     tenant_id VARCHAR(64) NOT NULL,
     category VARCHAR(128) NOT NULL,
-    unit_price NUMERIC(12, 2) NOT NULL,
+    -- DOUBLE PRECISION (not NUMERIC): adapter results must stay inside the
+    -- protected scalar set (float, not Decimal) at result protection.
+    unit_price DOUBLE PRECISION NOT NULL,
     stock_quantity INT NOT NULL,
     created_at TIMESTAMP NOT NULL
 );
@@ -32,7 +34,9 @@ CREATE TABLE IF NOT EXISTS orders (
     paid_at TIMESTAMP,
     shipped_at TIMESTAMP,
     refunded_at TIMESTAMP,
-    amount NUMERIC(12, 2)
+    -- DOUBLE PRECISION (not NUMERIC): adapter results must stay inside the
+    -- protected scalar set (float, not Decimal) at result protection.
+    amount DOUBLE PRECISION
 );
 
 CREATE TABLE IF NOT EXISTS order_items (
@@ -41,7 +45,7 @@ CREATE TABLE IF NOT EXISTS order_items (
     order_id BIGINT NOT NULL REFERENCES orders(order_id),
     product_id BIGINT NOT NULL REFERENCES products(product_id),
     quantity INT NOT NULL,
-    unit_price NUMERIC(12, 2) NOT NULL,
+    unit_price DOUBLE PRECISION NOT NULL,
     created_at TIMESTAMP NOT NULL
 );
 
@@ -49,7 +53,7 @@ CREATE TABLE IF NOT EXISTS payments (
     payment_id BIGINT PRIMARY KEY,
     tenant_id VARCHAR(64) NOT NULL,
     order_id BIGINT NOT NULL REFERENCES orders(order_id),
-    amount NUMERIC(12, 2) NOT NULL,
+    amount DOUBLE PRECISION NOT NULL,
     status VARCHAR(32) NOT NULL,  -- completed, failed, refunded
     created_at TIMESTAMP NOT NULL
 );

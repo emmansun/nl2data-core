@@ -13,14 +13,24 @@ import argparse
 import asyncio
 import tempfile
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 from nl2data import NL2Data, OutcomeStatus, QueryContext, QueryRequest
 from nl2data.composition import CompositionProfile
 from nl2data_core.adapters.sql.adapter import SqlQueryAdapter
 from nl2data_core.adapters.sql.compile import compile_sql
+from nl2data_core.ai.context import SemanticReference
 from nl2data_core.ai.fake import FakeModelProvider
+from nl2data_core.ai.models import (
+    DimensionRef,
+    EntityRef,
+    IntentOrdering,
+    MetricRef,
+    MultiEntityIntent,
+)
 from nl2data_core.assembly import (
     LifecycleAuthorizationContext,
     LifecycleAuthorizationDecision,
@@ -51,18 +61,36 @@ from nl2data_core.bundles import (
 )
 from nl2data_core.canonical import sha256_fingerprint
 from nl2data_core.compilation.contract import CompilationContext
-from nl2data_core.fixtures import SQLiteFixtureProfile
+from nl2data_core.fixtures import RESULT_ASSERTIONS, SQLiteFixtureProfile
 from nl2data_core.governance.models import PolicyScope
+from nl2data_core.planning.ir.expressions import (
+    IRAggregateExpr,
+    IRBinaryExpr,
+    IRDateTruncExpr,
+    IRFieldExpr,
+    IRLiteralExpr,
+    IRPredicateExpr,
+    IRPriorPeriodExpr,
+)
 from nl2data_core.planning.ir.models import (
     IRFilter,
+    IRGrouping,
     IROrdering,
     IRProvenance,
+    IRResultShape,
     IRSelection,
     JoinStep,
     LogicalJoinPlan,
     SemanticQueryIR,
 )
-from nl2data_core.planning.models import ColumnBinding, EntityBinding, PhysicalBinding
+from nl2data_core.planning.join_planner import JoinPlanner
+from nl2data_core.planning.models import (
+    ColumnBinding,
+    EntityBinding,
+    PhysicalBinding,
+    RelationshipEdge,
+    RelationshipGraph,
+)
 from nl2data_core.planning.validation import AuthorizedView
 from nl2data_core.verification import (
     PRODUCTION_POLICY,
@@ -167,6 +195,7 @@ JOIN_VIEW = AuthorizedView(
     source_id="sales",
     root_entity_ids=frozenset({"orders", "customers"}),
     field_ids=JOIN_FIELDS,
+    allowed_relationships=frozenset({"order-customer"}),
 )
 
 #: 2-entity JOIN IR: top EMEA orders with the customer region.
@@ -252,6 +281,7 @@ COMPOUND_VIEW = AuthorizedView(
     source_id="sales",
     root_entity_ids=frozenset({"orders", "order_items", "products"}),
     field_ids=COMPOUND_FIELDS,
+    allowed_relationships=frozenset({"order-order_item", "order_item-product"}),
 )
 
 #: 3-entity compound JOIN IR: top EMEA line items with product category.
@@ -294,6 +324,615 @@ COMPOUND_PLAN = LogicalJoinPlan(
             left_field_id="product_id",
             right_field_id="product_id",
         ),
+    ),
+)
+
+
+# ---------------------------------------------------------------------------
+# Governed demo questions (q2/q5/q6/q8)
+#
+# Each question is composed exactly like an application would: a fake
+# provider response (structured intent), an authorized view, a physical
+# binding, a policy scope, and a governed SQL adapter.  The fixed IR is
+# supplied through the execution plan resolver and flows through the
+# normal runtime path - validation, the context-aware compiler, the SQL
+# guard, governance, and authorization.  Multi-entity questions (q2/q6)
+# additionally run the deterministic join planner: the module-level plan
+# below mirrors the planner output (same request-scoped plan id), so the
+# IR provenance pins the runtime-produced join plan fingerprint and a
+# stale or divergent plan fails compilation.
+# ---------------------------------------------------------------------------
+
+
+def _planned_plan(
+    graph: RelationshipGraph, view: AuthorizedView, intent: MultiEntityIntent
+) -> LogicalJoinPlan:
+    """Return the same plan the runtime join planner yields for ``intent``."""
+    outcome = JoinPlanner(graph, view).plan(intent)
+    assert outcome.kind == "plan", outcome.reason
+    assert outcome.plan is not None
+    return outcome.plan
+
+
+def _references(*refs: SemanticReference) -> dict[str, SemanticReference]:
+    return {ref.field_id: ref for ref in refs}
+
+
+# --- q2: refund rate by product category (3-entity join) -------------------
+
+Q2_REQUEST_ID = "demo-q2-req-1"
+Q2_FIELDS = frozenset({"order_id", "business_status", "product_id", "category"})
+Q2_VIEW = AuthorizedView(
+    source_id="sales",
+    root_entity_ids=frozenset({"orders", "orders_items", "orders_products"}),
+    field_ids=Q2_FIELDS,
+    allowed_relationships=frozenset({"order-order_item", "order_item-product"}),
+)
+Q2_GRAPH = RelationshipGraph(
+    graph_id="demo-q2-graph",
+    source_id="sales",
+    edges=(
+        RelationshipEdge(
+            edge_id="q2-e1",
+            relationship_id="order-order_item",
+            left_entity_id="orders",
+            right_entity_id="orders_items",
+            left_field_id="order_id",
+            right_field_id="order_id",
+            cardinality="one_to_many",
+        ),
+        RelationshipEdge(
+            edge_id="q2-e2",
+            relationship_id="order_item-product",
+            left_entity_id="orders_items",
+            right_entity_id="orders_products",
+            left_field_id="product_id",
+            right_field_id="product_id",
+            cardinality="many_to_one",
+        ),
+    ),
+)
+Q2_INTENT = MultiEntityIntent(
+    intent_id="intent-demo-q2-req-1",
+    request_id=Q2_REQUEST_ID,
+    source_id="sales",
+    entity_refs=(
+        EntityRef(entity_id="orders"),
+        EntityRef(entity_id="orders_items"),
+        EntityRef(entity_id="orders_products"),
+    ),
+    metric_refs=(
+        MetricRef(metric_id="m_total", field_id="order_id", aggregation="count"),
+    ),
+    dimension_refs=(DimensionRef(dimension_id="d_category", field_id="category"),),
+    orderings=(
+        IntentOrdering(ordering_id="o_category", field_id="category", direction="asc"),
+    ),
+    limit=20,
+    confidence=0.95,
+)
+Q2_PLAN = _planned_plan(Q2_GRAPH, Q2_VIEW, Q2_INTENT)
+Q2_RESPONSE = {
+    "multi_entity_intent": {
+        "source_id": "sales",
+        "entity_refs": [
+            {"entity_id": "orders"},
+            {"entity_id": "orders_items"},
+            {"entity_id": "orders_products"},
+        ],
+        "metric_refs": [
+            {"metric_id": "m_total", "field_id": "order_id", "aggregation": "count"}
+        ],
+        "dimension_refs": [{"dimension_id": "d_category", "field_id": "category"}],
+        "orderings": [
+            {"ordering_id": "o_category", "field_id": "category", "direction": "asc"}
+        ],
+        "limit": 20,
+        "confidence": 0.95,
+    }
+}
+_Q2_REFUNDED_COUNT = IRAggregateExpr(
+    func="count_distinct",
+    operand=IRFieldExpr(field_id="order_id"),
+    filter=IRPredicateExpr(
+        op="eq", operand=IRFieldExpr(field_id="business_status"), value="refunded"
+    ),
+)
+_Q2_TOTAL_COUNT = IRAggregateExpr(
+    func="count_distinct", operand=IRFieldExpr(field_id="order_id")
+)
+Q2_IR = SemanticQueryIR(
+    ir_id="demo-q2-ir",
+    source_id="sales",
+    root_entity_id="orders",
+    selections=(
+        IRSelection(selection_id="s_category", field_id="category"),
+        IRSelection(
+            selection_id="s_refunded",
+            field_id="refunded_orders",
+            alias="refunded_orders",
+            expression=_Q2_REFUNDED_COUNT,
+        ),
+        IRSelection(
+            selection_id="s_total",
+            field_id="total_orders",
+            alias="total_orders",
+            expression=_Q2_TOTAL_COUNT,
+        ),
+        IRSelection(
+            selection_id="s_rate",
+            field_id="refund_rate",
+            alias="refund_rate",
+            expression=IRBinaryExpr(
+                op="div",
+                left=IRBinaryExpr(
+                    op="mul", left=IRLiteralExpr(value=100.0), right=_Q2_REFUNDED_COUNT
+                ),
+                right=_Q2_TOTAL_COUNT,
+                zero_division_policy="null",
+            ),
+        ),
+    ),
+    groupings=(IRGrouping(grouping_id="g_category", field_id="category"),),
+    orderings=(
+        IROrdering(ordering_id="o_rate", field_id="refund_rate", direction="desc"),
+        IROrdering(ordering_id="o_category", field_id="category", direction="asc"),
+    ),
+    limit=20,
+    result_shape=IRResultShape(kind="grouped_rows"),
+    provenance=IRProvenance(
+        source_id="sales",
+        root_entity_id="orders",
+        join_plan_fingerprint=Q2_PLAN.fingerprint,
+    ),
+    required_capabilities=(
+        "aggregation",
+        "computed_expressions",
+        "grouping",
+        "join",
+        "multi_entity",
+        "ordering",
+    ),
+)
+Q2_BINDING = PhysicalBinding(
+    object_id="orders",
+    dialect="sqlite",
+    column_bindings=(
+        ColumnBinding(field_id="order_id", physical_name="order_id", entity_id="orders"),
+        ColumnBinding(
+            field_id="business_status", physical_name="business_status", entity_id="orders"
+        ),
+        ColumnBinding(
+            field_id="product_id", physical_name="product_id", entity_id="orders_items"
+        ),
+        ColumnBinding(
+            field_id="category", physical_name="category", entity_id="orders_products"
+        ),
+    ),
+    entity_bindings=(
+        EntityBinding(entity_id="orders", physical_name="orders"),
+        EntityBinding(entity_id="orders_items", physical_name="order_items"),
+        EntityBinding(entity_id="orders_products", physical_name="products"),
+    ),
+)
+Q2_REFERENCES = _references(
+    SemanticReference(
+        field_id="order_id",
+        label="Order id",
+        data_type="integer",
+        allowed_aggregations=frozenset({"count"}),
+    ),
+    SemanticReference(field_id="business_status", label="Business status"),
+    SemanticReference(field_id="product_id", label="Product id", data_type="integer"),
+    SemanticReference(field_id="category", label="Product category"),
+)
+
+# --- q5: weekly order growth with prior-week comparison --------------------
+
+Q5_REQUEST_ID = "demo-q5-req-1"
+Q5_FIELDS = frozenset({"order_id", "created_at"})
+Q5_VIEW = AuthorizedView(
+    source_id="sales",
+    root_entity_ids=frozenset({"orders"}),
+    field_ids=Q5_FIELDS,
+)
+_Q5_WEEK_BUCKET = IRDateTruncExpr(bucket="week", operand=IRFieldExpr(field_id="created_at"))
+Q5_IR = SemanticQueryIR(
+    ir_id="demo-q5-ir",
+    source_id="sales",
+    root_entity_id="orders",
+    selections=(
+        IRSelection(
+            selection_id="s_week",
+            field_id="order_week",
+            alias="week_start",
+            expression=_Q5_WEEK_BUCKET,
+        ),
+        IRSelection(
+            selection_id="s_count",
+            field_id="order_id",
+            alias="order_count",
+            aggregation="count",
+        ),
+        IRSelection(
+            selection_id="s_prev",
+            field_id="prev_order_count",
+            alias="prev_order_count",
+            expression=IRPriorPeriodExpr(
+                bucket="week", aggregate="count", operand=IRFieldExpr(field_id="order_id")
+            ),
+        ),
+    ),
+    groupings=(
+        IRGrouping(grouping_id="g_week", field_id="order_week", expression=_Q5_WEEK_BUCKET),
+    ),
+    orderings=(IROrdering(ordering_id="o_week", field_id="order_week", direction="asc"),),
+    limit=52,
+    result_shape=IRResultShape(kind="grouped_rows"),
+    provenance=IRProvenance(source_id="sales", root_entity_id="orders"),
+    required_capabilities=(
+        "aggregation",
+        "grouping",
+        "ordering",
+        "computed_expressions",
+        "prior_period",
+    ),
+)
+Q5_BINDING = PhysicalBinding(
+    object_id="orders",
+    dialect="sqlite",
+    column_bindings=(
+        ColumnBinding(field_id="order_id", physical_name="order_id", entity_id="orders"),
+        ColumnBinding(
+            field_id="created_at", physical_name="created_at", entity_id="orders"
+        ),
+    ),
+    entity_bindings=(EntityBinding(entity_id="orders", physical_name="orders"),),
+)
+Q5_REFERENCES = _references(
+    SemanticReference(
+        field_id="order_id",
+        label="Order id",
+        data_type="integer",
+        allowed_aggregations=frozenset({"count"}),
+    ),
+    SemanticReference(field_id="created_at", label="Order created at", data_type="datetime"),
+)
+Q5_RESPONSE = {
+    "intent": {
+        "source_id": "sales",
+        "root_entity_id": "orders",
+        "selections": [
+            {"selection_id": "s1", "field_id": "order_id"},
+            {"selection_id": "s2", "field_id": "created_at"},
+        ],
+        "limit": 52,
+        "confidence": 0.95,
+    }
+}
+
+# --- q6: first-order conversion by channel (2-entity join) -----------------
+
+Q6_REQUEST_ID = "demo-q6-req-1"
+Q6_FIELDS = frozenset({"order_id", "business_status", "customer_id", "channel"})
+Q6_VIEW = AuthorizedView(
+    source_id="sales",
+    root_entity_ids=frozenset({"orders", "orders_customers"}),
+    field_ids=Q6_FIELDS,
+    allowed_relationships=frozenset({"order-customer"}),
+)
+Q6_GRAPH = RelationshipGraph(
+    graph_id="demo-q6-graph",
+    source_id="sales",
+    edges=(
+        RelationshipEdge(
+            edge_id="q6-e1",
+            relationship_id="order-customer",
+            left_entity_id="orders",
+            right_entity_id="orders_customers",
+            left_field_id="customer_id",
+            right_field_id="customer_id",
+            cardinality="many_to_one",
+        ),
+    ),
+)
+Q6_INTENT = MultiEntityIntent(
+    intent_id="intent-demo-q6-req-1",
+    request_id=Q6_REQUEST_ID,
+    source_id="sales",
+    entity_refs=(
+        EntityRef(entity_id="orders"),
+        EntityRef(entity_id="orders_customers"),
+    ),
+    metric_refs=(
+        MetricRef(metric_id="m_customers", field_id="customer_id", aggregation="count"),
+    ),
+    dimension_refs=(DimensionRef(dimension_id="d_channel", field_id="channel"),),
+    orderings=(
+        IntentOrdering(ordering_id="o_channel", field_id="channel", direction="asc"),
+    ),
+    limit=10,
+    confidence=0.95,
+)
+Q6_PLAN = _planned_plan(Q6_GRAPH, Q6_VIEW, Q6_INTENT)
+Q6_RESPONSE = {
+    "multi_entity_intent": {
+        "source_id": "sales",
+        "entity_refs": [
+            {"entity_id": "orders"},
+            {"entity_id": "orders_customers"},
+        ],
+        "metric_refs": [
+            {"metric_id": "m_customers", "field_id": "customer_id", "aggregation": "count"}
+        ],
+        "dimension_refs": [{"dimension_id": "d_channel", "field_id": "channel"}],
+        "orderings": [
+            {"ordering_id": "o_channel", "field_id": "channel", "direction": "asc"}
+        ],
+        "limit": 10,
+        "confidence": 0.95,
+    }
+}
+_Q6_CONVERTED = IRAggregateExpr(
+    func="count_distinct",
+    operand=IRFieldExpr(field_id="customer_id"),
+    filter=IRPredicateExpr(
+        op="in",
+        operand=IRFieldExpr(field_id="business_status"),
+        value=("paid", "shipped", "refunded"),
+    ),
+)
+#: The canonical q6 evidence SQL (questions.yml) derives ``first_order``
+#: per customer from orders with a valid business status, so a "new"
+#: customer is one with at least one paid/shipped/refunded order.  The
+#: bounded grammar keeps the same restriction inline; the derived
+#: MIN(created_at)/MIN(order_id) columns of the canonical CTE are never
+#: referenced by its outer SELECT, so they do not affect the result.
+#: new and converted therefore coincide by construction, matching the
+#: canonical semantics instead of depending on fixture degeneracy.
+_Q6_NEW_CUSTOMERS = IRAggregateExpr(
+    func="count_distinct",
+    operand=IRFieldExpr(field_id="customer_id"),
+    filter=IRPredicateExpr(
+        op="in",
+        operand=IRFieldExpr(field_id="business_status"),
+        value=("paid", "shipped", "refunded"),
+    ),
+)
+Q6_IR = SemanticQueryIR(
+    ir_id="demo-q6-ir",
+    source_id="sales",
+    root_entity_id="orders",
+    selections=(
+        IRSelection(selection_id="s_channel", field_id="channel"),
+        IRSelection(
+            selection_id="s_new",
+            field_id="new_customers",
+            alias="new_customers",
+            expression=_Q6_NEW_CUSTOMERS,
+        ),
+        IRSelection(
+            selection_id="s_converted",
+            field_id="converted_customers",
+            alias="converted_customers",
+            expression=_Q6_CONVERTED,
+        ),
+        IRSelection(
+            selection_id="s_rate",
+            field_id="conversion_pct",
+            alias="conversion_pct",
+            expression=IRBinaryExpr(
+                op="div",
+                left=IRBinaryExpr(
+                    op="mul", left=IRLiteralExpr(value=100.0), right=_Q6_CONVERTED
+                ),
+                right=_Q6_NEW_CUSTOMERS,
+                zero_division_policy="null",
+            ),
+        ),
+    ),
+    groupings=(IRGrouping(grouping_id="g_channel", field_id="channel"),),
+    orderings=(IROrdering(ordering_id="o_channel", field_id="channel", direction="asc"),),
+    limit=10,
+    result_shape=IRResultShape(kind="grouped_rows"),
+    provenance=IRProvenance(
+        source_id="sales",
+        root_entity_id="orders",
+        join_plan_fingerprint=Q6_PLAN.fingerprint,
+    ),
+    required_capabilities=(
+        "aggregation",
+        "computed_expressions",
+        "grouping",
+        "join",
+        "multi_entity",
+    ),
+)
+Q6_BINDING = PhysicalBinding(
+    object_id="orders",
+    dialect="sqlite",
+    column_bindings=(
+        ColumnBinding(field_id="order_id", physical_name="order_id", entity_id="orders"),
+        ColumnBinding(
+            field_id="business_status", physical_name="business_status", entity_id="orders"
+        ),
+        ColumnBinding(
+            field_id="customer_id", physical_name="customer_id", entity_id="orders"
+        ),
+        ColumnBinding(
+            field_id="channel", physical_name="channel", entity_id="orders_customers"
+        ),
+    ),
+    entity_bindings=(
+        EntityBinding(entity_id="orders", physical_name="orders"),
+        EntityBinding(entity_id="orders_customers", physical_name="customers"),
+    ),
+)
+Q6_REFERENCES = _references(
+    SemanticReference(field_id="order_id", label="Order id", data_type="integer"),
+    SemanticReference(field_id="business_status", label="Business status"),
+    SemanticReference(
+        field_id="customer_id",
+        label="Customer id",
+        data_type="integer",
+        allowed_aggregations=frozenset({"count"}),
+    ),
+    SemanticReference(field_id="channel", label="Acquisition channel"),
+)
+
+# --- q8: low stock products -------------------------------------------------
+#
+# The governed q8 implements the low-stock signal only: products below the
+# stock threshold of 10.  The canonical evidence SQL (questions.yml)
+# additionally computes ``units_sold_7d`` and ``days_of_cover`` from a
+# seven-day sales window, which needs a derived aggregate stage with its
+# own grouping plus a join-side time filter; the bounded IR grammar has no
+# derived-stage node (design non-goal: arbitrary CTE/window semantics), so
+# that half of the question stays outside this change's scope.  The
+# protected golden assertion below is pinned to this simplified semantics.
+
+Q8_REQUEST_ID = "demo-q8-req-1"
+Q8_FIELDS = frozenset({"product_id", "category", "stock_quantity", "unit_price"})
+Q8_VIEW = AuthorizedView(
+    source_id="sales",
+    root_entity_ids=frozenset({"products"}),
+    field_ids=Q8_FIELDS,
+)
+Q8_IR = SemanticQueryIR(
+    ir_id="demo-q8-ir",
+    source_id="sales",
+    root_entity_id="products",
+    selections=(
+        IRSelection(selection_id="s_product", field_id="product_id"),
+        IRSelection(selection_id="s_category", field_id="category"),
+        IRSelection(selection_id="s_stock", field_id="stock_quantity"),
+        IRSelection(selection_id="s_price", field_id="unit_price"),
+    ),
+    filters=(
+        IRFilter(filter_id="f_stock", field_id="stock_quantity", operator="lt", value=10),
+    ),
+    orderings=(
+        IROrdering(ordering_id="o_stock", field_id="stock_quantity", direction="asc"),
+        IROrdering(ordering_id="o_product", field_id="product_id", direction="asc"),
+    ),
+    limit=20,
+    result_shape=IRResultShape(kind="rows"),
+    provenance=IRProvenance(source_id="sales", root_entity_id="products"),
+    required_capabilities=("ordering",),
+)
+Q8_BINDING = PhysicalBinding(
+    object_id="products",
+    dialect="sqlite",
+    column_bindings=(
+        ColumnBinding(
+            field_id="product_id", physical_name="product_id", entity_id="products"
+        ),
+        ColumnBinding(field_id="category", physical_name="category", entity_id="products"),
+        ColumnBinding(
+            field_id="stock_quantity", physical_name="stock_quantity", entity_id="products"
+        ),
+        ColumnBinding(
+            field_id="unit_price", physical_name="unit_price", entity_id="products"
+        ),
+    ),
+    entity_bindings=(EntityBinding(entity_id="products", physical_name="products"),),
+)
+Q8_REFERENCES = _references(
+    SemanticReference(field_id="product_id", label="Product id", data_type="integer"),
+    SemanticReference(field_id="category", label="Product category"),
+    SemanticReference(field_id="stock_quantity", label="Stock quantity", data_type="integer"),
+    SemanticReference(field_id="unit_price", label="Unit price", data_type="number"),
+)
+Q8_RESPONSE = {
+    "intent": {
+        "source_id": "sales",
+        "root_entity_id": "products",
+        "selections": [
+            {"selection_id": "s1", "field_id": "product_id"},
+            {"selection_id": "s2", "field_id": "category"},
+            {"selection_id": "s3", "field_id": "stock_quantity"},
+            {"selection_id": "s4", "field_id": "unit_price"},
+        ],
+        "filters": [
+            {"filter_id": "f1", "field_id": "stock_quantity", "operator": "lt", "value": 10}
+        ],
+        "orderings": [
+            {"ordering_id": "o1", "field_id": "stock_quantity", "direction": "asc"},
+            {"ordering_id": "o2", "field_id": "product_id", "direction": "asc"},
+        ],
+        "limit": 20,
+        "confidence": 0.95,
+    }
+}
+
+
+@dataclass(frozen=True)
+class _GovernedQuestion:
+    """One fixed demo question driven through the normal runtime path."""
+
+    key: str
+    prompt: str
+    request_id: str
+    provider_response: dict[str, Any]
+    view: AuthorizedView
+    ir: SemanticQueryIR
+    binding: PhysicalBinding
+    allowed_objects: frozenset[str]
+    references: dict[str, SemanticReference]
+    graph: RelationshipGraph | None = None
+    golden_assertion: str = ""
+
+
+GOVERNED_QUESTIONS: tuple[_GovernedQuestion, ...] = (
+    _GovernedQuestion(
+        key="q2",
+        prompt="Refund-rate outliers by product category.",
+        request_id=Q2_REQUEST_ID,
+        provider_response=Q2_RESPONSE,
+        view=Q2_VIEW,
+        ir=Q2_IR,
+        binding=Q2_BINDING,
+        allowed_objects=frozenset({"orders", "order_items", "products"}),
+        references=Q2_REFERENCES,
+        graph=Q2_GRAPH,
+        golden_assertion="q2 refund rate by category",
+    ),
+    _GovernedQuestion(
+        key="q5",
+        prompt="Weekly order growth (WoW).",
+        request_id=Q5_REQUEST_ID,
+        provider_response=Q5_RESPONSE,
+        view=Q5_VIEW,
+        ir=Q5_IR,
+        binding=Q5_BINDING,
+        allowed_objects=frozenset({"orders"}),
+        references=Q5_REFERENCES,
+        golden_assertion="q5 weekly order growth",
+    ),
+    _GovernedQuestion(
+        key="q6",
+        prompt="New-customer first-order conversion by channel.",
+        request_id=Q6_REQUEST_ID,
+        provider_response=Q6_RESPONSE,
+        view=Q6_VIEW,
+        ir=Q6_IR,
+        binding=Q6_BINDING,
+        allowed_objects=frozenset({"orders", "customers"}),
+        references=Q6_REFERENCES,
+        graph=Q6_GRAPH,
+        golden_assertion="q6 first-order conversion by channel",
+    ),
+    _GovernedQuestion(
+        key="q8",
+        prompt="Fast-growing products with low stock signal.",
+        request_id=Q8_REQUEST_ID,
+        provider_response=Q8_RESPONSE,
+        view=Q8_VIEW,
+        ir=Q8_IR,
+        binding=Q8_BINDING,
+        allowed_objects=frozenset({"products"}),
+        references=Q8_REFERENCES,
+        golden_assertion="q8 low stock products",
     ),
 )
 
@@ -724,6 +1363,86 @@ async def run_join_demo(*, db_dir: Path) -> bool:
     return True
 
 
+async def _run_governed_question(question: _GovernedQuestion, *, db_path: Path) -> bool:
+    # The adapter column scope covers view fields, computed output names,
+    # selection aliases, and authorized join-plan keys - the same declared
+    # outputs and plan fields the runtime IR validation authorizes.
+    alias_ids = frozenset(
+        selection.alias for selection in question.ir.selections if selection.alias is not None
+    )
+    join_field_ids = frozenset(
+        field_id
+        for edge in question.graph.edges
+        for field_id in (edge.left_field_id, edge.right_field_id)
+    ) if question.graph is not None else frozenset()
+    adapter = SqlQueryAdapter(
+        dialect="sqlite",
+        db_path=db_path,
+        allowed_objects=question.allowed_objects,
+        allowed_columns=question.ir.field_ids() | alias_ids | join_field_ids,
+        max_rows=100,
+    )
+    policy_scope = PolicyScope(
+        policy_id=f"demo-{question.key}-policy",
+        source_ids=frozenset({"sales"}),
+        resource_ids=frozenset({question.binding.object_id}),
+        operation_ids=frozenset({"select"}),
+        field_ids=question.ir.field_ids(),
+    )
+    profile = CompositionProfile(
+        provider=FakeModelProvider(default_response=question.provider_response),
+        adapter=adapter,
+        policy_scope=policy_scope,
+        view=question.view,
+        plan_resolver=StaticPlanResolver(question.ir),
+        binding=question.binding,
+        semantic_references=question.references,
+        relationship_graph=question.graph,
+        join_planner=(
+            JoinPlanner(question.graph, question.view)
+            if question.graph is not None
+            else None
+        ),
+    )
+    facade = NL2Data(composition=profile)
+    await facade.initialize()
+    request = QueryRequest(
+        request_id=question.request_id,
+        prompt=question.prompt,
+        context=QueryContext(
+            request_id=question.request_id, workflow_id=f"demo-{question.key}-wf-1"
+        ),
+    )
+    outcome = await facade.aquery(request)
+    assert outcome.status == OutcomeStatus.SUCCEEDED, outcome.error
+    assert outcome.result is not None
+    expected = next(a for a in RESULT_ASSERTIONS if a.name == question.golden_assertion)
+    assert tuple(outcome.result.column_names) == expected.columns
+    assert tuple(tuple(row) for row in outcome.result.rows) == expected.rows
+    print(f"{question.key} columns:", outcome.result.column_names)
+    for row in outcome.result.rows:
+        print("  ", row)
+    await facade.close()
+    return True
+
+
+async def run_governed_questions_demo(*, db_dir: Path) -> bool:
+    """Run the fixed governed questions q2/q5/q6/q8 through the normal path.
+
+    Every question flows through intent resolution, the runtime join
+    planner (multi-entity), IR validation, the context-aware compiler,
+    the SQL guard, governance, and authorization - no demo-only compiler
+    injection.  Golden rows and declared shapes come from the shared
+    fixture result assertions.
+    """
+    print("\n--- governed demo questions (q2/q5/q6/q8) ---")
+    fixture = SQLiteFixtureProfile(db_path=db_dir / "questions_source.db")
+    fixture.provision()
+    for question in GOVERNED_QUESTIONS:
+        await _run_governed_question(question, db_path=fixture.db_path)
+    return True
+
+
 async def run_demo(*, db_dir: Path) -> bool:
     """Run the deterministic demo and return whether all checkpoints passed."""
     await run_semantic_assembly_demo(db_dir=db_dir)
@@ -821,6 +1540,10 @@ async def run_demo(*, db_dir: Path) -> bool:
     # Multi-entity JOIN scenarios: exercise the governed 2-entity and
     # 3-entity JOIN compilation/execution paths through the facade.
     await run_join_demo(db_dir=db_dir)
+
+    # Governed demo questions q2/q5/q6/q8 through the normal planner and
+    # context-aware compiler path (fixed intents, preset IRs, golden rows).
+    await run_governed_questions_demo(db_dir=db_dir)
 
     # Recovery across process boundary: reopen the state store and replay.
     state_store2 = SQLiteStateStore(db_dir / "durable.db")

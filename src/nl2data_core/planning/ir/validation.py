@@ -9,10 +9,19 @@ no physical artifact is ever produced from an invalid IR.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 from pydantic import BaseModel, ConfigDict, Field
 
 from nl2data_core.canonical import strict_sha256_fingerprint
 
+from .expressions import (
+    IRDateTruncExpr,
+    IRExpression,
+    expression_field_ids,
+    iter_aggregate_nodes,
+    iter_prior_period_nodes,
+)
 from .models import (
     IR_VERSION,
     NAMED_QUERY_PLACEHOLDER_CAPABILITY,
@@ -280,9 +289,15 @@ def validate_ir(
         if isinstance(view_calculated, frozenset) and view_calculated:
             declared_calculated = declared_calculated | view_calculated
 
+    # -- computed expressions (additive, fail-closed) -----------------------
+    computed_outputs = frozenset(
+        selection.field_id for selection in ir.selections if selection.expression is not None
+    )
+    _validate_expression_semantics(ir, issues)
+
     # -- authorized view ----------------------------------------------------
     if view is not None:
-        _validate_view_scope(ir, view, issues, declared_calculated)
+        _validate_view_scope(ir, view, issues, declared_calculated, computed_outputs)
         if _view_binding_fingerprint(view) is not None:
             _validate_view_binding(ir, view, issues)
 
@@ -331,6 +346,73 @@ def validate_ir(
         ir_fingerprint=ir.fingerprint,
         issues=tuple(issues),
     )
+
+
+def _ir_expression_nodes(ir: SemanticQueryIR) -> Iterator[tuple[str, IRExpression]]:
+    """Every attached expression with its validation path."""
+    for selection in ir.selections:
+        if selection.expression is not None:
+            yield f"selections.{selection.selection_id}", selection.expression
+    for grouping in ir.groupings:
+        if grouping.expression is not None:
+            yield f"groupings.{grouping.grouping_id}", grouping.expression
+
+
+def _validate_expression_semantics(
+    ir: SemanticQueryIR, issues: list[IRValidationIssue]
+) -> None:
+    """Bounded expression semantics that construction alone cannot express.
+
+    A prior-period node requires a grouping whose expression declares the
+    same date bucket, so the compiler always has a declared bucket ordering
+    to lag over and no implicit period boundary can be introduced.  A
+    bucket kind declared over more than one time field would make that
+    ordering ambiguous (the LAG window could run over the wrong column),
+    so it fails closed as well.
+    """
+    bucket_time_fields: dict[str, set[str]] = {}
+    for grouping in ir.groupings:
+        if isinstance(grouping.expression, IRDateTruncExpr):
+            bucket_time_fields.setdefault(grouping.expression.bucket, set()).add(
+                grouping.expression.operand.field_id
+            )
+    for path, expression in _ir_expression_nodes(ir):
+        for node in iter_prior_period_nodes(expression):
+            time_fields = bucket_time_fields.get(node.bucket)
+            if not time_fields:
+                _append(
+                    issues,
+                    "prior_period_bucket_ungrouped",
+                    f"prior-period node over '{node.operand.field_id}' requires a "
+                    f"'{node.bucket}' date-bucket grouping",
+                    path,
+                )
+            elif len(time_fields) > 1:
+                _append(
+                    issues,
+                    "prior_period_bucket_ambiguous",
+                    f"prior-period node with '{node.bucket}' bucket is ambiguous: "
+                    "groupings declare the bucket over multiple time fields "
+                    f"({', '.join(sorted(time_fields))})",
+                    path,
+                )
+
+
+def _check_expression_fields(
+    expression: IRExpression,
+    view: object,
+    issues: list[IRValidationIssue],
+    path: str,
+) -> None:
+    """Scope every semantic field referenced by an expression to the view."""
+    for field_id in sorted(expression_field_ids(expression)):
+        if not view.contains_field(field_id):  # type: ignore[attr-defined]
+            _append(
+                issues,
+                "field_out_of_scope",
+                f"expression field '{field_id}' is outside the authorized view",
+                path,
+            )
 
 
 def _validate_calculated_references(
@@ -398,6 +480,7 @@ def _validate_view_scope(
     view: object,
     issues: list[IRValidationIssue],
     declared_calculated: frozenset[str] = frozenset(),
+    computed_outputs: frozenset[str] = frozenset(),
 ) -> None:
     """Scope checks against the authorized view (source/entity/fields).
 
@@ -424,6 +507,13 @@ def _validate_view_scope(
             "root_entity_id",
         )
     for selection in ir.selections:
+        if selection.expression is not None:
+            # A computed selection's field_id names its derived output; the
+            # expression's semantic fields are scoped to the view instead.
+            _check_expression_fields(
+                selection.expression, view, issues, f"selections.{selection.selection_id}"
+            )
+            continue
         if selection.field_id in declared_calculated:
             # Calculated-field names never collide with field ids (D4); the
             # capability check lives in _validate_calculated_references.
@@ -456,6 +546,13 @@ def _validate_view_scope(
                 f"filters.{filter_.filter_id}",
             )
     for grouping in ir.groupings:
+        if grouping.expression is not None:
+            # A computed grouping's field_id mirrors its computed selection;
+            # the expression's semantic fields are scoped to the view.
+            _check_expression_fields(
+                grouping.expression, view, issues, f"groupings.{grouping.grouping_id}"
+            )
+            continue
         if grouping.field_id in declared_calculated:
             continue
         if not view.contains_field(grouping.field_id):  # type: ignore[attr-defined]
@@ -466,6 +563,10 @@ def _validate_view_scope(
                 f"groupings.{grouping.grouping_id}",
             )
     for ordering in ir.orderings:
+        if ordering.field_id in computed_outputs:
+            # Ordering by a computed output is scoped through the computed
+            # selection that declares it.
+            continue
         if ordering.field_id in declared_calculated:
             continue
         if not view.contains_field(ordering.field_id):  # type: ignore[attr-defined]
@@ -567,6 +668,18 @@ def _validate_view_binding(
                 f"view for field '{selection.field_id}'",
                 f"selections.{selection.selection_id}",
             )
+
+    for path, expression in _ir_expression_nodes(ir):
+        for node in iter_aggregate_nodes(expression):
+            allowed = _view_allowed_aggregations(view, node.operand.field_id)
+            if allowed is not None and node.func not in allowed:
+                _append(
+                    issues,
+                    "aggregation_out_of_scope",
+                    f"aggregate '{node.func}' is outside the authorized view for "
+                    f"field '{node.operand.field_id}'",
+                    path,
+                )
 
     constraints = getattr(view, "result_shape_constraints", None)
     if constraints and ir.result_shape.kind not in constraints:

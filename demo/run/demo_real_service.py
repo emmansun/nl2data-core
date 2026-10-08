@@ -17,12 +17,16 @@ import asyncio
 import os
 from collections.abc import Callable
 from datetime import UTC, datetime
+from importlib import import_module
+from typing import Any
 
+from demo.run.demo_deterministic import GOVERNED_QUESTIONS
 from nl2data import NL2Data, OutcomeStatus, QueryContext, QueryRequest
 from nl2data.composition import CompositionProfile
 from nl2data_core.adapters.sql.compile import compile_sql
 from nl2data_core.ai.fake import FakeModelProvider
 from nl2data_core.compilation.contract import CompilationContext
+from nl2data_core.fixtures import RESULT_ASSERTIONS
 from nl2data_core.governance.models import PolicyScope
 from nl2data_core.planning.ir.models import (
     IRFilter,
@@ -33,6 +37,7 @@ from nl2data_core.planning.ir.models import (
     LogicalJoinPlan,
     SemanticQueryIR,
 )
+from nl2data_core.planning.join_planner import JoinPlanner
 from nl2data_core.planning.models import ColumnBinding, EntityBinding, PhysicalBinding
 from nl2data_core.planning.validation import AuthorizedView
 from nl2data_core.workflow.models import WorkflowState, WorkflowStatus
@@ -134,6 +139,7 @@ JOIN_VIEW = AuthorizedView(
     source_id="sales",
     root_entity_ids=frozenset({"orders", "customers"}),
     field_ids=JOIN_FIELDS,
+    allowed_relationships=frozenset({"order-customer"}),
 )
 
 #: 2-entity JOIN IR: top EMEA orders with the customer region.
@@ -219,6 +225,7 @@ COMPOUND_VIEW = AuthorizedView(
     source_id="sales",
     root_entity_ids=frozenset({"orders", "order_items", "products"}),
     field_ids=COMPOUND_FIELDS,
+    allowed_relationships=frozenset({"order-order_item", "order_item-product"}),
 )
 
 #: 3-entity compound JOIN IR: top EMEA line items with product category.
@@ -432,6 +439,12 @@ async def run_demo(*, dsn: str, redis_url: str | None, run_id: str | None = None
     # Multi-entity JOIN scenarios against the PostgreSQL reference schema.
     await run_join_demo(dsn=dsn, redis_url=redis_url, run_id=f"{suffix}-join")
 
+    # Governed demo questions q2/q5/q6/q8 through the normal planner and
+    # context-aware compiler path (fixed intents, preset IRs, golden shapes).
+    await run_governed_questions_demo(
+        dsn=dsn, redis_url=redis_url, run_id=f"{suffix}-governed"
+    )
+
     # Recovery across a new process: rebuild the runtime and replay.
     profile2 = _build_profile(dsn=dsn, redis_url=redis_url)
     facade2 = NL2Data(composition=profile2)
@@ -591,6 +604,167 @@ async def run_join_demo(
         print("  ", row)
     await compound_facade.close()
 
+    return True
+
+
+def _postgres_binding(question: Any) -> PhysicalBinding:
+    """Re-bind a governed question for the PostgreSQL reference schema.
+
+    The demo seed keeps the legacy text ``orders.status`` column where the
+    controlled fixture carries ``business_status``; every other physical
+    name matches the shared logical schema.
+    """
+    overrides = {"business_status": "status"}
+    columns = tuple(
+        ColumnBinding(
+            field_id=column.field_id,
+            physical_name=overrides.get(column.field_id, column.physical_name),
+            entity_id=column.entity_id,
+        )
+        for column in question.binding.column_bindings
+    )
+    return PhysicalBinding(
+        object_id=question.binding.object_id,
+        dialect="postgres",
+        column_bindings=columns,
+        entity_bindings=question.binding.entity_bindings,
+    )
+
+
+def _postgres_allowed_columns(question: Any) -> frozenset[str]:
+    """Guard scope: the rebinding's physical columns plus computed aliases.
+
+    The SQL guard compares raw AST column names against this set, so the
+    scope must carry the physical names produced by
+    :func:`_postgres_binding` (e.g. ``status`` for the semantic
+    ``business_status`` field); a scope of semantic field ids would reject
+    every governed query whose rebinding renames a column.
+    """
+    binding = _postgres_binding(question)
+    ir_field_ids = question.ir.field_ids()
+    columns = {
+        column.physical_name
+        for column in binding.column_bindings
+        if column.field_id in ir_field_ids
+    }
+    columns |= {
+        selection.alias
+        for selection in question.ir.selections
+        if selection.alias is not None
+    }
+    if question.graph is not None:
+        for edge in question.graph.edges:
+            for field_id in (edge.left_field_id, edge.right_field_id):
+                physical = binding.physical_name(field_id)
+                if physical is not None:
+                    columns.add(physical)
+    return frozenset(columns)
+
+
+def _postgres_service_available(dsn: str) -> bool:
+    """Probe the service; an unreachable PostgreSQL is skipped, never a pass."""
+    try:
+        psycopg = import_module("psycopg")
+    except ImportError:
+        print("Governed questions skipped: the psycopg driver is not installed.")
+        return False
+    try:
+        connection = psycopg.connect(dsn, connect_timeout=5)
+    except Exception as error:
+        print(
+            "Governed questions skipped: PostgreSQL unavailable "
+            f"({type(error).__name__})."
+        )
+        return False
+    connection.close()
+    return True
+
+
+async def run_governed_questions_demo(
+    *, dsn: str, redis_url: str | None, run_id: str | None = None
+) -> bool:
+    """Run the governed demo questions q2/q5/q6/q8 against PostgreSQL.
+
+    The same fixed intents, IRs, views, and provider responses as the
+    deterministic profile flow through the normal runtime path (intent
+    resolution, join planner, IR validation, context-aware compiler, SQL
+    guard, governance, authorization); the bindings are re-bound to the
+    PostgreSQL reference schema.  Requests use the fixed question request
+    ids without a durable state store so the runtime join planner
+    reproduces exactly the pinned join-plan fingerprint.  Because the seed
+    dataset is scale-random, outcomes assert the declared result shape
+    (golden columns) and success rather than exact golden rows.  A missing
+    driver or unreachable service is reported as unavailable/skipped -
+    never a pass.
+    """
+    if PostgresAdapterConfig is None or PostgresQueryAdapter is None:
+        print("Governed questions skipped: nl2data-postgres package is not installed.")
+        return True
+    if not _postgres_service_available(dsn):
+        return True
+
+    run_id = run_id or datetime.now(UTC).strftime("%Y%m%d-%H%M%S-%f")
+    print("\n--- Real-service governed demo questions (q2/q5/q6/q8) ---")
+    print("run id:", run_id)
+    for question in GOVERNED_QUESTIONS:
+        binding = _postgres_binding(question)
+        config = PostgresAdapterConfig(
+            dsn_reference="dsn:" + dsn,
+            allowed_objects=question.allowed_objects,
+            allowed_fields=frozenset(question.view.field_ids),
+            source_id="sales",
+        )
+        adapter = PostgresQueryAdapter(
+            config,
+            allowed_objects=question.allowed_objects,
+            allowed_columns=_postgres_allowed_columns(question),
+        )
+        policy_scope = PolicyScope(
+            policy_id=f"demo-{question.key}-pg-policy",
+            source_ids=frozenset({"sales"}),
+            resource_ids=frozenset({binding.object_id}),
+            operation_ids=frozenset({"select"}),
+            field_ids=question.ir.field_ids(),
+        )
+        profile = CompositionProfile(
+            provider=FakeModelProvider(default_response=question.provider_response),
+            adapter=adapter,
+            policy_scope=policy_scope,
+            view=question.view,
+            plan_resolver=StaticPlanResolver(question.ir),
+            binding=binding,
+            semantic_references=question.references,
+            relationship_graph=question.graph,
+            join_planner=(
+                JoinPlanner(question.graph, question.view)
+                if question.graph is not None
+                else None
+            ),
+        )
+        facade = NL2Data(composition=profile)
+        await facade.initialize()
+        request = QueryRequest(
+            request_id=question.request_id,
+            prompt=question.prompt,
+            context=QueryContext(
+                request_id=question.request_id,
+                workflow_id=f"demo-{question.key}-pg-wf-1",
+            ),
+        )
+        outcome = await facade.aquery(request)
+        print(f"real-service {question.key} outcome status:", outcome.status.value)
+        assert outcome.status == OutcomeStatus.SUCCEEDED, outcome.error
+        assert outcome.result is not None
+        expected = next(
+            a for a in RESULT_ASSERTIONS if a.name == question.golden_assertion
+        )
+        assert tuple(outcome.result.column_names) == expected.columns, question.key
+        assert outcome.result.rows, question.key
+        print(f"real-service {question.key} columns:", outcome.result.column_names)
+        print(f"real-service {question.key} rows:", len(outcome.result.rows))
+        for row in outcome.result.rows:
+            print("  ", row)
+        await facade.close()
     return True
 
 

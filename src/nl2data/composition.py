@@ -174,6 +174,10 @@ class CompositionProfile(BaseModel):
     config: Any = None
     #: Plan resolver for the governed execution path (opaque internal type).
     plan_resolver: Any = None
+    #: Governed relationship graph for deterministic join planning (opaque).
+    relationship_graph: Any = None
+    #: Deterministic join planner over the relationship graph (opaque).
+    join_planner: Any = None
     #: Durable workflow state store (opaque internal type).
     state_store: Any = None
     #: Semantic references for context assembly (opaque internal type).

@@ -105,6 +105,8 @@ class SqlQueryAdapter:
             "metadata_discovery",
             "join",
             "multi_entity",
+            "computed_expressions",
+            "prior_period",
             "cte" if profile.supports_cte else "no_cte",
             "grouping" if profile.supports_grouping else "no_grouping",
             "union" if profile.supports_union else "no_union",

@@ -754,21 +754,31 @@ class _PlanNode(_NodeBase):
                 )
             join_plan = planner_outcome.plan
 
-        try:
-            ir = build_ir_from_resolved_intent(
-                outcome,
-                catalog_fingerprint=runtime.view.catalog_fingerprint,
-                view_reference=runtime._view_reference(),
-                join_plan=join_plan,
-            )
-        except Exception as error:
-            return StageResult(
-                stage=self.stage,
-                status=RuntimeOutcomeStatus.FAILED,
-                outcome=_outcome(
-                    context.request, status=OutcomeStatus.FAILED, error=as_error_record(error)
-                ),
-            )
+        preset_ir = runtime.preset_plan(context.request)
+        if preset_ir is not None:
+            #: A governed plan resolver bound to the execution supplies the
+            #: fixed application-composed IR for this request; the resolved
+            #: intent remains the join-planning input.  The preset never
+            #: bypasses validation, compilation evidence, the guard,
+            #: governance, or authorization - every later stage treats it
+            #: exactly like an intent-built IR.
+            ir = preset_ir
+        else:
+            try:
+                ir = build_ir_from_resolved_intent(
+                    outcome,
+                    catalog_fingerprint=runtime.view.catalog_fingerprint,
+                    view_reference=runtime._view_reference(),
+                    join_plan=join_plan,
+                )
+            except Exception as error:
+                return StageResult(
+                    stage=self.stage,
+                    status=RuntimeOutcomeStatus.FAILED,
+                    outcome=_outcome(
+                        context.request, status=OutcomeStatus.FAILED, error=as_error_record(error)
+                    ),
+                )
         self._channel["ir"] = ir
         self._channel["join_plan"] = join_plan
         self._channel["compat"]["ir"] = strict_sha256_fingerprint(
@@ -1608,6 +1618,22 @@ class DeterministicWorkflowRuntime:
         if self._execution is None:
             return None
         return self._execution.components()
+
+    def preset_plan(self, request: QueryRequest) -> SemanticQueryIR | None:
+        """The governed preset IR for ``request`` from the bound plan resolver.
+
+        The deterministic runtime normally builds the plan-stage IR from the
+        provider-resolved intent; a plan resolver bound to the governed
+        execution supplies a fixed application-composed IR instead.  The
+        preset is still validated, compiled with the full shared context
+        (including the planner-produced join plan), guarded, governed, and
+        authorized before any adapter execution.
+        """
+        components = self.components
+        resolver = None if components is None else components.plan_resolver
+        if resolver is None:
+            return None
+        return resolver.resolve(request)
 
     # -- lifecycle ----------------------------------------------------------
 

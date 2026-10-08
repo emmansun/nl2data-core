@@ -72,6 +72,8 @@ class PostgresQueryAdapter:
                     "cte",
                     "grouping",
                     "union",
+                    "computed_expressions",
+                    "prior_period",
                 }
             ),
             limits=AdapterLimits(

@@ -15,6 +15,7 @@ import pytest
 from nl2data.errors import ErrorCode
 from nl2data_core.adapters.sql.execution import execute_sql
 from nl2data_core.fixtures import (
+    BUSINESS_STATUS_BY_CODE,
     FIXTURE_SETUP_FINGERPRINT,
     FIXTURE_SPEC,
     POLICY_CASES,
@@ -115,6 +116,29 @@ class TestSQLiteFixture:
             assert result.columns == assertion.columns, assertion.name
             assert result.rows == assertion.rows, assertion.name
 
+    def test_legacy_integer_status_codes_are_pinned(self, tmp_path: Path) -> None:
+        """Legacy consumers keep the integer ``status`` column and values.
+
+        The business-status column is additive: it maps (never replaces)
+        the integer code, and legacy status-code queries behave exactly as
+        before the demo extension.
+        """
+        profile = make_sqlite(tmp_path)
+        profile.provision()
+        connection = sqlite3.connect(str(profile.db_path))
+        try:
+            codes = connection.execute(
+                "SELECT order_id, status, business_status FROM orders ORDER BY order_id"
+            ).fetchall()
+        finally:
+            connection.close()
+        assert len(codes) == 24
+        for order_id, status, business_status in codes:
+            assert status == order_id % 3
+            assert business_status == BUSINESS_STATUS_BY_CODE[status]
+        # The stored code set is unchanged: {0, 1, 2} with 8 orders each.
+        assert sorted(status for _, status, _ in codes) == [0] * 8 + [1] * 8 + [2] * 8
+
     def test_policy_cases_hold(self) -> None:
         evaluator = PolicyEvaluator()
         for case in POLICY_CASES:
@@ -160,7 +184,7 @@ class TestPostgresFixture:
         try:
             profile.verify()
             for assertion in RESULT_ASSERTIONS:
-                result = profile.run_query(assertion.sql)
+                result = profile.run_query(assertion.postgres_sql or assertion.sql)
                 assert result.columns == assertion.columns, assertion.name
                 assert result.rows == assertion.rows, assertion.name
             evaluator = PolicyEvaluator()

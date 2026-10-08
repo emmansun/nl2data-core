@@ -107,6 +107,8 @@ def _build_deterministic_runtime(profile: CompositionProfile) -> Any | None:
         approval_required=profile.approval_required,
         now=profile.now,
         projection=profile.projection,
+        relationship_graph=profile.relationship_graph,
+        join_planner=profile.join_planner,
     )
 
 

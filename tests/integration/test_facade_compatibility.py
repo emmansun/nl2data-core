@@ -249,7 +249,11 @@ class TestP2AiQueryCompatibility:
         outcome = await facade.aquery(request("r-ai"))
         assert outcome.status == OutcomeStatus.SUCCEEDED
         assert outcome.result is not None
-        assert outcome.result.column_names == ("order_id", "amount")
+        # The AI path still resolves the provider intent (call_count pin
+        # below), but a bound plan resolver supplies the authoritative
+        # application-composed IR under the governed demo contract, so the
+        # protected columns carry the fixed IR's aliases.
+        assert outcome.result.column_names == ("oid", "amt")
         assert outcome.result.rows[0] == (18, 180.0)
         assert provider.call_count == 1
         await facade.close()

@@ -9,11 +9,15 @@ from __future__ import annotations
 
 from nl2data_core.fixtures.base import FixtureProfile
 from nl2data_core.fixtures.data import (
+    BUSINESS_STATUS_BY_CODE,
+    CUSTOMER_CHANNELS,
     EXPECTED_COUNTS,
     FIXTURE_SETUP_FINGERPRINT,
     FIXTURE_SPEC,
+    ORDER_DATES,
     POLICY_CASES,
     POSTGRES_FIXTURE_SPEC,
+    PRODUCT_STOCK,
     RESULT_ASSERTIONS,
     SCHEMA,
     SEED,
@@ -35,6 +39,8 @@ from nl2data_core.fixtures.postgres import PostgresFixtureProfile
 from nl2data_core.fixtures.sqlite import SQLiteFixtureProfile
 
 __all__ = [
+    "BUSINESS_STATUS_BY_CODE",
+    "CUSTOMER_CHANNELS",
     "EXPECTED_COUNTS",
     "FIXED_TIMEZONE",
     "FIXTURE_SCHEMA_VERSION",
@@ -52,8 +58,10 @@ __all__ = [
     "FixtureVerificationError",
     "MongoFixtureProfile",
     "MongoResultAssertion",
+    "ORDER_DATES",
     "PolicyCase",
     "PostgresFixtureProfile",
+    "PRODUCT_STOCK",
     "ResetStrategy",
     "ResultAssertion",
     "SQLiteFixtureProfile",

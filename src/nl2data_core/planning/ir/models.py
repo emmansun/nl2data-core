@@ -35,6 +35,13 @@ from pydantic import (
 from nl2data_core.canonical import strict_canonical_json, strict_sha256_fingerprint
 from nl2data_core.planning.models import AggregationKind, FilterOperator, OrderDirection
 
+from .expressions import (
+    IRExpression,
+    expression_field_ids,
+    expression_required_capabilities,
+    expressions_equal,
+)
+
 IR_VERSION = 1
 
 _IDENTIFIER_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_\-\.]{0,127}$"
@@ -177,7 +184,14 @@ def _check_json_value(value: Any, path: str) -> None:
 
 
 class IRSelection(BaseModel):
-    """One bounded output selection; never a SQL expression."""
+    """One bounded output selection; never a SQL expression.
+
+    A selection optionally carries a typed computed ``expression`` (see
+    :mod:`.expressions`).  When present, the expression is the selection's
+    whole definition - the base ``aggregation`` must stay ``none`` because
+    aggregates live inside the expression - and ``field_id`` names the
+    derived output rather than a view field.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -185,14 +199,27 @@ class IRSelection(BaseModel):
     field_id: str = Field(pattern=_IDENTIFIER_PATTERN)
     alias: str | None = Field(default=None, pattern=_IDENTIFIER_PATTERN)
     aggregation: AggregationKind = "none"
+    expression: IRExpression | None = None
+
+    @model_validator(mode="after")
+    def _validate_expression(self) -> IRSelection:
+        if self.expression is not None and self.aggregation != "none":
+            raise ValueError(
+                f"selection '{self.selection_id}' carries an expression; computed "
+                "selections must use aggregation 'none'"
+            )
+        return self
 
     def canonical_payload(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "selection_id": self.selection_id,
             "field_id": self.field_id,
             "alias": self.alias,
             "aggregation": self.aggregation,
         }
+        if self.expression is not None:
+            payload["expression"] = self.expression.canonical_payload()
+        return payload
 
 
 class IRFilter(BaseModel):
@@ -231,15 +258,24 @@ class IRFilter(BaseModel):
 
 
 class IRGrouping(BaseModel):
-    """One explicit grouping directive over a selected field."""
+    """One explicit grouping directive over a selected field.
+
+    A grouping over a computed dimension mirrors the computed selection's
+    ``expression`` so the compiled ``GROUP BY`` is always anchored to a
+    declared output; an unmatched expression fails IR construction.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     grouping_id: str = Field(pattern=_IDENTIFIER_PATTERN)
     field_id: str = Field(pattern=_IDENTIFIER_PATTERN)
+    expression: IRExpression | None = None
 
     def canonical_payload(self) -> dict[str, Any]:
-        return {"grouping_id": self.grouping_id, "field_id": self.field_id}
+        payload: dict[str, Any] = {"grouping_id": self.grouping_id, "field_id": self.field_id}
+        if self.expression is not None:
+            payload["expression"] = self.expression.canonical_payload()
+        return payload
 
 
 class IROrdering(BaseModel):
@@ -588,6 +624,54 @@ class SemanticQueryIR(BaseModel):
         return self
 
     @model_validator(mode="after")
+    def _validate_expressions(self) -> SemanticQueryIR:
+        """Computed-expression gates (fail-closed, additive).
+
+        Every expression requires the ``computed_expressions`` capability
+        and any prior-period node additionally requires ``prior_period``
+        (D1: a consumer that does not support a required capability must
+        reject the IR rather than ignore the node).  Grouping expressions
+        must mirror a computed selection exactly so compiled grouping is
+        anchored to a declared output.
+        """
+        capabilities = frozenset(self.required_capabilities)
+        required: set[str] = set()
+        for selection in self.selections:
+            if selection.expression is not None:
+                required |= expression_required_capabilities(selection.expression)
+        for grouping in self.groupings:
+            if grouping.expression is not None:
+                required |= expression_required_capabilities(grouping.expression)
+        missing = sorted(required - capabilities)
+        if missing:
+            raise ValueError(
+                "computed expression nodes require undeclared capabilities: "
+                + ", ".join(missing)
+            )
+        computed = {
+            selection.field_id: selection.expression
+            for selection in self.selections
+            if selection.expression is not None
+        }
+        for grouping in self.groupings:
+            selection_expression = computed.get(grouping.field_id)
+            if grouping.expression is None:
+                if selection_expression is not None:
+                    raise ValueError(
+                        f"grouping '{grouping.grouping_id}' references computed "
+                        f"selection '{grouping.field_id}' without its expression"
+                    )
+                continue
+            if selection_expression is None or not expressions_equal(
+                selection_expression, grouping.expression
+            ):
+                raise ValueError(
+                    f"grouping '{grouping.grouping_id}' expression does not match "
+                    f"a computed selection for field '{grouping.field_id}'"
+                )
+        return self
+
+    @model_validator(mode="after")
     def _compute_fingerprint(self) -> SemanticQueryIR:
         fingerprint = strict_sha256_fingerprint(self.canonical_payload())
         object.__setattr__(self, "fingerprint", fingerprint)
@@ -628,13 +712,26 @@ class SemanticQueryIR(BaseModel):
         return cls.model_validate_json(payload)
 
     def field_ids(self) -> frozenset[str]:
-        """All semantic field ids referenced by the IR."""
-        return (
+        """All semantic field ids referenced by the IR.
+
+        Computed expressions contribute their referenced view fields; the
+        computed output names carried by selection/grouping ``field_id``
+        are outputs, not view fields, and are included as declared by the
+        selections themselves.
+        """
+        ids = (
             frozenset(selection.field_id for selection in self.selections)
             | frozenset(filter_.field_id for filter_ in self.filters)
             | frozenset(grouping.field_id for grouping in self.groupings)
             | frozenset(ordering.field_id for ordering in self.orderings)
         )
+        for selection in self.selections:
+            if selection.expression is not None:
+                ids |= expression_field_ids(selection.expression)
+        for grouping in self.groupings:
+            if grouping.expression is not None:
+                ids |= expression_field_ids(grouping.expression)
+        return ids
 
     def filter_fingerprints(self) -> frozenset[str]:
         """Stable fingerprints of every filter in the IR.
