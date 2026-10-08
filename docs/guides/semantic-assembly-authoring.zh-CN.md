@@ -177,6 +177,72 @@ ID，并创建修订号为零、来源为 manual、所有断言为 pending 的�
 绑定、草稿修订号、批准者或发布者身份、审计记录、语义指纹、激活与替代
 状态、可执行查询文本和已解析凭据。
 
+## Wren MDL 导入器
+
+`nl2data-mdl import` 是一个离线格式适配器，将受支持的 WrenAI MDL JSON 清单
+转换为语义装配编写 YAML。它固定 `schemaVersion` `"1.1"`（可直接供引擎使用的
+`mdl.json` 世代），不需要网络、数据库或 WrenAI 服务，并且绝不创建生命周期
+状态：输出是编写 YAML，仍然像手写文档一样经过校验、评审和发布。
+
+受支持的子集与映射规则：
+
+- `models` 映射为实体，普通 `columns` 映射为字段。`refSql`、`tableReference`
+  以及简单的物理列表达式仅作为来源信息，绝不复制；普通列的 `expression`
+  必须是单个物理标识符词元，否则即为可执行 SQL 并被拒绝。
+- `isCalculated` 列仅在表达式恰好是受治理的 `ExprNode` 树（数值同实体字段与
+  整数常量上的 `+ - * /`）时才映射为计算字段。带点引用、SQL 文本和无法表示
+  的输出类型会被拒绝。
+- 带 `relationship` 引用的列是导航语法糖：被引用的关系必须存在，且该列不会
+  作为字段输出。
+- `relationships` 在 `joinType` 为有向（`ONE_TO_ONE`、`ONE_TO_MANY`、
+  `MANY_TO_ONE`）且 `condition` 是两个模型的普通列之间简单字段等式的链式
+  组合时才会映射。关系会附加到第一个所列模型对应的实体上。
+- `metrics` 仅在指标恰好声明一个形如 `agg(Model.field)` 的度量
+  （`sum`/`avg`/`min`/`max`/`count`）且没有维度、时间粒度、过滤或缓存时才
+  映射。`views`、`enumDefinitions` 和 `macros` 仅在为空时被容忍；未知成员
+  一律失败关闭。
+- MDL 类型映射到编写词汇表（`integer`→`int`、`double`→`float`、
+  `varchar`→`str`，保留 `date`/`timestamp`；未映射的类型保留其规范化的
+  标识符）。计算字段输出类型按与包预言机相同的规则推断。
+
+模型、列、关系和指标名称通过确定性规范化成为编写标识符。当名称无法表示或
+两个成员冲突（字段标识符在描述符内全局唯一）时，请在一个有界的可选 JSON
+清单中提供显式覆盖：
+
+```json
+{
+  "version": "1",
+  "entities": {"Orders": "orders"},
+  "fields": {"Orders.customer_id": "order_customer_id"},
+  "calculated": {"Orders.net_amount": "net_amount"},
+  "relationships": {"OrdersCustomers": "orders_customers"},
+  "measures": {"revenue": "revenue"}
+}
+```
+
+该清单只映射标识；它无法注入字段、策略、物理绑定或生命周期状态。
+
+CLI 用法（只有在生成的 YAML 通过 `SemanticAssemblyAuthoringLoader` 校验之后
+才会原子地写出输出）：
+
+```console
+nl2data-mdl import \
+  --input mdl.json \
+  --output sales-assembly.yaml \
+  --source-id warehouse \
+  --bundle-id sales \
+  --model-version 1.0.0 \
+  [--mapping overrides.json] [--overwrite] [--diagnostics json]
+```
+
+失败时以非零码退出，不留下输出文件，并返回有界的诊断信息：稳定的错误码
+（`invalid_input`、`unsupported_version`、`unsupported_construct`、
+`missing_mapping`、`ambiguous_reference`、`identifier_collision`、
+`unsupported_expression`、`invalid_manifest`、`authoring_validation_failed`、
+`output_exists`）、`$` 风格的源路径、可选的一级行/列号，以及绝不回显输入值、
+SQL 或凭据的受控消息。导入不需要也不会绕过 Admin 导入权限边界：生成的文件
+仍然必须通过正常的、经过校验的编写路径导入。
+
 ## 后续步骤
 
 - 运行 `python demo/run/demo_deterministic.py`，无需外部服务即可校验、导入、

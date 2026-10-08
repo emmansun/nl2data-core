@@ -1,0 +1,6 @@
+{
+  "version": "1",
+  "fields": {
+    "Orders.customer_id": "order_customer_id"
+  }
+}

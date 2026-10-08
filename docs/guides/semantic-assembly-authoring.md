@@ -220,6 +220,82 @@ assertion IDs, provenance, review state/bindings, draft revision, approver or
 publisher identities, audit records, semantic fingerprints, activation and
 supersession state, executable query text, and resolved credentials.
 
+## Wren MDL importer
+
+`nl2data-mdl import` is an offline format adapter that converts a supported
+WrenAI MDL JSON manifest into semantic assembly authoring YAML. It pins
+`schemaVersion` `"1.1"` (the engine-ready `mdl.json` generation), requires no
+network, database, or WrenAI service, and never creates lifecycle state: the
+output is authoring YAML that still goes through validation, review, and
+publication like any hand-written document.
+
+Supported subset and mapping rules:
+
+- `models` map to entities and plain `columns` to fields. `refSql`,
+  `tableReference`, and simple physical column expressions are provenance only
+  and are never copied; a plain column `expression` must be a single physical
+  identifier token, otherwise it is executable SQL and is rejected.
+- `isCalculated` columns map to calculated fields only when the expression is
+  exactly a governed `ExprNode` tree (`+ - * /` over numeric same-entity fields
+  and integer constants). Dotted references, SQL text, and unrepresentable
+  output types are rejected.
+- Columns with a `relationship` reference are navigation sugar: the referenced
+  relationship must exist and the column is not emitted as a field.
+- `relationships` map when `joinType` is directional (`ONE_TO_ONE`,
+  `ONE_TO_MANY`, `MANY_TO_ONE`) and `condition` is a chain of simple field
+  equalities between plain columns of the two models. The relationship attaches
+  to the entity of the first listed model.
+- `metrics` map only when a metric declares exactly one measure of the form
+  `agg(Model.field)` with `sum`/`avg`/`min`/`max`/`count` and no dimensions,
+  time grains, filter, or caching. `views`, `enumDefinitions`, and `macros`
+  are tolerated only when empty; unknown members fail closed.
+- MDL types map to the authoring vocabulary (`integer`→`int`,
+  `double`→`float`, `varchar`→`str`, `date`/`timestamp` kept; unmapped types
+  keep their normalized identifier). Calculated output types are inferred with
+  the same rules the bundle oracle uses.
+
+Model, column, relationship, and metric names become authoring identifiers by
+deterministic normalization. When names are unrepresentable or two members
+collide (field identifiers are descriptor-global), supply explicit overrides in
+a bounded optional JSON manifest:
+
+```json
+{
+  "version": "1",
+  "entities": {"Orders": "orders"},
+  "fields": {"Orders.customer_id": "order_customer_id"},
+  "calculated": {"Orders.net_amount": "net_amount"},
+  "relationships": {"OrdersCustomers": "orders_customers"},
+  "measures": {"revenue": "revenue"}
+}
+```
+
+The manifest maps identities only; it cannot inject fields, policies, physical
+bindings, or lifecycle state.
+
+CLI usage (the output is written atomically only after the generated YAML passes
+`SemanticAssemblyAuthoringLoader`):
+
+```console
+nl2data-mdl import \
+  --input mdl.json \
+  --output sales-assembly.yaml \
+  --source-id warehouse \
+  --bundle-id sales \
+  --model-version 1.0.0 \
+  [--mapping overrides.json] [--overwrite] [--diagnostics json]
+```
+
+Failures exit non-zero, leave no output file, and return bounded diagnostics
+with a stable code (`invalid_input`, `unsupported_version`,
+`unsupported_construct`, `missing_mapping`, `ambiguous_reference`,
+`identifier_collision`, `unsupported_expression`, `invalid_manifest`,
+`authoring_validation_failed`, `output_exists`), a `$`-style source path,
+optional one-based line/column, and a controlled message that never echoes
+input values, SQL, or credentials. Importing does not require or bypass the
+Admin import permission boundary: the generated file must still be imported
+through the normal validated authoring path.
+
 ## Next steps
 
 - Run `python demo/run/demo_deterministic.py` to validate, import, review,

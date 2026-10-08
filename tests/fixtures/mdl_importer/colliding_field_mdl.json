@@ -1,0 +1,30 @@
+{
+  "schemaVersion": "1.1",
+  "models": [
+    {
+      "name": "Orders",
+      "refSql": "select * from sales.orders",
+      "columns": [
+        { "name": "order_id", "type": "integer", "expression": "o_order_id" },
+        { "name": "customer_id", "type": "integer", "expression": "o_customer_id" },
+        { "name": "amount", "type": "double", "expression": "o_amount" }
+      ]
+    },
+    {
+      "name": "Customers",
+      "refSql": "select * from sales.customers",
+      "columns": [
+        { "name": "customer_id", "type": "integer", "expression": "c_customer_id" },
+        { "name": "region", "type": "varchar", "expression": "c_region" }
+      ]
+    }
+  ],
+  "relationships": [
+    {
+      "name": "OrdersCustomers",
+      "models": ["Orders", "Customers"],
+      "joinType": "MANY_TO_ONE",
+      "condition": "Orders.customer_id = Customers.customer_id"
+    }
+  ]
+}

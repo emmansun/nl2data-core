@@ -373,6 +373,7 @@ cross_domain_import_budget:
     - src/nl2data_core/bundles
     - src/nl2data_core/verification
     - src/nl2data_core/control_plane
+    - src/nl2data_core/mdl_importer
     - packages/nl2data-admin-service/src/nl2data_admin_service
     - packages/nl2data-semantic-catalog-postgres/src/nl2data_semantic_catalog_postgres
   # Counted as unique (source module, imported module) pairs whose source
@@ -441,7 +442,16 @@ cross_domain_import_budget:
   # new edges follow the already-approved inward assembly.authoring ->
   # bundles.models direction (authoring.models imports the same symbol for
   # the AuthoringSpec.compatibility field); no new direction was introduced.
-  baseline: 420
+  # Ratcheted from 420 after adding the offline Wren MDL importer as a
+  # counted root: all 15 new edges are the inward
+  # mdl_importer -> assembly.authoring direction (converter -> authoring
+  # models, importer -> loader/export facade).  The importer is a format
+  # adapter that must produce documents through the governed authoring
+  # models; no counted root imports mdl_importer, and no new outward or
+  # reverse edge was introduced.  mdl_importer is also registered under
+  # duplicate_detection.scanned_roots so its modules are scanned as import
+  # sources and for exact-duplicate detection.
+  baseline: 435
   max_new_imports: 0
 
 duplicate_detection:
@@ -450,6 +460,7 @@ duplicate_detection:
     - src/nl2data_core/bundles
     - src/nl2data_core/verification
     - src/nl2data_core/control_plane
+    - src/nl2data_core/mdl_importer
     - packages/nl2data-admin-service/src/nl2data_admin_service
     - packages/nl2data-semantic-catalog-postgres/src/nl2data_semantic_catalog_postgres
   generated_file_allowlist:

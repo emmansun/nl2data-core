@@ -25,6 +25,9 @@ dependencies = [
     "PyYAML>=6.0",
 ]
 
+[project.scripts]
+nl2data-mdl = "nl2data_core.mdl_importer.cli:main"
+
 [project.optional-dependencies]
 # SQL parser + evaluation extras; SQLite itself is stdlib (no dependency).
 sql = ["sqlglot>=25.0,<30"]

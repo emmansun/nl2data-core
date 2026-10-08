@@ -1,0 +1,79 @@
+{
+  "schemaVersion": "1.1",
+  "catalog": "warehouse",
+  "schema": "sales",
+  "models": [
+    {
+      "name": "Customers",
+      "refSql": "select * from sales.customers",
+      "primaryKey": "customer_id",
+      "columns": [
+        {
+          "name": "customer_id",
+          "type": "integer",
+          "expression": "c_customer_id"
+        },
+        {
+          "name": "region",
+          "type": "varchar",
+          "expression": "c_region"
+        },
+        {
+          "name": "credit_limit",
+          "type": "bigint",
+          "expression": "c_credit_limit"
+        }
+      ]
+    },
+    {
+      "name": "Orders",
+      "tableReference": { "catalog": "warehouse", "schema": "sales", "table": "orders" },
+      "primaryKey": "order_id",
+      "columns": [
+        {
+          "name": "order_id",
+          "type": "integer",
+          "expression": "o_order_id"
+        },
+        {
+          "name": "custkey",
+          "type": "integer",
+          "expression": "o_custkey"
+        },
+        {
+          "name": "gross_amount",
+          "type": "bigint",
+          "expression": "o_gross_amount"
+        },
+        {
+          "name": "discount",
+          "type": "bigint",
+          "expression": "o_discount"
+        },
+        {
+          "name": "net_amount",
+          "type": "bigint",
+          "isCalculated": true,
+          "expression": "gross_amount - discount"
+        },
+        {
+          "name": "customer",
+          "type": "Customers",
+          "relationship": "OrdersCustomers"
+        }
+      ]
+    }
+  ],
+  "relationships": [
+    {
+      "name": "OrdersCustomers",
+      "models": ["Orders", "Customers"],
+      "joinType": "MANY_TO_ONE",
+      "condition": "Orders.custkey = Customers.customer_id"
+    }
+  ],
+  "metrics": [],
+  "views": [],
+  "enumDefinitions": [],
+  "macros": []
+}
