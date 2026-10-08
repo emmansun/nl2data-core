@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import math
 import time
+from decimal import Decimal
 from typing import Any
 
 from nl2data_core.adapters.models import ExecutionResult
@@ -20,6 +22,15 @@ _SCALAR_TYPES: tuple[type, ...] = (str, int, float, bool, type(None))
 def _normalize_cell(value: Any, *, row_index: int, column_index: int) -> Any:
     if isinstance(value, _SCALAR_TYPES):
         return value
+    if isinstance(value, Decimal):
+        #: NUMERIC columns arrive as Decimal; normalize into the protected
+        #: float scalar so the same computed math (e.g. ROUND(100.0 * a / b))
+        #: yields SQLite-equivalent float64 values.  Non-finite numerics
+        #: (NaN/Infinity) stay fail-closed: a poisoned float would break the
+        #: canonical JSON payload downstream.
+        converted = float(value)
+        if math.isfinite(converted):
+            return converted
     raise PostgresExecutionError(
         "database returned a value outside the protected scalar set",
         details={

@@ -10,10 +10,12 @@ boundary never pulls in an optional provider.
 
 from __future__ import annotations
 
+import math
 import os
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
+from decimal import Decimal
 from importlib import import_module
 from importlib.util import find_spec
 from typing import Any, cast
@@ -207,6 +209,15 @@ class PostgresFixtureProfile(FixtureProfile):
     def _normalize_cell(value: Any, row_index: int, column_index: int) -> Any:
         if isinstance(value, _SCALAR_TYPES):
             return value
+        if isinstance(value, Decimal):
+            #: NUMERIC columns arrive as Decimal; normalize into the protected
+            #: float scalar so the same computed math (e.g. 100e0 * a / b)
+            #: yields SQLite-equivalent float64 values.  Non-finite numerics
+            #: stay fail-closed because a poisoned float would break the
+            #: canonical JSON payload downstream.
+            converted = float(value)
+            if math.isfinite(converted):
+                return converted
         raise SQLExecutionError(
             "database returned a value outside the protected scalar set",
             details={

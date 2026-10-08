@@ -21,26 +21,33 @@ from nl2data_core.governance.models import (
 
 #: Logical schema shared by every fixture profile.  The DDL uses only
 #: types that SQLite and PostgreSQL both accept, so dialect-specific
-#: setup is limited to connection and placeholder handling.  The demo
-#: extensions are additive: ``customers.channel``, ``products.stock_quantity``
-#: and ``orders.business_status`` join the legacy integer-coded columns,
-#: which keep their historical values and semantics.
+#: setup is limited to connection and placeholder handling.  Monetary
+#: columns are declared DOUBLE PRECISION (not REAL): SQLite maps that
+#: name to its REAL affinity, while PostgreSQL would store plain REAL
+#: as float4 and round seed values like 29.99 to a different float64
+#: than SQLite's - the profiles must return byte-equal protected rows.
+#: The demo extensions are additive: ``customers.channel``,
+#: ``products.stock_quantity`` and ``orders.business_status`` join the
+#: legacy integer-coded columns, which keep their historical values
+#: and semantics.
 SCHEMA: dict[str, str] = {
     "customers": (
         "CREATE TABLE customers (customer_id INT, name TEXT, region TEXT, "
         "channel TEXT)"
     ),
     "orders": (
-        "CREATE TABLE orders (order_id INT, customer_id INT, amount REAL, "
+        "CREATE TABLE orders (order_id INT, customer_id INT, "
+        "amount DOUBLE PRECISION, "
         "region TEXT, status INT, created_at TEXT, business_status TEXT)"
     ),
     "products": (
-        "CREATE TABLE products (product_id INT, category TEXT, unit_price REAL, "
+        "CREATE TABLE products (product_id INT, category TEXT, "
+        "unit_price DOUBLE PRECISION, "
         "stock_quantity INT)"
     ),
     "order_items": (
         "CREATE TABLE order_items (item_id INT, order_id INT, product_id INT, "
-        "quantity INT, unit_price REAL)"
+        "quantity INT, unit_price DOUBLE PRECISION)"
     ),
 }
 
@@ -381,11 +388,13 @@ RESULT_ASSERTIONS: tuple[ResultAssertion, ...] = (
             "ORDER BY week_start"
         ),
         postgres_sql=(
-            "SELECT TO_CHAR(DATE_TRUNC('week', created_at), 'YYYY-MM-DD') AS week_start, "
+            #: created_at is TEXT in the shared schema, so the bucket needs
+            #: an explicit ::date cast; DATE_TRUNC has no text overload.
+            "SELECT TO_CHAR(DATE_TRUNC('week', created_at::date), 'YYYY-MM-DD') AS week_start, "
             "COUNT(*) AS order_count, "
-            "LAG(COUNT(*)) OVER (ORDER BY DATE_TRUNC('week', created_at)) "
+            "LAG(COUNT(*)) OVER (ORDER BY DATE_TRUNC('week', created_at::date)) "
             "AS prev_order_count "
-            "FROM orders GROUP BY DATE_TRUNC('week', created_at) "
+            "FROM orders GROUP BY DATE_TRUNC('week', created_at::date) "
             "ORDER BY week_start"
         ),
         columns=("week_start", "order_count", "prev_order_count"),

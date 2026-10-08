@@ -114,7 +114,7 @@ class TestPostgresConformance:
         try:
             profile.verify()
             for assertion in RESULT_ASSERTIONS:
-                result = profile.run_query(assertion.sql)
+                result = profile.run_query(assertion.postgres_sql or assertion.sql)
                 assert result.columns == assertion.columns, assertion.name
                 assert result.rows == assertion.rows, assertion.name
                 assert FINGERPRINT.fullmatch(result.fingerprint)
@@ -151,7 +151,7 @@ class TestPostgresConformance:
         sqlite.provision()
         try:
             for assertion in RESULT_ASSERTIONS:
-                postgres = profile.run_query(assertion.sql)
+                postgres = profile.run_query(assertion.postgres_sql or assertion.sql)
                 sqlite_result = execute_sql(assertion.sql, db_path=sqlite.db_path)
                 assert postgres.columns == sqlite_result.columns, assertion.name
                 assert postgres.rows == sqlite_result.rows, assertion.name

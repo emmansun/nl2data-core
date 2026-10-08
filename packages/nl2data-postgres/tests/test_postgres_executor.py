@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 from collections.abc import Iterator
+from decimal import Decimal
 from typing import Any
 
 import pytest
@@ -93,6 +94,24 @@ class TestPostgresExecutor:
         executor._pool = FakePool(FakeConnection(FakeCursor((("id",),), [((1, 2),)])))
         with pytest.raises(PostgresExecutionError):
             executor.execute("SELECT id FROM users LIMIT 1")
+
+    def test_execute_normalizes_decimal_cells_to_float(self) -> None:
+        executor = _executor()
+        executor._pool = FakePool(
+            FakeConnection(
+                FakeCursor((("rate",),), [(Decimal("50.0000000000000000"),)])
+            )
+        )
+        result = executor.execute("SELECT rate FROM t LIMIT 1")
+        assert result.rows == ((50.0,),)
+
+    def test_execute_rejects_non_finite_decimal_cells(self) -> None:
+        executor = _executor()
+        executor._pool = FakePool(
+            FakeConnection(FakeCursor((("rate",),), [(Decimal("NaN"),)]))
+        )
+        with pytest.raises(PostgresExecutionError):
+            executor.execute("SELECT rate FROM t LIMIT 1")
 
     def test_division_by_zero_maps_to_cf_005(self) -> None:
         executor = _executor()

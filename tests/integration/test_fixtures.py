@@ -8,12 +8,13 @@ never reported as passing when its driver or service is absent.
 from __future__ import annotations
 
 import sqlite3
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
 
 from nl2data.errors import ErrorCode
-from nl2data_core.adapters.sql.execution import execute_sql
+from nl2data_core.adapters.sql.execution import SQLExecutionError, execute_sql
 from nl2data_core.fixtures import (
     BUSINESS_STATUS_BY_CODE,
     FIXTURE_SETUP_FINGERPRINT,
@@ -158,6 +159,24 @@ def _require_postgres_service(profile: PostgresFixtureProfile) -> None:
         profile.provision()
     except FixtureUnavailableError:
         pytest.skip("postgresql service is unavailable; the postgres profile is skipped")
+
+
+class TestPostgresCellNormalization:
+    """The PostgreSQL profile maps NUMERIC (Decimal) cells into the protected
+    scalar set so shared golden rows stay float64-comparable with SQLite."""
+
+    def test_decimal_cells_normalize_to_float(self) -> None:
+        normalized = PostgresFixtureProfile._normalize_cell(
+            Decimal("50.0000000000000000"), row_index=0, column_index=3
+        )
+        assert normalized == 50.0
+        assert type(normalized) is float
+
+    def test_non_finite_decimal_cells_fail_closed(self) -> None:
+        with pytest.raises(SQLExecutionError):
+            PostgresFixtureProfile._normalize_cell(
+                Decimal("Infinity"), row_index=0, column_index=3
+            )
 
 
 class TestPostgresFixture:
