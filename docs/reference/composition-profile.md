@@ -60,7 +60,7 @@ it whenever you compile for a non-default dialect.
 | `policy_scope` | Opaque | Governance allow-scope; `resource_ids` are **physical object names** and must match the binding; its `policy_fingerprint` binds the view definition | Host-owned, or derived from discovery bounds / `None` |
 | `view` | Opaque | `AuthorizedView`: `source_id`, `root_entity_ids`, `field_ids`, optional view binding (`view_id`/`view_version`/`view_fingerprint` all-or-none) | `AuthorizedView.from_projection(projection)` or manual / `None` |
 | `projection` | Opaque | The resolved `ResolvedViewProjection`; when bound, the runtime derives the authorized view and semantic references itself and records structured Bundle evidence | `ViewRegistry.resolve(...).projection` / `None` |
-| `binding` | Opaque | `PhysicalBinding`: one `object_id`, `dialect`, column bindings — compiler context only | Host, from discovery bounds or source config / `None` |
+| `binding` | Opaque | `PhysicalBinding`: root `object_id`, `dialect`, column bindings, and optional entity-to-object bindings for SQL joins — compiler context only | Host, from discovery bounds or source config / `None` |
 | `config` | Opaque | Model invocation configuration (timeouts, attempts, temperature) | Host / `None` |
 | `plan_resolver` | Opaque | Maps a `QueryRequest` to a validated `SemanticQueryIR` or `None` | `StaticPlanResolver(ir)` or your resolver / `None` |
 | `state_store` | Opaque | Durable workflow state; enables workflow handles, cancellation, idempotency | `nl2data-workflow-postgres` or your store / `None` |
@@ -178,42 +178,36 @@ profile = CompositionProfile(
 )
 ```
 
-### 5. Multi-root data source
+### 5. Multi-entity SQL query
 
-A source with several root tables (for example `orders` and `customers`)
-gets **one profile per physical object**: every query has exactly one root
-entity, and the SQL compiler emits one statement per profile binding.
+Every query still selects one root entity, but an authorized SQL query may
+join additional entities from the same source. One profile carries one
+`PhysicalBinding` with the root object, `EntityBinding` entries for joined
+tables, and `ColumnBinding.entity_id` values that qualify semantic fields.
+The authorized view and relationship plan define which joins are allowed;
+the SQL adapter's object/column allowlists remain an independent upper
+bound. Current SQL joins are inner joins.
 
 ```python
 # Shared semantic layer: one descriptor + one Bundle with entities
-# "order" and "customer". Two view definitions restrict to one entity
-# each; two resolutions produce two projections.
+# "order" and "customer". The view authorizes both; the planner selects
+# the relationship path for each multi-entity request.
 
-orders_profile = CompositionProfile(
+sales_profile = CompositionProfile(
     provider=model_provider,
-    adapter=orders_adapter,              # allowed_objects={"orders"}
-    policy_scope=orders_policy,          # resource_ids={"orders"}
-    view=AuthorizedView.from_projection(orders_projection),  # root: order
-    projection=orders_projection,
-    binding=orders_binding,              # object_id="orders"
-    plan_resolver=orders_plan_resolver,  # IRs rooted at "order"
-)
-
-customers_profile = CompositionProfile(
-    provider=model_provider,
-    adapter=customers_adapter,            # allowed_objects={"customers"}
-    policy_scope=customers_policy,        # resource_ids={"customers"}
-    view=AuthorizedView.from_projection(customers_projection),  # root: customer
-    projection=customers_projection,
-    binding=customers_binding,            # object_id="customers"
-    plan_resolver=customers_plan_resolver,  # IRs rooted at "customer"
+  adapter=sales_adapter,               # allowed_objects={"orders", "customers"}
+  policy_scope=sales_policy,
+  view=AuthorizedView.from_projection(sales_projection),  # roots: order, customer
+  projection=sales_projection,
+  binding=sales_binding,               # root object + entity/column bindings
+  plan_resolver=sales_plan_resolver,
 )
 ```
 
-Each profile is an independent facade. They share the provider, descriptor,
-and Bundle; only the object-scoped parts differ. When several roots live in
-**one** table, a single profile can authorize them all — the view's
-`root_entity_ids` is a set and the binding covers all their fields.
+The plan and binding do not authorize themselves: the view must permit the
+relationship, and the SQL adapter allowlist must include every physical
+table and column. Use separate profiles when tables require different
+adapters or policy scopes, or when joins should be deliberately unavailable.
 
 ## Common mistakes
 

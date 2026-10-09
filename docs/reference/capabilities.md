@@ -14,10 +14,12 @@
 | Public models/errors (immutable, redacted) | Implemented + conformant | Unit + security suites | — |
 | Strict versioned configuration + fingerprints | Implemented + conformant | Unit suite | — |
 | Semantic IR + canonical fingerprints | Implemented + conformant | Contract suite | — |
+| Governed multi-entity SQL joins + bounded computed expressions | Implemented + conformant | SQL compiler/guard contract suites; SQLite and PostgreSQL query fixtures | SQL adapter, authorized relationship path, and allowlisted objects/columns |
 | Semantic View resolution (fail-closed) | Implemented + conformant | Contract + security suites | — |
 | Semantic assembly drafts, assertion review, approval, publish audit | Implemented + conformant | Unit + contract + security suites | — |
 | Three-layer semantic Bundle Verification Suite and SQLite reference executor | Implemented + conformant | Model, execution, orchestration, publish, Admin, catalog, and security suites | Controlled fixture profiles; production requires explicit policy and executor identity |
 | Semantic Assembly YAML validation, import, and deterministic export | Implemented + conformant | Unit + Admin contract + security suites | `PyYAML`; Admin operations require scoped host authentication |
+| Offline WrenAI MDL importer to semantic assembly YAML | Implemented + conformant | Parser, converter, and CLI suites | `nl2data-mdl`; supported `mdl.json` schema subset |
 | Semantic Model Bundles + fingerprint publication/supersession catalog | Implemented + conformant | Contract + security suites | — |
 | Durable semantic catalog (PostgreSQL) | Implemented + verified | Real-service CI profile | `nl2data-semantic-catalog-postgres` + service |
 | Governed workflow runtime (deterministic) | Implemented + conformant | Conformance suite | — |
@@ -28,7 +30,7 @@
 | Memory (Redis) | Implemented + verified | Real-service CI profile | `nl2data-memory-redis` package + service |
 | SQL adapter (SQLite fixtures) | Implemented + conformant | Conformance suite | `sql` extra |
 | SQL adapter (PostgreSQL) | Implemented + verified | Real-service CI profile | `nl2data-postgres` + service |
-| MongoDB adapter | Implemented + verified | Real-service CI profile | `nl2data-mongodb` + service |
+| MongoDB adapter (bounded single-collection queries and aggregation) | Implemented + verified | Real-service CI profile | `nl2data-mongodb` + service |
 | Metadata discovery + production profile | Implemented + verified | Real-service CI profile | `nl2data-postgres`/`nl2data-mongodb` package + service |
 | AI intent resolution + instruction contract | Implemented + conformant | Evaluation suite (fake provider) | — |
 | OpenAI structured-output provider | Implemented; live-verified on demand | `run_openai_live.py` | `nl2data-openai` + credentials |
@@ -48,6 +50,10 @@
   (MongoDB/HTTP state backends are not implemented).
 - **Exactly-once external execution** — recovery is at-least-once by
   design.
+- **General-purpose SQL**: the IR does not expose arbitrary SQL, outer
+  joins, arbitrary CTEs, or arbitrary window frames. Multi-entity SQL joins
+  are inner joins over an authorized relationship plan. Computed query
+  expressions are SQL-adapter capabilities, not a cross-adapter contract.
 - **$lookup/cross-collection joins, Atlas Search/vector stages,
   map-reduce, change streams, and writes** in the MongoDB adapter.
 

@@ -115,22 +115,29 @@ exclusions) becomes a root and contributes its fields. A definition with
 
 ### The physical boundary
 
-The semantic layer is multi-root; the compiler is single-object. The SQL
-compiler emits one `SELECT ... FROM <object>` statement from the single
-`PhysicalBinding` of the profile — there is no join emission yet, and a
-profile carries exactly one binding. Practical consequences:
+The semantic layer is multi-root, while each query has one selected root.
+For SQL, one profile can compile a query over multiple physical tables when
+its `PhysicalBinding` maps the root and joined semantic entities, the
+authorized view permits their relationship path, and the adapter guard
+allowlists every referenced object and column. The compiler currently emits
+bounded **inner joins** from the runtime-produced `LogicalJoinPlan`; physical
+bindings supply names but never grant authority.
 
-- **Roots in one physical object** (denormalized table): one profile
-  suffices — its view may authorize several roots and its binding covers
-  all of their fields.
-- **Roots in separate tables** (normalized, the common case): create **one
-  profile per physical object**. Each profile gets its own adapter
-  (allowlisted to that object), its own policy scope
-  (`resource_ids` = the physical object name), its own view scoped to the
-  roots/fields that map to that object, its own binding, and its own plan
-  resolver. A shared descriptor and Bundle can back all of them.
-- **Relationships** are governed vocabulary, not query mechanics — see
-  [Relationships: governed vocabulary, compiled at query time](#relationships-governed-vocabulary-compiled-at-query-time).
+- **One physical table**: a single binding maps the entity's fields to that
+  table; no join plan is needed.
+- **Several tables in one SQL source**: one profile can carry the root
+  `object_id`, entity-to-table bindings, and entity-qualified column
+  bindings. The runtime checks the relationship plan against the current
+  view, and the SQL guard independently checks all physical objects and
+  columns.
+- **Separate profiles** remain useful when tables require different
+  adapters, policies, or independently isolated execution scopes. They are
+  not required merely because a source is normalized.
+- **Other adapters** expose their own capability sets. In particular,
+  MongoDB does not support this SQL join path.
+
+**Relationships** remain governed vocabulary as well as query mechanics —
+see [Relationships: governed vocabulary, compiled at query time](#relationships-governed-vocabulary-compiled-at-query-time).
 
 See [CompositionProfile reference](../reference/composition-profile.md)
 for the multi-root construction example.

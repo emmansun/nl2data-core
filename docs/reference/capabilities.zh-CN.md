@@ -32,7 +32,9 @@ PostgreSQL/MongoDB 配置受环境门控，跳过不算验证通过。
 | 内存（Redis） | Implemented + verified | 真实服务 CI 配置 | `nl2data-memory-redis` 包 + 服务 |
 | SQL 适配器（SQLite fixtures） | Implemented + conformant | 一致性套件 | `sql` extra |
 | SQL 适配器（PostgreSQL） | Implemented + verified | 真实服务 CI 配置 | `nl2data-postgres` 包 + 服务 |
-| MongoDB 适配器 | Implemented + verified | 真实服务 CI 配置 | `nl2data-mongodb` + 服务 |
+| 受治理的多实体 SQL join + 有界计算表达式 | Implemented + conformant | SQL 编译器/guard 契约套件；SQLite 与 PostgreSQL 查询夹具 | SQL 适配器、授权关系路径、allowlist 中的对象/列 |
+| 离线 WrenAI MDL 到 semantic assembly YAML 导入器 | Implemented + conformant | Parser、converter 与 CLI 套件 | `nl2data-mdl`；受支持的 `mdl.json` schema 子集 |
+| MongoDB 适配器（有界单集合查询与聚合） | Implemented + verified | 真实服务 CI 配置 | `nl2data-mongodb` + 服务 |
 | 元数据发现 + 生产配置 | Implemented + verified | 真实服务 CI 配置 | `nl2data-postgres`/`nl2data-mongodb` 包 + 服务 |
 | AI 意图解析 + 指令契约 | Implemented + conformant | 评估套件（fake provider） | — |
 | OpenAI 结构化输出提供方 | Implemented；按需实时验证 | `run_openai_live.py` | `nl2data-openai` + 凭据 |
@@ -49,6 +51,9 @@ PostgreSQL/MongoDB 配置受环境门控，跳过不算验证通过。
 - **工作流状态除 PostgreSQL 之外的服务后端**（MongoDB/HTTP 状态后端
   未实现）。
 - **恰好一次的外部执行**——恢复按设计是 at-least-once。
+- **通用 SQL**：IR 不暴露任意 SQL、外连接、任意 CTE 或任意窗口 frame。
+  多实体 SQL join 限于经授权关系计划确定的 inner join。计算查询表达式是
+  SQL 适配器能力，不是跨适配器契约。
 - MongoDB 适配器中的 **$lookup/跨集合连接、Atlas Search/向量阶段、
   map-reduce、变更流与写入**。
 

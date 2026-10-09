@@ -57,7 +57,7 @@
 | `policy_scope` | 不透明 | 治理允许范围；`resource_ids` 是**物理对象名**且必须与 binding 一致；其 `policy_fingerprint` 绑定视图定义 | Host 持有，或由 discovery 边界推导 / `None` |
 | `view` | 不透明 | `AuthorizedView`：`source_id`、`root_entity_ids`、`field_ids`、可选的视图绑定（`view_id`/`view_version`/`view_fingerprint` 全有或全无） | `AuthorizedView.from_projection(projection)` 或手工构建 / `None` |
 | `projection` | 不透明 | 解析得到的 `ResolvedViewProjection`；绑定时运行时自行推导授权视图与语义引用，并记录结构化 Bundle 证据 | `ViewRegistry.resolve(...).projection` / `None` |
-| `binding` | 不透明 | `PhysicalBinding`：一个 `object_id`、`dialect`、列绑定——仅编译器上下文 | Host，来自 discovery 边界或数据源配置 / `None` |
+| `binding` | 不透明 | `PhysicalBinding`：根 `object_id`、`dialect`、列绑定，以及 SQL join 可选的实体到对象绑定——仅编译器上下文 | Host，来自 discovery 边界或数据源配置 / `None` |
 | `config` | 不透明 | 模型调用配置（超时、重试、temperature） | Host / `None` |
 | `plan_resolver` | 不透明 | 把 `QueryRequest` 映射为校验过的 `SemanticQueryIR` 或 `None` | `StaticPlanResolver(ir)` 或你的 resolver / `None` |
 | `state_store` | 不透明 | 持久化工作流状态；启用工作流句柄、取消、幂等 | `nl2data-workflow-postgres` 或你的存储 / `None` |
@@ -169,40 +169,32 @@ profile = CompositionProfile(
 )
 ```
 
-### 5. 多根数据源
+### 5. 多实体 SQL 查询
 
-有多个根表的数据源（例如 `orders` 与 `customers`）按**每个物理对象一个
-profile** 组合：每条查询只有一个根实体，SQL 编译器按 profile 的 binding
-只生成一条语句。
+每条查询仍选择一个根实体，但经授权的 SQL 查询可以连接同一数据源中的其他实体。
+一个 profile 携带一个 `PhysicalBinding`，其中包含根对象、连接表的 `EntityBinding`
+条目，以及用于限定语义字段所属实体的 `ColumnBinding.entity_id`。授权视图和关系计划
+定义允许哪些 join；SQL 适配器的对象/列 allowlist 仍是独立的上限。当前 SQL join
+类型为 inner join。
 
 ```python
 # 共享语义层：一个描述符 + 一个 Bundle，包含实体 "order" 与 "customer"。
-# 两个视图定义各自限定一个实体；两次解析产生两个投影。
+# 视图授权两个实体；规划器为每个多实体请求选择关系路径。
 
-orders_profile = CompositionProfile(
+sales_profile = CompositionProfile(
     provider=model_provider,
-    adapter=orders_adapter,              # allowed_objects={"orders"}
-    policy_scope=orders_policy,          # resource_ids={"orders"}
-    view=AuthorizedView.from_projection(orders_projection),  # 根: order
-    projection=orders_projection,
-    binding=orders_binding,              # object_id="orders"
-    plan_resolver=orders_plan_resolver,  # 根为 "order" 的 IR
-)
-
-customers_profile = CompositionProfile(
-    provider=model_provider,
-    adapter=customers_adapter,            # allowed_objects={"customers"}
-    policy_scope=customers_policy,        # resource_ids={"customers"}
-    view=AuthorizedView.from_projection(customers_projection),  # 根: customer
-    projection=customers_projection,
-    binding=customers_binding,            # object_id="customers"
-    plan_resolver=customers_plan_resolver,  # 根为 "customer" 的 IR
+  adapter=sales_adapter,               # allowed_objects={"orders", "customers"}
+  policy_scope=sales_policy,
+  view=AuthorizedView.from_projection(sales_projection),  # 根: order, customer
+  projection=sales_projection,
+  binding=sales_binding,               # 根对象 + 实体/列绑定
+  plan_resolver=sales_plan_resolver,
 )
 ```
 
-每个 profile 都是独立的 facade。它们共享 provider、描述符与 Bundle；只有按对象
-限定的部分不同。当多个根位于**同一张表**时，一个 profile 即可授权它们全部——
-视图的 `root_entity_ids` 是集合，binding 覆盖它们的所有字段。
+计划与 binding 不会自行授予权限：视图必须允许该关系，SQL 适配器 allowlist 必须
+包含每个物理表和列。当表需要不同适配器或策略范围，或希望明确禁止 join 时，才使用
+多个 profile。
 
 ## 常见错误
 

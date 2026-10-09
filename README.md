@@ -1,15 +1,37 @@
 # nl2data-core
 
-A governed and extensible Python framework for natural-language access to
-heterogeneous enterprise data.
+An embeddable Python framework for adding governed natural-language data
+access to an application. The host keeps control of identity, tenancy,
+deployment, and credentials; NL2Data supplies semantic query planning and
+a bounded execution path behind one public facade (`import nl2data`).
 
-One public facade (`import nl2data`) composes Semantic IR, Semantic
-View/Bundle resolution, a deterministic governed workflow runtime, and
-optional database, memory, and model-provider backends — so that
-**validation, governance, authorization, and result protection always
-run before any external work**. The base package imports only `pydantic`
-and `PyYAML`; no database driver, LLM SDK, HTTP framework, or telemetry
-backend is ever loaded unless you compose it explicitly.
+The runtime resolves requests against an authorized Semantic View, builds a
+typed Semantic IR, and compiles only operations supported by the configured
+adapter. Governance, authorization, and the artifact guard gate database
+execution; results are normalized and protected before they cross the
+facade. The base package imports only `pydantic` and `PyYAML`; database
+drivers, LLM SDKs, and service backends load only when explicitly composed.
+
+## Product fit
+
+NL2Data is designed for Python applications that need natural-language
+queries without handing the model unrestricted database access. Teams define
+business entities, fields, relationships, and policies; the host supplies
+trusted context and backends; the runtime validates each query against those
+boundaries and returns a protected outcome with safe evidence.
+
+- **Semantic onboarding**: author a semantic assembly or convert the
+  supported WrenAI MDL JSON subset offline with [`nl2data-mdl`](docs/guides/semantic-assembly-authoring.md#wren-mdl-importer).
+- **Governed SQL analytics**: filters, common aggregations, grouping,
+  ordering, bounded results, authorized multi-entity inner joins, and a
+  closed set of computed expressions.
+- **Composable runtimes**: use SQL (SQLite/PostgreSQL), MongoDB, and optional
+  model, memory, and workflow-state packages through explicit composition.
+
+This is a library, not a hosted query service: there is no HTTP host, and the
+query language is intentionally bounded rather than arbitrary SQL. See the
+[capability matrix](docs/reference/capabilities.md) for backend differences
+and verification status.
 
 ## Packaging
 
@@ -27,13 +49,26 @@ backend is ever loaded unless you compose it explicitly.
 pip install nl2data-core
 ```
 
+The core facade and MDL importer need only the base package. To compile SQL
+queries locally, install the SQL extra:
+
+```bash
+pip install "nl2data-core[sql]"
+```
+
 For development (editable install with test/type/lint tooling):
 
 ```bash
 pip install -e ".[dev]"
 ```
 
-## Minimal usage
+## Facade behavior without a runtime
+
+An empty profile is intentionally non-executable. This small example shows
+the safe fallback contract; it does not run a data query. For an executable
+governed flow, start with the [mainflow demo](docs/guides/mainflow-demo.md)
+or bind a configured runtime as described in the
+[CompositionProfile reference](docs/reference/composition-profile.md).
 
 ```python
 import asyncio
@@ -60,10 +95,10 @@ asyncio.run(main())
 ```
 
 Every query returns a protected `QueryOutcome`; internal details never
-cross the public boundary. Bind a pre-built `WorkflowRuntimePort` or the
-deterministic composition parts (adapter, policy scope, view, plan
-resolver, provider, state store, tenant context — all optional) to
-execute real work. See the [quickstart](docs/getting-started/quickstart.md).
+cross the public boundary. A deterministic runtime requires an adapter,
+policy scope, authorized view, and plan resolver. A model provider, state
+store, tenant context, and other services are composed as required by the
+host. See the [quickstart](docs/getting-started/quickstart.md).
 
 ## Capability and support status
 
@@ -72,9 +107,10 @@ execute real work. See the [quickstart](docs/getting-started/quickstart.md).
 | Public facade, lifecycle, protected outcomes | Implemented + conformant | None |
 | Semantic IR, View/Bundle resolution | Implemented + conformant | None |
 | Governed workflow runtime (deterministic) | Implemented + conformant | None |
-| SQL adapter (SQLite fixtures) | Implemented + conformant | `sql` extra (`sqlglot`) |
+| SQL adapter and bounded query compiler (SQLite fixtures) | Implemented + conformant | `sql` extra (`sqlglot`) |
+| SQL multi-entity inner joins and computed expressions | Implemented + conformant | SQL adapter; authorized relationship path |
 | SQL adapter (PostgreSQL) | Implemented; service-verified in CI | `nl2data-postgres` package + service |
-| MongoDB adapter | Implemented; service-verified in CI | `nl2data-mongodb` package + service |
+| MongoDB adapter (single-collection queries and aggregation) | Implemented; service-verified in CI | `nl2data-mongodb` package + service |
 | Durable workflow state (SQLite) | Implemented + conformant | None |
 | Shared workflow state (PostgreSQL) | Implemented; service-verified in CI | `nl2data-workflow-postgres` package + service |
 | Memory (in-memory) | Implemented + conformant | None |
@@ -82,6 +118,7 @@ execute real work. See the [quickstart](docs/getting-started/quickstart.md).
 | Metadata discovery (PostgreSQL/MongoDB) | Implemented; service-verified in CI | `nl2data-postgres`/`nl2data-mongodb` package + service |
 | AI intent resolution + evaluation | Implemented + conformant | `nl2data-openai` for live provider |
 | Value-level semantics (enum value mapping) | Implemented + conformant | None |
+| WrenAI MDL to semantic-assembly importer | Implemented + conformant | `nl2data-mdl` CLI; supported MDL JSON subset |
 | OpenAI structured-output provider | Implemented; live-verified on demand | `nl2data-openai` + credentials |
 
 Status vocabulary: **Implemented** (exists in source), **Conformant**
@@ -105,6 +142,10 @@ resolution stage (`VS_001`), not at the compiler. See the
 - **No HTTP hosting**: there is no `nl2data_http` package yet; hosting
   behind HTTP is out of scope (a future host programs against the
   transport-neutral `FacadePort`).
+- **Bounded query language**: SQL supports authorized inner joins and a
+  closed computed-expression subset; outer joins, arbitrary SQL/CTEs, and
+  general-purpose window expressions are not exposed. MongoDB does not
+  support cross-collection joins or SQL computed expressions.
 - **No streaming, agent loops, or autonomous repair** beyond the bounded
   extension points; approval-required is an internal runtime event only.
 - **Process-local metadata ledger**: cross-process metadata lifecycle
@@ -126,6 +167,7 @@ resolution stage (`VS_001`), not at the compiler. See the
   [Secrets and live testing](docs/operations/secrets.md) ·
   [Troubleshooting](docs/operations/troubleshooting.md)
 - [Configuration](docs/reference/configuration.md) ·
+- [Capabilities and support](docs/reference/capabilities.md) ·
   [Error codes](docs/reference/error-codes.md) ·
   [Compatibility](docs/reference/compatibility.md)
 - 中文文档：访问[文档索引](docs/README.zh-CN.md)（English is the

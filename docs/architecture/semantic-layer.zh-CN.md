@@ -98,18 +98,22 @@ flowchart TD
 
 ### 物理边界
 
-语义层支持多根；编译器是单对象。SQL 编译器从 profile 的单个 `PhysicalBinding`
-生成一条 `SELECT ... FROM <object>` 语句——目前还没有 join 输出，且一个 profile
-只携带一个 binding。实际影响：
+语义层支持多根，但每条查询选择一个根。对 SQL 而言，当一个 profile 的
+`PhysicalBinding` 映射根实体与被连接的语义实体、授权视图允许其关系路径，且适配器
+guard 将所有引用的对象和列加入 allowlist 时，就可以跨多个物理表编译查询。当前
+编译器根据运行时生成的 `LogicalJoinPlan` 发出有界的 **inner join**；物理绑定提供
+名称，但绝不授予权限。
 
-- **根位于同一物理对象**（反规范化表）：一个 profile 即可——视图可以授权多个根，
-  binding 覆盖它们全部字段。
-- **根位于不同表**（规范化，常见情况）：**每个物理对象一个 profile**。每个
-  profile 拥有自己的适配器（allowlist 限定到该对象）、自己的 policy scope
-  （`resource_ids` = 物理对象名）、限定到该对象根/字段的视图、自己的 binding
-  与自己的 plan resolver。所有这些可以共享同一个描述符与 Bundle。
-- **关系**是被治理的词汇，不是查询机制——见
-  [关系：受治理的词汇，查询期编译](#关系受治理的词汇查询期编译)。
+- **单个物理表**：一个 binding 将实体字段映射到该表，不需要 join plan。
+- **同一 SQL 数据源中的多张表**：一个 profile 可携带根 `object_id`、实体到表的
+  绑定以及带实体归属的列绑定。运行时会依据当前视图检查关系计划，SQL guard 还会
+  独立检查所有物理对象与列。
+- **多个 profile**仍适用于需要不同适配器、策略或独立隔离执行范围的表；数据源经过
+  规范化本身并不要求拆分 profile。
+- **其他适配器**声明各自的能力集；尤其是 MongoDB 不支持这条 SQL join 路径。
+
+**关系**既是受治理的词汇，也是查询机制——见
+[关系：受治理的词汇，查询期编译](#关系受治理的词汇查询期编译)。
 
 多根构建示例见 [CompositionProfile 参考](../reference/composition-profile.zh-CN.md)。
 
