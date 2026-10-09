@@ -6,6 +6,10 @@ on:
       - "v*"
   workflow_dispatch:
     inputs:
+      release_tag:
+        description: "Existing release tag to build and publish, for example v0.1.0."
+        type: string
+        required: true
       distribution:
         description: "Bootstrap one pending PyPI project; use all only after every publisher is configured."
         type: choice
@@ -50,6 +54,8 @@ jobs:
     steps:
       - name: Check out release tag
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -58,7 +64,7 @@ jobs:
 
       - name: Verify tag and distribution versions
         env:
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
         run: |
           python - <<'PY'
           import os
