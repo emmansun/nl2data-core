@@ -1,0 +1,200 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      distribution:
+        description: "Bootstrap one pending PyPI project; use all only after every publisher is configured."
+        type: choice
+        required: true
+        default: nl2data-core
+        options:
+          - nl2data-core
+          - nl2data-openai
+          - nl2data-semantic-catalog-postgres
+          - nl2data-admin-service
+          - nl2data-postgres
+          - nl2data-mongodb
+          - nl2data-workflow-postgres
+          - nl2data-memory-redis
+          - all
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  quality:
+    name: Quality gates
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  integration:
+    name: Real-service integration gates
+    uses: ./.github/workflows/integration.yml
+    permissions:
+      contents: read
+
+  build:
+    name: Build and verify distributions
+    needs: [quality, integration]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Verify tag and distribution versions
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python - <<'PY'
+          import os
+          import tomllib
+          from pathlib import Path
+
+          tag = os.environ["RELEASE_TAG"]
+          if not tag.startswith("v"):
+              raise SystemExit(f"release tag must start with 'v': {tag}")
+          expected = tag[1:]
+          projects = {
+              ".": "nl2data-core",
+              "packages/nl2data-openai": "nl2data-openai",
+              "packages/nl2data-semantic-catalog-postgres": "nl2data-semantic-catalog-postgres",
+              "packages/nl2data-admin-service": "nl2data-admin-service",
+              "packages/nl2data-postgres": "nl2data-postgres",
+              "packages/nl2data-mongodb": "nl2data-mongodb",
+              "packages/nl2data-workflow-postgres": "nl2data-workflow-postgres",
+              "packages/nl2data-memory-redis": "nl2data-memory-redis",
+          }
+          for directory, expected_name in projects.items():
+              metadata = tomllib.loads((Path(directory) / "pyproject.toml").read_text())
+              project = metadata["project"]
+              actual_name = project["name"]
+              actual_version = project["version"]
+              if actual_name != expected_name:
+                  raise SystemExit(
+                      f"{directory}: expected distribution {expected_name}, got {actual_name}"
+                  )
+              if actual_version != expected:
+                  raise SystemExit(
+                      f"{actual_name}: version {actual_version} does not match tag {tag}"
+                  )
+          print(f"All eight distributions match release tag {tag}.")
+          PY
+
+      - name: Install build and metadata tools
+        run: python -m pip install --upgrade build twine
+
+      - name: Build core distribution
+        run: python -m build --outdir dist/core .
+
+      - name: Build sibling distributions
+        run: |
+          python -m build --outdir dist/openai packages/nl2data-openai
+          python -m build --outdir dist/postgres-catalog packages/nl2data-semantic-catalog-postgres
+          python -m build --outdir dist/admin-service packages/nl2data-admin-service
+          python -m build --outdir dist/postgres packages/nl2data-postgres
+          python -m build --outdir dist/mongodb packages/nl2data-mongodb
+          python -m build --outdir dist/workflow-postgres packages/nl2data-workflow-postgres
+          python -m build --outdir dist/memory-redis packages/nl2data-memory-redis
+
+      - name: Validate distribution metadata
+        run: python -m twine check dist/*/*
+
+      - name: Smoke-test the built core wheel
+        run: |
+          python -m venv .release-smoke
+          .release-smoke/bin/python -m pip install dist/core/*.whl
+          .release-smoke/bin/python -c "import nl2data; print('nl2data import passed')"
+          .release-smoke/bin/nl2data-mdl --help
+
+      - name: Upload release distributions
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-distributions
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish-core:
+    name: Publish nl2data-core
+    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.distribution == 'nl2data-core' || inputs.distribution == 'all') }}
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi-nl2data-core
+      url: https://pypi.org/p/nl2data-core
+    permissions:
+      id-token: write
+    steps:
+      - name: Download release distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: release-distributions
+          path: dist
+
+      - name: Publish core to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/core
+
+  publish-siblings:
+    name: Publish ${{ matrix.project }}
+    needs: [build, publish-core]
+    if: ${{ always() && github.event_name == 'workflow_dispatch' && needs.build.result == 'success' && (needs.publish-core.result == 'success' || needs.publish-core.result == 'skipped') && inputs.distribution != 'nl2data-core' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - project: nl2data-openai
+            directory: openai
+            publisher_environment: pypi-nl2data-openai
+          - project: nl2data-semantic-catalog-postgres
+            directory: postgres-catalog
+            publisher_environment: pypi-nl2data-semantic-catalog-postgres
+          - project: nl2data-admin-service
+            directory: admin-service
+            publisher_environment: pypi-nl2data-admin-service
+          - project: nl2data-postgres
+            directory: postgres
+            publisher_environment: pypi-nl2data-postgres
+          - project: nl2data-mongodb
+            directory: mongodb
+            publisher_environment: pypi-nl2data-mongodb
+          - project: nl2data-workflow-postgres
+            directory: workflow-postgres
+            publisher_environment: pypi-nl2data-workflow-postgres
+          - project: nl2data-memory-redis
+            directory: memory-redis
+            publisher_environment: pypi-nl2data-memory-redis
+    environment:
+      name: ${{ matrix.publisher_environment }}
+      url: https://pypi.org/p/${{ matrix.project }}
+    permissions:
+      id-token: write
+    steps:
+      - name: Download release distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: release-distributions
+          path: dist
+
+      - name: Publish ${{ matrix.project }} to PyPI
+        if: ${{ inputs.distribution == matrix.project || inputs.distribution == 'all' }}
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/${{ matrix.directory }}
